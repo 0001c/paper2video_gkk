@@ -77,17 +77,50 @@ CATALOG = {
 
     # ── Phase 3：数字人（体量大，前面跑通再下）──
     "Wan-AI/Wan2.1-I2V-14B-480P": (
-        "phase3", "InfiniteTalk 底模：Wan2.1 图生视频 14B", 33.0, "modelscope"),
+        "phase3", "InfiniteTalk 底模：Wan2.1 图生视频 14B（只取 config/VAE/CLIP/tokenizer）", 5.1, "modelscope"),
     "MeiGen-AI/InfiniteTalk": (
-        "phase3", "音频驱动数字人 adapter（只取 single/ 与必要文件，仓库全量 168GB）", 12.0, "modelscope"),
+        "phase3", "音频驱动数字人 adapter（fp8 量化路径，仓库全量 157GB）", 25.0, "modelscope"),
     "TencentGameMate/chinese-wav2vec2-base": (
         "phase3", "InfiniteTalk 音频编码器", 0.4, "modelscope"),
 }
 
-# InfiniteTalk 仓库里只需要这几个前缀，其余（comfyui/、quant_models/ 的 int8/fp8
-# 变体）加起来 150 GB，全是可选的旁支，默认不拉。
+# 各仓库的白名单前缀。没有条目的仓库 = 全量下载。
+#
+# ⚠️ Phase 3 这三个仓库必须白名单，否则会多下约 100 GB。依据是 wan/multitalk.py
+# 的两条互斥分支（在 16 GB 卡上我们必须走量化那条）：
+#
+#   if quant is not None:                      # ← 我们走这里（fp8）
+#       model_state_dict = load_file(quant_dir)   # 单文件即「已合并 adapter 的量化 DiT」
+#       ...
+#   else:
+#       if dit_path is None:
+#           weight_files = [7 个 diffusion_pytorch_model-*.safetensors,  # 62.5 GB
+#                           f"{infinitetalk_dir}"]                       # 9.5 GB
+#
+# 也就是说，**量化分支根本不加载那 7 个 bf16 分片，也不用 infinitetalk_dir**
+# （它只在上面 else 分支的第 219 行被用到）；底模仓库里真正要读的只有
+# config.json（第 197 行）、VAE、CLIP 与两个 tokenizer。T5 权重也由
+# quant_models/t5_fp8.safetensors 顶替（t5.py 第 506-508 行按
+# `os.path.dirname(quant_dir)/t5_{quant}.safetensors` 去找）。
 ALLOW_PATTERNS = {
-    "MeiGen-AI/InfiniteTalk": ["single/", "README.md", ".gitattributes"],
+    "MeiGen-AI/InfiniteTalk": [
+        "quant_models/infinitetalk_single_fp8",   # .safetensors + .json 地图
+        "quant_models/t5_fp8",                    # fp8 文本编码器
+        "quant_models/t5_map_fp8",                # T5 量化映射表
+        "README.md", "LICENSE.txt", ".gitattributes",
+    ],
+    "Wan-AI/Wan2.1-I2V-14B-480P": [
+        "config.json",
+        "Wan2.1_VAE.pth",
+        "models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth",
+        "xlm-roberta-large/",       # CLIP 的 tokenizer
+        "google/umt5-xxl/",         # T5 的 tokenizer（权重由 t5_fp8 顶替）
+        "LICENSE.txt", ".gitattributes",
+    ],
+    "TencentGameMate/chinese-wav2vec2-base": [
+        "pytorch_model.bin", "config.json", "preprocessor_config.json",
+        "README.md", ".gitattributes",
+    ],
 }
 
 # 多线程下载的并发度。HF 镜像实测单流可达 130 MB/s，这里主要用于

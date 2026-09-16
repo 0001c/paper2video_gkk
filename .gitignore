@@ -180,4 +180,26 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
-Paper2Video-main
+# ── Paper2Video 项目自身 ──
+# 上游自带的演示视频（19.9 MB，README 引用的也是远程资源），非运行必需
+Paper2Video-main/assets/*.mp4
+
+# 运行期产物
+.workbuddy/logs/
+result/
+recordings/
+*.log
+
+# 本地模型权重（一律外置到 E:\ai-models，绝不入库）
+models/
+checkpoints/
+*.safetensors
+*.ckpt
+
+# pdf2image / LaTeX 中间产物
+Paper2Video-main/**/slides.pdf
+Paper2Video-main/**/*.aux
+Paper2Video-main/**/*.log
+Paper2Video-main/**/*.fls
+Paper2Video-main/**/*.fdb_latexmk
+Paper2Video-main/**/*.synctex.gz

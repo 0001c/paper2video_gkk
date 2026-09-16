@@ -22,10 +22,14 @@ def get_agent_config(model_type):
         # camel 的 OPENAI_COMPATIBLE_MODEL 分支会创建 OpenAI 客户端，
         # base_url / api_key 从环境变量读取。pv_env 已把 .env 里的
         # OPENAI_API_BASE / OPENAI_API_KEY 同步到多个候选变量名上。
+        # max_tokens 必须显式给：DeepSeek-V4.1-Flash 是推理模型，思维链会占用
+        # completion_tokens（实测回一个 "OK" 就吃掉 18 token）。camel 的
+        # ChatGPTConfig() 默认是空 dict，不传 max_tokens 时由服务端兜底，生成长篇
+        # Beamer 代码极易被截断，且截断后的报错点是 latex 编译失败，极难定位。
         agent_config = {
             "model_type": model_type,
             "model_platform": ModelPlatformType.OPENAI_COMPATIBLE_MODEL,
-            "model_config": ChatGPTConfig().as_dict(),
+            "model_config": {**ChatGPTConfig().as_dict(), "max_tokens": 16384},
             "max_images": 99,   # DeepSeek-V4.1-Flash 支持 1M 上下文，可整篇论文+全部幻灯片
         }
     elif model_type == 'qwen':

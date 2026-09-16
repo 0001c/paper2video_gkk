@@ -71,23 +71,36 @@ def latex_code_gen_upgrade(prompt_path, tex_dir, beamer_save_path,
     token_usage["slide_gen"] = response.info['usage']
     
     code = extract_beamer_code(response.msgs[-1].content)
-    if not isinstance(code, str): print("failed to generate code", response.msgs[-1].content)
+    if not isinstance(code, str) or not code.strip():
+        # 不能带着 None 往下走：下面那句 open(path,"w") 会**先把文件截断成 0 字节**，
+        # 再因为 write(None) 抛 TypeError。结果是「代码没生成出来」反而把上一版
+        # 已经能编译的 slides.tex 毁掉。这里直接抛错，保住磁盘上的旧文件。
+        raise RuntimeError(
+            "幻灯片代码生成失败：模型返回中未找到可用的 beamer 代码。原始返回：\n{}".format(
+                response.msgs[-1].content[:2000]))
     with open(beamer_save_path, "w", encoding="utf-8") as f: f.write(code)
-    feedback = compile_tex(beamer_save_path)
-    
+    ok, feedback = compile_tex(beamer_save_path)
+
     ## fix if error
     num_try = 0
     token_usage["fix"] = []
-    while num_try < 10:
-        if "error" in feedback:
-            error_info = re.findall(r'^(error: .+)', feedback, flags=re.MULTILINE)
-            agent.reset()
-            code, fix_usage = correcte_error(code, error_info, agent)
-            token_usage["fix"].append(fix_usage)
-        else: break
-        if not isinstance(code, str): print("failed to fix code") ## debug
+    while num_try < 10 and not ok:
+        error_info = re.findall(r'^(error: .+)', feedback, flags=re.MULTILINE)
+        if not error_info:
+            # 编译失败但拿不到 "error: " 行，说明失败原因不在反馈文本里（例如
+            # 缺 DLL、tectonic 崩溃）。继续让模型"盲修"只会浪费 token。
+            print("[slide_gen] 编译失败但未解析到 'error: ' 行，停止修复")
+            break
+        agent.reset()
+        fixed_code, fix_usage = correcte_error(code, error_info, agent)
+        token_usage["fix"].append(fix_usage)
+        if not isinstance(fixed_code, str) or not fixed_code.strip():
+            # 同上：宁可停在上一版，也绝不把代码写成 None 后再截断文件。
+            print("[slide_gen] 修复未返回可用代码，保留上一版并停止修复")
+            break
+        code = fixed_code
         with open(beamer_save_path, "w", encoding="utf-8") as f: f.write(code)
-        feedback = compile_tex(beamer_save_path)
+        ok, feedback = compile_tex(beamer_save_path)
         num_try += 1
 
     ## improve slide layout
@@ -152,7 +165,7 @@ def improve_layout(code, feedback, beamer_save_path, model_config):
             proposal_full_code =  '\n'.join(["\\documentclass{beamer}", head, "\\begin{document}", proposal_code, "\\end{document}"])
             proposal_code_save_path = beamer_save_path.replace('.tex', 'proposal_{}.tex'.format(str(factor)))
             with open(proposal_code_save_path, 'w') as f: f.write(proposal_full_code)
-            feedback = compile_tex(proposal_code_save_path)  
+            _, feedback = compile_tex(proposal_code_save_path)  
             img_path = pdf2img(proposal_code_save_path.replace(".tex", ".pdf"), proposal_tmp_dir)
             proposal_imgs_path_list.append(img_path)  
             proposal_code_list.append(proposal_code)
@@ -189,7 +202,7 @@ def improve_layout(code, feedback, beamer_save_path, model_config):
     new_code = "\n".join(new_code)
     new_code_save_path = beamer_save_path.replace(".tex", "_refined.tex")
     with open(new_code_save_path, 'w') as f: f.write(new_code) 
-    feedback = compile_tex(new_code_save_path)
+    _, feedback = compile_tex(new_code_save_path)
     return new_code_save_path.replace(".tex", ".pdf"), token_usage_improve
 
 def improve_per_slide(data):
@@ -213,7 +226,7 @@ def improve_per_slide(data):
         proposal_full_code =  '\n'.join(["\\documentclass{beamer}", head, "\\begin{document}", proposal_code, "\\end{document}"])
         proposal_code_save_path = beamer_save_path.replace('.tex', 'proposal_{}.tex'.format(str(factor)))
         with open(proposal_code_save_path, 'w') as f: f.write(proposal_full_code)
-        feedback = compile_tex(proposal_code_save_path)  
+        _, feedback = compile_tex(proposal_code_save_path)
         img_path = pdf2img(proposal_code_save_path.replace(".tex", ".pdf"), proposal_tmp_dir)
         proposal_imgs_path_list.append(img_path)  
         proposal_code_list.append(proposal_code)
@@ -607,20 +620,44 @@ def find_all_tex_files(root_dir):
                     continue
     return tex_files
 
+# tectonic 在 Windows 上会往 stderr 打两类与「编译成败」无关的噪声，必须先清掉：
+#   1) ``Fontconfig error: Cannot load default config file: No such file: (null)``
+#      —— 这行是 Windows 上找不到 fontconfig 配置的正常提示，但字面量里含
+#      "error"。上游用 ``if "error" in feedback`` 子串判错，于是**每一次成功
+#      编译都会被误判为失败**。
+#   2) 每个被 xetex 探测到的系统字体各一条 ``warning: accessing absolute path ...``。
+#      几十条这种警告会把真正需要关注的 ``Overfull`` 警告挤出
+#      ``improve_layout`` 里 ``warning_info[:len//2]`` 的前半段，导致树搜索
+#      以为「没有幻灯片需要改进」而静默什么都不做。
+_BENIGN_FEEDBACK_PATTERNS = (
+    re.compile(r"^Fontconfig error: .*$", re.MULTILINE),
+    re.compile(r"^warning: accessing absolute path .*$", re.MULTILINE),
+)
+
+
+def _clean_feedback(text):
+    """剔除与编译成败无关的噪声行，并去掉空行。"""
+    for pattern in _BENIGN_FEEDBACK_PATTERNS:
+        text = pattern.sub("", text)
+    return "\n".join(line for line in text.splitlines() if line.strip())
+
+
 def compile_tex(tex_path):
+    """编译 tex，返回 ``(是否成功, 反馈文本)``。
+
+    判定成败只认**进程退出码**，不再对输出做子串匹配 —— 子串匹配会被
+    上面那行 Fontconfig 噪声骗到。反馈文本仍保留 stdout+stderr（已去噪），
+    因为 ``improve_layout`` 需要从里面 grep ``^warning:`` 找 Overfull。
+    """
     tex_path = Path(tex_path).resolve()
     if not tex_path.exists(): raise FileNotFoundError(f"Tex file {tex_path} does not exist")
-    try:
-        result = subprocess.run(
-            ["tectonic", str(tex_path)],
-            check=True,
-            capture_output=True,
-            text=True
-        )
-        print("Tex File Compilation succeeded.")
-        print(result.stdout)
-        return "\n".join([result.stdout, result.stderr])
-    except subprocess.CalledProcessError as e:
-        print("Compilation failed:")
-        print(e.stderr)
-        return e.stderr
+    result = subprocess.run(
+        ["tectonic", str(tex_path)],
+        capture_output=True,
+        text=True
+    )
+    ok = result.returncode == 0
+    feedback = _clean_feedback("\n".join([result.stdout or "", result.stderr or ""]))
+    print("Tex File Compilation succeeded." if ok else "Compilation failed:")
+    print(feedback)
+    return ok, feedback

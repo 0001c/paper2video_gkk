@@ -134,7 +134,12 @@ if __name__ == "__main__":
                 prompt_path=prompt_path, tex_dir=args.paper_latex_root,
                 beamer_save_path=slide_latex_path,
                 model_config_ll=agent_config_t, model_config_vl=agent_config_v,
-                beamer_temp_name=args.beamer_templete_prompt)
+                beamer_temp_name=args.beamer_templete_prompt,
+                # 必须显式转发：latex_code_gen_upgrade 里 if_tree_search 默认 True，
+                # 不传的话 --if_tree_search 这个 CLI 开关就是死的 —— 用户明明传了
+                # False，代码仍会去跑「每帧 4 个候选布局 + VLM 选优」，既费 token
+                # 又费时间（实测多花 ~3 分钟、7 次 VLM 调用），且行为与参数不符。
+                if_tree_search=args.if_tree_search)
 
         # latex_code_gen_upgrade 的第二个返回值是 **PDF 路径**（它内部只负责编译，
         # 不负责出图），因此两个分支统一在这里把 PDF 逐页渲染成 PNG。

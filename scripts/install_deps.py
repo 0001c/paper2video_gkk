@@ -68,6 +68,12 @@ OTHER_PACKAGES = [
     "modelscope",                # CAM++ 声纹模型走 ModelScope
     # ── LLM 调用（DeepSeek 走 OpenAI 兼容协议）──
     "camel-ai>=0.2.0",
+    # camel-ai(0.2.90) 的 camel/toolkits/base.py 里写着
+    #     from mcp.server import FastMCP
+    # 而 mcp 2.x 已把 FastMCP 改名为 MCPServer（且不再从 mcp.server 顶层导出），
+    # 装到 mcp 2.x 时 import camel.agents 会直接 ImportError。camel-ai 的
+    # METADATA 只写了 "mcp" 没有上限，属于上游打包缺陷，必须在这里兜住。
+    "mcp<2",
     "openai>=1.86.0",
     # ── 基础 ──
     "tqdm",

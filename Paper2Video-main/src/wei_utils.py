@@ -1,6 +1,11 @@
 from camel.types import ModelPlatformType, ModelType
 from camel.configs import ChatGPTConfig, QwenConfig, VLLMConfig, OpenRouterConfig, GeminiConfig
 
+# 必须先导入 pv_env：它负责加载 .env、把 OPENAI_API_KEY / OPENAI_API_BASE
+# 同步到 camel 读到的那些环境变量名上。若本模块被单独导入（不经 pipeline），
+# 少了这一行就会拿到空 Key，报错点还会推迟到真正发请求时。
+import pv_env  # noqa: F401
+
 # 走 OpenAI 兼容协议的自建/第三方服务：模型名即 API 的 model id，平台统一为
 # OPENAI_COMPATIBLE_MODEL，鉴权与端点由环境变量提供（见 pv_env 的环境变量别名）。
 _OPENAI_COMPATIBLE_ALIASES = (

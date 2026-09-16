@@ -4,8 +4,14 @@
 ------------------------------------------------
 UI-TARS-1.5-7B  ->  GUI-Owl-1.5-4B-Instruct
     - 原模型 bf16 需 16-18 GB，在 16 GB 卡上开箱 OOM；4.44B 版约 9-10 GB。
-    - 两者同为 Qwen-VL 系，**都输出 0-1000 归一化坐标**，解析逻辑同源。
     - 许可证从 Apache-2.0（模型权重带额外条款）变为 MIT。
+    - 共同点：都基于 Qwen-VL 系、都输出 **0-1000 归一化坐标**。
+    - ⚠️ 不同点（务必注意）：**输出协议不一样**。原代码用 qwen-vl-utils 的
+      ``parse_action_to_structure_output(model_type="qwen25vl")``，那是
+      ``<|box_start|>(x,y)<|box_end|>`` 格式；而 GUI-Owl 走**工具调用协议**，
+      输出 ``<tool_call>{"arguments":{"coordinate":[x,y]}}</tool_call>``，
+      且必须在 system 消息里声明 "The screen's resolution is 1000x1000."。
+      因此本文件的 grounding 辅助函数是**重写**而非复用，见 build_grounding_prompt。
 
 whisperx large-v3 + align  ->  Qwen3-ASR-0.6B + Qwen3-ForcedAligner-0.6B
 
@@ -79,39 +85,111 @@ def release_gui_model():
 # ──────────────────────────────────────────────────────────────
 
 def build_grounding_prompt(instruction):
-    """构造 grounding 指令。
+    """返回 (system_text, user_text)。
 
-    GUI-Owl 1.5 是原生 GUI agent 模型，直接给自然语言目标即可；
-    这里补上坐标系约定，把输出约束在可解析的 ``<point>x y</point>`` 上。
+    ⚠️ 这里必须照搬 GUI-Owl 官方的**工具调用协议**，不能自创提示词。
+    出处：X-PLUG/MobileAgent 的 ``grounding_and_kb/eval_grounding_benchmarks.py``
+    中 ``only_two_action_system_prompt``。
+
+    为什么不能自创：GUI-Owl 是在该模板上训练出来的 grounding 能力，模型靠
+    "The screen's resolution is 1000x1000." 这一句才建立起输出 0-1000
+    归一化坐标的约定，并且只在 <tool_call> 里吐 JSON 坐标。
+    早先版本自创了一段"请输出 <point>x y</point>"的指令 —— 格式不在训练分布内，
+    属于典型的"看起来合理但必然失败"的改法。
     """
-    return (
-        "You are a GUI grounding model. Given a slide screenshot, locate the target "
-        "described by the instruction and output ONLY a click point in the format "
-        "<point>x y</point>, where x and y are integers normalized to 0-1000 "
-        "(0,0 is the top-left corner, 1000,1000 is the bottom-right corner).\n\n"
-        "Instruction: {}".format(instruction)
+    system_text = (
+        "# Tools\n\n"
+        "You may call one or more functions to assist with the user query.\n\n"
+        "You are provided with function signatures within <tools></tools> XML tags:\n"
+        "<tools>\n"
+        '{"type": "function", "function": {"name": "computer_use", '
+        '"description": "Use a mouse to interact with a computer.\\n'
+        "* The screen's resolution is 1000x1000.\\n"
+        "* Make sure to click any buttons, links, icons, etc with the cursor tip "
+        "in the center of the element. Don't click boxes on their edges unless asked.\\n"
+        "* don't use any other computer use tool like type, key, scroll, "
+        "left_click_drag and so on.\\n"
+        "* you can only use the left_click and mouse_move action to interact with "
+        'the computer. if you can\'t find the element, you should terminate the task '
+        'and report the failure.", "parameters": {"properties": {"action": '
+        '{"description": "The action to perform. The available actions are:\\n'
+        "* `mouse_move`: Move the cursor to a specified (x, y) pixel coordinate on the screen.\\n"
+        "* `left_click`: Click the left mouse button with coordinate (x, y) pixel coordinate "
+        'on the screen.", "enum": ["mouse_move", "left_click"], "type": "string"}, '
+        '"coordinate": {"description": "(x, y): The x (pixels from the left edge) and y '
+        "(pixels from the top edge) coordinates to move the mouse to. Required only by "
+        '`action=mouse_move` and `action=left_click`.", "type": "array"}}, '
+        '"required": ["action"], "type": "object"}}}\n'
+        "</tools>\n\n"
+        "For each function call, return a json object with function name and arguments "
+        "within <tool_call></tool_call> XML tags:\n"
+        "<tool_call>\n"
+        '{"name": <function-name>, "arguments": <args-json-object>}\n'
+        "</tool_call>\n"
     )
+    return system_text, instruction
+
+
+def parse_tool_call_point(response):
+    """从 <tool_call> 的 JSON 里取 coordinate，返回 (x, y) 或 None。
+
+    模型输出形如：
+        <tool_call>
+        {"name": "computer_use", "arguments": {"action": "left_click",
+         "coordinate": [523, 418]}}
+        </tool_call>
+    优先走 JSON 解析（可靠），解析不出再用正则兜底。
+    """
+    import json as _json
+
+    for block in re.findall(r"<tool_call>\s*(.*?)\s*</tool_call>", response, re.S):
+        try:
+            payload = _json.loads(block)
+        except (ValueError, TypeError):
+            continue
+        arguments = payload.get("arguments") or {}
+        coordinate = arguments.get("coordinate")
+        if isinstance(coordinate, (list, tuple)) and len(coordinate) >= 2:
+            try:
+                return float(coordinate[0]), float(coordinate[1])
+            except (TypeError, ValueError):
+                pass
+        # 有些输出把坐标写成 {"x":..,"y":..} 或字符串 "coordinate": "523 418"
+        if isinstance(coordinate, dict) and "x" in coordinate and "y" in coordinate:
+            try:
+                return float(coordinate["x"]), float(coordinate["y"])
+            except (TypeError, ValueError):
+                pass
+        if isinstance(coordinate, str):
+            numbers = re.findall(r"-?\d+(?:\.\d+)?", coordinate)
+            if len(numbers) >= 2:
+                return float(numbers[0]), float(numbers[1])
+    return None
 
 
 def parse_point(response, img_width, img_height):
-    """从模型输出中解析出像素坐标。
+    """从模型输出解析出**像素**坐标，返回 ``(x, y)``；失败返回 ``None``。
 
-    返回 ``(x, y)``；解析失败返回 ``None``，由调用方决定回退策略。
+    解析顺序（先精确后宽松）：
+      1. ``<tool_call>`` 内的 JSON ``coordinate``（官方格式）
+      2. ``(x, y)`` —— 官方 eval 脚本的首选正则
+      3. ``[x, y]`` —— 官方 eval 脚本的兜底正则，也用于无 tool_call 包裹时
+
+    坐标系：GUI-Owl 输出 0-1000 **相对**坐标（其 README 与系统提示均如此声明），
+    此处换算成幻灯片图片的实际像素。若模型直接吐了像素值（> 1000）则原样采用。
     """
-    # 主格式：<point>x y</point>
-    match = re.search(r"<point>\s*([\d.]+)\s*[,\s]\s*([\d.]+)\s*</point>", response)
-    # 兜底：<|box_start|>(x,y)<|box_end|> 或裸的括号坐标
-    if not match:
-        match = re.search(r"\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)", response)
-    if not match:
-        return None
+    raw = parse_tool_call_point(response)
 
-    try:
-        raw_x, raw_y = float(match.group(1)), float(match.group(2))
-    except (TypeError, ValueError):
-        return None
+    if raw is None:
+        match = re.search(r"\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*\)", response)
+        if match is None:
+            match = re.search(r"\[\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*\]", response)
+        if match is None:
+            return None
+        raw = (float(match.group(1)), float(match.group(2)))
 
-    # 归一化坐标 -> 像素；若模型直接吐了像素值（> 1000）则原样使用
+    raw_x, raw_y = raw
+
     if raw_x <= COORD_SCALE and raw_y <= COORD_SCALE:
         x = raw_x / COORD_SCALE * img_width
         y = raw_y / COORD_SCALE * img_height
@@ -135,14 +213,17 @@ def infer_cursor(instruction, image_path, device=None):
         raise FileNotFoundError("找不到幻灯片图片: {}".format(image_path))
     img_h, img_w = image.shape[:2]
 
-    prompt = build_grounding_prompt(instruction)
-    messages = [{
-        "role": "user",
-        "content": [
+    system_text, user_text = build_grounding_prompt(instruction)
+
+    # 必须带 system 消息：模型靠其中的 "resolution is 1000x1000" 建立坐标系约定，
+    # 靠 <tool_call> 协议决定输出形态。官方 eval 脚本即为此结构。
+    messages = [
+        {"role": "system", "content": [{"type": "text", "text": system_text}]},
+        {"role": "user", "content": [
             {"type": "image", "image": str(image_path)},
-            {"type": "text", "text": prompt},
-        ],
-    }]
+            {"type": "text", "text": user_text},
+        ]},
+    ]
 
     inputs = processor.apply_chat_template(
         messages, tokenize=True, add_generation_prompt=True,
@@ -150,7 +231,7 @@ def infer_cursor(instruction, image_path, device=None):
     ).to(model.device)
 
     with torch.inference_mode():
-        generated = model.generate(**inputs, max_new_tokens=64, do_sample=False)
+        generated = model.generate(**inputs, max_new_tokens=256, do_sample=False)
 
     trimmed = generated[:, inputs.input_ids.shape[1]:]
     response = processor.batch_decode(
@@ -159,8 +240,8 @@ def infer_cursor(instruction, image_path, device=None):
 
     point = parse_point(response, img_w, img_h)
     if point is None:
-        print("[cursor_gen] 坐标解析失败，指令={!r} 原始输出={!r}".format(instruction, response[:120]))
-    return point, prompt + response
+        print("[cursor_gen] 坐标解析失败，指令={!r} 原始输出={!r}".format(instruction, response[:200]))
+    return point, response
 
 
 def _infer_task(task):

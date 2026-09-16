@@ -124,7 +124,9 @@ if __name__ == "__main__":
 
         if args.skip_slide_gen:
             print("[Stage 1] 跳过 LLM 生成，直接使用现有 slides.tex: {}".format(slide_latex_path))
-            beamer_path = slide_latex_path
+            from slide_code_gen_select_improvement import compile_tex
+            compile_tex(slide_latex_path)
+            beamer_path = slide_latex_path.replace(".tex", ".pdf")
             usage_slide = {}
         else:
             prompt_path = "./prompts/slide_beamer_prompt.txt"
@@ -134,19 +136,17 @@ if __name__ == "__main__":
                 model_config_ll=agent_config_t, model_config_vl=agent_config_v,
                 beamer_temp_name=args.beamer_templete_prompt)
 
-        # 编译 Beamer，再逐页渲染为 PNG（PyMuPDF，无需 poppler）
-        # 注意：latex_code_gen_upgrade 内部会编译并渲染；skip 分支需要自己编译
-        if args.skip_slide_gen:
-            from slide_code_gen_select_improvement import compile_tex
-            compile_tex(slide_latex_path)
-            pdf_candidate = slide_latex_path.replace(".tex", ".pdf")
-            if not os.path.exists(pdf_candidate):
-                raise FileNotFoundError(
-                    "编译后未生成 PDF：{}。请确认 tectonic 已安装"
-                    "（./.venv/Scripts/python.exe scripts/setup_tools.py）".format(pdf_candidate))
-            images = render_pdf_to_images(pdf_candidate, dpi=400)
-            for index, image in enumerate(images):
-                image.save(os.path.join(slide_image_dir, "{}.png".format(index + 1)))
+        # latex_code_gen_upgrade 的第二个返回值是 **PDF 路径**（它内部只负责编译，
+        # 不负责出图），因此两个分支统一在这里把 PDF 逐页渲染成 PNG。
+        # 上游只有 skip 分支出图，正常跑 LLM 时 slide_imgs/ 会一直是空的。
+        if not os.path.exists(beamer_path):
+            raise FileNotFoundError(
+                "编译后未生成 PDF：{}。请确认 tectonic 已安装"
+                "（./.venv/Scripts/python.exe scripts/setup_tools.py）".format(beamer_path))
+        images = render_pdf_to_images(beamer_path, dpi=400)
+        for index, image in enumerate(images):
+            image.save(os.path.join(slide_image_dir, "{}.png".format(index + 1)))
+        print("[Stage 1] 渲染 {} 张幻灯片 -> {}".format(len(images), slide_image_dir))
 
         if args.model_name_t not in token_usage:
             token_usage[args.model_name_t] = [usage_slide]

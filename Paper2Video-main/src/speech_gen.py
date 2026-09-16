@@ -148,14 +148,25 @@ def align_with_qwen3(audio_path, text, lang="English"):
     为什么要适配成 whisperx 的 shape：``cursor_gen.timesteps()`` 按
     ``aligned["segments"][i]["words"][j]["end"]`` 取值。保持这个形状，
     下游的时间轴拼装逻辑一行都不用改。
+
+    返回结构说明（官方示例：``results[0][0].text``）：``align()`` 返回一个
+    按输入音频分组的列表，每个元素是该音频的**词条序列**。单条音频时取
+    ``results[0]``。这里不靠 ``isinstance(x, list)`` 判断层级 —— 模型侧若
+    返回 tuple 之类就会判错，改为**看元素是否具备 ``start_time`` 属性**，
+    语义上更准确。
     """
     aligned = get_aligner_model().align(audio=audio_path, text=text, language=lang)
-    segments = aligned[0] if aligned and isinstance(aligned[0], list) else aligned
+    if aligned is None:
+        return {"segments": [{"words": []}]}
+
+    first = aligned[0] if len(aligned) else None
+    # first 若有 start_time，说明本层已经是词条；否则它才是词条序列
+    items = aligned if hasattr(first, "start_time") else (first or [])
 
     words = []
-    for item in segments:
+    for item in items:
         words.append({
-            "word": getattr(item, "text", ""),
+            "word": str(getattr(item, "text", "")),
             "start": float(getattr(item, "start_time", 0.0) or 0.0),
             "end": float(getattr(item, "end_time", 0.0) or 0.0),
         })

@@ -40,8 +40,42 @@ GUI_OWL_REPO = "mPLUG/GUI-Owl-1.5-4B-Instruct"
 # GUI-Owl 输出 0-1000 相对坐标（其 README 明确说明）
 COORD_SCALE = 1000.0
 
+# grounding 用的图片长边上限（像素）。
+# pipeline_light 按 400 dpi 渲染幻灯片（2016x1512）是为了**成片清晰度**，但 grounding
+# 并不需要那个分辨率：模型只回 0-1000 归一化坐标，分辨率越高，视觉 token 数按面积
+# 增长（2016x1512 约 3.9k visual token），在 16 GB 卡上会把显存顶到 ~97% 并触发
+# 显存颠簸（实测每句从 2s 退化到 ~80s）。这里给模型一份缩过的副本，
+# **坐标仍按原图尺寸换算**（见 infer_cursor 里 parse_point 的入参），故落点精度不变。
+GROUNDING_MAX_EDGE = 1008
+
 _gui_model = None
 _gui_processor = None
+
+
+def prepare_grounding_image(image_path):
+    """返回「该喂给模型」的图片路径：超过 GROUNDING_MAX_EDGE 才缩放，否则原图。
+
+    副本落在 TMP_DIR（纯英文路径），并按源文件名缓存，同一页的多句复用同一份。
+    """
+    from PIL import Image
+
+    with Image.open(image_path) as handle:
+        width, height = handle.size
+        scale = GROUNDING_MAX_EDGE / float(max(width, height))
+        if scale >= 1.0:
+            return str(image_path)
+        target = (max(1, int(round(width * scale))),
+                  max(1, int(round(height * scale))))
+        resized = handle.convert("RGB").resize(target, Image.LANCZOS)
+
+    os.makedirs(pv_env.TMP_DIR, exist_ok=True)
+    # 文件名带上目标尺寸：否则调整 GROUNDING_MAX_EDGE 后会命中上一次的旧副本
+    stem = path.splitext(path.basename(image_path))[0]
+    out_path = path.join(pv_env.TMP_DIR, "grounding_{}_{}x{}.png".format(
+        stem, target[0], target[1]))
+    if not path.exists(out_path):
+        resized.save(out_path)
+    return out_path
 
 
 # ──────────────────────────────────────────────────────────────
@@ -213,6 +247,9 @@ def infer_cursor(instruction, image_path, device=None):
         raise FileNotFoundError("找不到幻灯片图片: {}".format(image_path))
     img_h, img_w = image.shape[:2]
 
+    # 真图只用来取尺寸；喂给模型的是缩小版（见 prepare_grounding_image 的说明）。
+    model_image_path = prepare_grounding_image(image_path)
+
     system_text, user_text = build_grounding_prompt(instruction)
 
     # 必须带 system 消息：模型靠其中的 "resolution is 1000x1000" 建立坐标系约定，
@@ -220,7 +257,7 @@ def infer_cursor(instruction, image_path, device=None):
     messages = [
         {"role": "system", "content": [{"type": "text", "text": system_text}]},
         {"role": "user", "content": [
-            {"type": "image", "image": str(image_path)},
+            {"type": "image", "image": model_image_path},
             {"type": "text", "text": user_text},
         ]},
     ]
@@ -238,6 +275,8 @@ def infer_cursor(instruction, image_path, device=None):
         trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False,
     )[0].strip()
 
+    # ⚠️ 这里必须传**原图**宽高：模型给的是 0-1000 归一化坐标，
+    # 换算回像素要按成片实际分辨率（2016x1512）来，传缩小版尺寸会让光标偏到左上角。
     point = parse_point(response, img_w, img_h)
     if point is None:
         print("[cursor_gen] 坐标解析失败，指令={!r} 原始输出={!r}".format(instruction, response[:200]))

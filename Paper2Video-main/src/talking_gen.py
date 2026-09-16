@@ -96,11 +96,36 @@ def _ascii_workspace(idx):
 
 
 def _stage_inputs(workspace, ref_img_path, audio_path):
-    """把参考图与音频复制进 ASCII 工作区，返回复制后的路径。"""
-    staged_img = os.path.join(workspace, "ref_image" + path.splitext(ref_img_path)[1])
+    """把参考图与音频复制进 ASCII 工作区，返回暂存后的路径。
+
+    参考图会在这里被**居中裁成正方形**。原因是 InfiniteTalk 明确要求参考图为
+    「正方形人像」，而项目自带的 `zeyu.png` 实测是 **658x660**（差 2 像素）。
+    与其指望使用者每次都先裁好，不如在这一步保证 —— 差几像素就非正方形，
+    真出问题时几乎不会有人联想到是这个原因。
+
+    同时把透明通道合成到白底：PNG 直接 `convert("RGB")` 会把透明区域变黑，
+    人像边缘会糊出一圈黑边。
+    """
+    from PIL import Image
+
+    staged_img = os.path.join(workspace, "ref_image.png")
+    with Image.open(ref_img_path) as handle:
+        if handle.mode in ("RGBA", "LA", "P"):
+            rgba = handle.convert("RGBA")
+            flat = Image.new("RGB", rgba.size, (255, 255, 255))
+            flat.paste(rgba, mask=rgba.split()[-1])
+            image = flat
+        else:
+            image = handle.convert("RGB")
+
+        width, height = image.size
+        side = min(width, height)
+        left = (width - side) // 2
+        top = (height - side) // 2
+        image.crop((left, top, left + side, top + side)).save(staged_img)
+
     staged_audio = os.path.join(workspace, "driving_audio" +
                                 path.splitext(audio_path)[1])
-    shutil.copyfile(ref_img_path, staged_img)
     shutil.copyfile(audio_path, staged_audio)
     return staged_img, staged_audio
 

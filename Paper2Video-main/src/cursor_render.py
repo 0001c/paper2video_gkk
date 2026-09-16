@@ -1,7 +1,10 @@
+import os
 import subprocess
 import json
 import pdb
 from PIL import Image, ImageDraw
+
+import pv_env
 
 
 def render_cursor_on_video(
@@ -12,9 +15,19 @@ def render_cursor_on_video(
     cursor_size: int = 10,
     cursor_img_path: str = "cursor.png"):
 
-    img = Image.open(cursor_img_path)
-    img_resized = img.resize((cursor_size, cursor_size))
-    img_resized.save(cursor_img_path)
+    # ⚠️ 不要把手缩放后的图存回 cursor_img_path。
+    # 上游那行 `img_resized.save(cursor_img_path)` 是拿**仓库里的源素材当草稿文件**用：
+    # cursor_image/red.png 尺寸虽然不变，但 PNG 会重新编码，字节数随之变化，
+    # 于是每跑一次流水线 git 工作区就被弄脏一次（实测 1186 -> 1188 字节）。
+    # 改写到一个按尺寸命名的临时文件：既不污染仓库，也顺带避开 ffmpeg 对
+    # 非 ASCII 路径（本机项目路径含中文）的解析问题。
+    os.makedirs(pv_env.TMP_DIR, exist_ok=True)
+    cursor_work_path = os.path.join(
+        pv_env.TMP_DIR, "cursor_overlay_{}.png".format(int(cursor_size)))
+    if not os.path.exists(cursor_work_path):
+        img = Image.open(cursor_img_path)
+        img.resize((cursor_size, cursor_size)).save(cursor_work_path)
+    cursor_img_path = cursor_work_path
 
 
     def get_video_resolution(path):

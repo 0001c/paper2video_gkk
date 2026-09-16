@@ -269,7 +269,10 @@ def fetch_one_file(source, repo, path, local_dir, expected_size, quiet=False):
 # ──────────────────────────────────────────────────────────────
 
 def download_repo(repo, source):
-    """从指定源把一个仓库拉到 WEIGHTS_DIR/<org>__<name>。"""
+    """从指定源把一个仓库拉到 WEIGHTS_DIR/<org>__<name>。
+
+    幂等：已存在且**单文件大小相符**的直接跳过，只补缺失/损坏的部分。
+    """
     lister = LISTERS[source]
     files = {p: s for p, s in lister(repo).items() if _match_allow(repo, p)}
     if not files:
@@ -278,12 +281,25 @@ def download_repo(repo, source):
     total = sum(files.values())
     local_dir = os.path.join(WEIGHTS_DIR, repo.replace("/", "__"))
     os.makedirs(local_dir, exist_ok=True)
-    print("    文件 {} 个，合计 {}".format(len(files), _human(total)))
+
+    def _present(path, size):
+        dest = os.path.join(local_dir, path.replace("/", os.sep))
+        # .gitattributes 在不同源之间内容不同，只要文件在就算合格，
+        # 否则会因为大小永远对不上而被反复重下。
+        if os.path.basename(path) in (".gitattributes", ".gitignore"):
+            return os.path.isfile(dest)
+        return os.path.isfile(dest) and size and os.path.getsize(dest) == size
+
+    missing = {p: s for p, s in files.items() if not _present(p, s)}
+    print("    文件 {} 个，合计 {}，其中待下载 {} 个".format(
+        len(files), _human(total), len(missing)))
+    if not missing:
+        return True
 
     failed = []
     # 大文件单独串行更稳（避免带宽争抢），小文件并发
-    big = {p: s for p, s in files.items() if s > 200 * 1024 * 1024}
-    small = {p: s for p, s in files.items() if p not in big}
+    big = {p: s for p, s in missing.items() if s > 200 * 1024 * 1024}
+    small = {p: s for p, s in missing.items() if p not in big}
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         futures = {
@@ -304,11 +320,13 @@ def download_repo(repo, source):
         if not ok:
             failed.append(p)
 
+    # 落盘后逐文件复核，而不是只看目录总体积
+    still = [p for p, s in files.items() if not _present(p, s)]
     got = _dir_size(local_dir)
     print("    落地 {:.2f} GB / 预期 {:.2f} GB".format(got / 1e9, total / 1e9))
-    if failed:
-        print("    失败 {} 个：{}".format(len(failed), failed[:5]))
-        raise RuntimeError("{} 个文件未完成".format(len(failed)))
+    if still:
+        print("    仍不合格 {} 个：{}".format(len(still), still[:5]))
+        raise RuntimeError("{} 个文件未完成".format(len(still)))
     return True
 
 
@@ -322,12 +340,10 @@ def fetch_one(repo, source="auto"):
     print("    预计体积：约 {:.1f} GB".format(approx_gb))
     print("    目标目录：{}".format(local_dir))
 
-    if os.path.isdir(local_dir):
-        cur = _dir_size(local_dir)
-        if cur > approx_gb * 1e9 * 0.9:
-            print("    状态：已存在且体积达标（{:.2f} GB），跳过".format(cur / 1e9))
-            return True
-
+    # ⚠️ 不要用「目录总体积达到预期 90%」来判断是否已完成。
+    # 实测踩到：Qwen3-TTS 仓库漏下 speech_tokenizer/model.safetensors
+    # （0.49 GB）时，总体积 4.05 GB 恰好压过 4.5*0.9=4.05 的阈值而被误判。
+    # 改为始终列清单、逐文件核对大小；download_repo 内部对合格文件即时返回。
     if source == "auto":
         order = [preferred, "huggingface" if preferred == "modelscope" else "modelscope"]
     else:
@@ -343,6 +359,53 @@ def fetch_one(repo, source="auto"):
 
     print("    [x] 全部源均失败")
     return False
+
+
+# ──────────────────────────────────────────────────────────────
+# 校验：把本地文件与远端清单逐个比对
+# ──────────────────────────────────────────────────────────────
+
+def verify_repo(repo, source="auto"):
+    """逐个文件核对大小，返回 (是否全部相符, 问题列表)。
+
+    清单来源：--source 指定的源优先，拉不到再试另一个。
+    注意 CAM++ 只存在于 ModelScope、GUI-Owl 只存在于 HF，因此**不能**
+    因为用户指定了某个源就对另一个源一概不查。
+    """
+    local_dir = os.path.join(WEIGHTS_DIR, repo.replace("/", "__"))
+    order = list(LISTERS.keys())
+    if source in order:
+        order.remove(source)
+        order.insert(0, source)
+
+    remote = None
+    for src in order:
+        try:
+            remote = LISTERS[src](repo)
+            break
+        except Exception:  # noqa: BLE001
+            continue
+    if remote is None:
+        return False, [("清单拉取失败（两个源都试过）", 0, 0)]
+
+    remote = {p: s for p, s in remote.items() if _match_allow(repo, p)}
+    problems = []
+    for path, size in sorted(remote.items()):
+        # .gitattributes / .gitignore 在不同源（HF vs ModelScope）内容不同，
+        # 且完全不影响模型加载，不纳入校验，否则每次都会报"有问题"。
+        if os.path.basename(path) in (".gitattributes", ".gitignore"):
+            continue
+        dest = os.path.join(local_dir, path.replace("/", os.sep))
+        part = dest + ".part"
+        if os.path.isfile(dest):
+            actual = os.path.getsize(dest)
+            if size and actual != size:
+                problems.append((path, actual, size))
+        elif os.path.isfile(part):
+            problems.append((path + " [.part 未完成]", os.path.getsize(part), size))
+        else:
+            problems.append((path + " [缺失]", 0, size))
+    return (not problems), problems
 
 
 # ──────────────────────────────────────────────────────────────
@@ -417,6 +480,8 @@ def main():
     parser.add_argument("--model", action="append", help="指定 repo_id，可重复")
     parser.add_argument("--source", choices=["auto", "modelscope", "huggingface"], default="auto")
     parser.add_argument("--list", action="store_true", help="只列出清单")
+    parser.add_argument("--verify", action="store_true",
+                        help="逐个文件核对本地与远端大小，不下载")
     parser.add_argument("--recover", action="store_true",
                         help="抢救被中断的 .incomplete（按大小改名归位）")
     parser.add_argument("--weights-dir", default=WEIGHTS_DIR)
@@ -424,9 +489,24 @@ def main():
 
     WEIGHTS_DIR = args.weights_dir
 
-    if args.list or (not args.group and not args.model and not args.recover):
+    if args.list or (not args.group and not args.model
+                     and not args.recover and not args.verify):
         print_catalog()
         return
+
+    if args.verify:
+        targets = args.model or list(CATALOG.keys())
+        print("校验 {} 个仓库（逐个文件比对远端大小）".format(len(targets)))
+        bad = 0
+        for repo in targets:
+            ok, problems = verify_repo(repo, args.source)
+            print("\n  {:<46} {}".format(repo, "全部相符" if ok else "有问题"))
+            for path, actual, expect in problems[:10]:
+                print("      {:<50} 本地={} 远端={}".format(path[:50], actual, expect))
+            if problems:
+                bad += 1
+        print("\n{} 个仓库全部合格，{} 个有问题".format(len(targets) - bad, bad))
+        sys.exit(0 if bad == 0 else 1)
 
     if args.recover:
         targets = args.model or list(CATALOG.keys())

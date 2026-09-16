@@ -74,8 +74,20 @@ OTHER_PACKAGES = [
 ]
 
 # qwen-tts 用 --no-deps 安装，因此它自己的运行期依赖必须在这里显式补齐，
-# 否则会因为缺包而在推理时炸掉。逐条来自其 METADATA 的 requires_dist。
-QWEN_TTS_OWN_DEPS = ["librosa", "soundfile", "torchaudio", "accelerate==1.12.0"]
+# 否则会因为缺包而在推理时炸掉。逐条来自其 METADATA 的 requires_dist：
+#   transformers==4.57.3  accelerate==1.12.0  gradio  librosa
+#   torchaudio  soundfile  sox  onnxruntime  einops
+# 其中 transformers 由主依赖组的 4.57.6 覆盖，accelerate 已锁同版本，
+# gradio 会随 qwen-asr 一起装上，其余必须显式列出 ——
+# 先前漏了 onnxruntime / einops / sox，实测 import qwen_tts 直接
+# ModuleNotFoundError: onnxruntime。
+QWEN_TTS_OWN_DEPS = [
+    "librosa", "soundfile", "torchaudio", "accelerate==1.12.0",
+    "onnxruntime",     # 语音 tokenizer 需要
+    "einops",
+    "sox",
+    "gradio",
+]
 
 
 def _ensure_venv():

@@ -38,15 +38,57 @@ RELEASE_DL = "https://github.com/tectonic-typesetting/tectonic/releases/download
 # 但下列加速前缀可用。因此 API 与二进制都按前缀依次尝试。
 DOWNLOAD_MIRRORS = ["https://ghproxy.net/", "https://ghfast.top/", ""]
 
-# API 不可达时的兜底：直接按已知版本构造下载地址
+# API 不可达时的兜底：直接按已知版本构造下载地址。
+# ⚠️ 必须用 **msvc** 构建。gnu 构建依赖 MinGW 运行库
+# （libgcc_s_seh-1.dll / libwinpthread-1.dll / libstdc++-6.dll），
+# 本机没有这些 DLL —— 实测 gnu 版连 `tectonic --version` 都跑不起来，
+# 退出码 0xC0000135（STATUS_DLL_NOT_FOUND）。msvc 版是自包含的。
 KNOWN_ASSETS = [
-    ("tectonic@0.17.0", "tectonic-0.17.0-x86_64-pc-windows-gnu.zip"),
+    ("tectonic@0.17.0", "tectonic-0.17.0-x86_64-pc-windows-msvc.zip"),
 ]
 
 
 def _get(url, timeout=60):
     request = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
     return urllib.request.urlopen(request, timeout=timeout)
+
+
+def verify_tectonic(path):
+    """运行 --version 判断是否真的可执行。
+
+    只看「文件存在」是不够的 —— gnu 构建的 DLL 缺失在文件系统上完全看不出来，
+    只有真正执行才会暴露。返回版本字符串，失败返回 None。
+    """
+    import subprocess
+    try:
+        result = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=90)
+    except Exception as exc:  # noqa: BLE001
+        print("    执行失败: {}: {}".format(type(exc).__name__, str(exc)[:120]))
+        return None
+    output = ((result.stdout or "") + (result.stderr or "")).strip()
+    if result.returncode != 0:
+        hint = ""
+        if result.returncode in (3221225781, -1073741515):
+            hint = "（0xC0000135 = 缺少 DLL，多半是下到了 gnu 构建）"
+        print("    退出码 {}{} 输出={!r}".format(result.returncode, hint, output[:120]))
+        return None
+    return output or "unknown"
+
+
+def _pick_windows_assets(assets):
+    """从 release 资产里挑出 Windows x86_64 zip，msvc 优先、gnu 靠后。"""
+    picked = []
+    for asset in assets:
+        name = asset["name"].lower()
+        if "windows" not in name or not name.endswith(".zip"):
+            continue
+        if "x86_64" not in name and "msvc" not in name:
+            continue
+        # msvc 自包含，gnu 需要 MinGW DLL —— 排序保证先试 msvc
+        rank = 0 if "msvc" in name else 1
+        picked.append((rank, asset["name"], asset["browser_download_url"]))
+    picked.sort(key=lambda item: item[0])
+    return picked
 
 
 def _asset_candidates():
@@ -56,12 +98,13 @@ def _asset_candidates():
         try:
             with _get(prefix + RELEASE_API) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-            for asset in data.get("assets", []):
-                name = asset["name"].lower()
-                if "windows" in name and ("x86_64" in name or "msvc" in name) and name.endswith(".zip"):
-                    print("查到最新版本: {} -> {}".format(data.get("tag_name"), asset["name"]))
-                    yield data.get("tag_name", "?"), asset["name"], asset["browser_download_url"]
-            return
+            found = _pick_windows_assets(data.get("assets", []))
+            if found:
+                for rank, name, url in found:
+                    print("查到最新版本: {} -> {}{}".format(
+                        data.get("tag_name"), name, "" if rank == 0 else "（gnu 备用）"))
+                    yield data.get("tag_name", "?"), name, url
+                return
         except Exception as exc:
             print("  release API 经 {} 查询失败: {}".format(prefix or "直连", str(exc)[:80]))
 
@@ -71,13 +114,17 @@ def _asset_candidates():
         yield tag, name, "{}{}/{}".format(RELEASE_DL, quoted, name)
 
 
-def install():
+def install(force=False):
     os.makedirs(INSTALL_DIR, exist_ok=True)
     target = os.path.join(INSTALL_DIR, "tectonic.exe")
 
-    if os.path.isfile(target):
+    if os.path.isfile(target) and not force:
         print("已存在: {}".format(target))
-        return target
+        version = verify_tectonic(target)
+        if version:
+            print("  自检通过: {}".format(version))
+            return target
+        print("  自检未通过，重新安装")
 
     for tag, name, url in _asset_candidates():
         payload = None
@@ -100,32 +147,61 @@ def install():
         if payload is None:
             continue
 
+        # 先落到临时名，验证通过再改名 —— 避免把一个跑不起来的 exe 留在目标位置
+        staging = target + ".new"
         with zipfile.ZipFile(io.BytesIO(payload)) as archive:
             members = [m for m in archive.namelist() if m.lower().endswith("tectonic.exe")]
             if not members:
                 raise RuntimeError("zip 内未找到 tectonic.exe，内容: {}".format(archive.namelist()[:10]))
-            with archive.open(members[0]) as src, open(target, "wb") as dst:
+            with archive.open(members[0]) as src, open(staging, "wb") as dst:
                 dst.write(src.read())
 
-        print("安装完成: {}".format(target))
+        print("  验证 {} ...".format(name))
+        version = verify_tectonic(staging)
+        if not version:
+            print("  这个构建在本机不可用，换下一个候选")
+            try:
+                os.remove(staging)
+            except OSError:
+                pass
+            continue
+
+        if os.path.isfile(target):
+            try:
+                os.remove(target)
+            except OSError:
+                pass
+        os.replace(staging, target)
+        print("安装完成: {}（{}）".format(target, version))
         return target
 
-    raise RuntimeError("所有镜像与版本均下载失败")
+    raise RuntimeError("所有镜像与版本均下载失败（或下载到的构建都跑不起来）")
 
 
 def main():
     parser = argparse.ArgumentParser(description="安装 tectonic")
-    parser.parse_args()
+    parser.add_argument("--force", action="store_true", help="即使已存在也重新下载")
+    parser.add_argument("--check", action="store_true", help="只验证现有 tectonic")
+    args = parser.parse_args()
+
+    target = os.path.join(INSTALL_DIR, "tectonic.exe")
+    if args.check:
+        if not os.path.isfile(target):
+            print("未安装: {}".format(target))
+            return 1
+        version = verify_tectonic(target)
+        print("tectonic: {}".format(version) if version else "tectonic 不可用")
+        return 0 if version else 1
 
     try:
-        install()
+        install(force=args.force)
         print("\n下一步：pv_env 会把 {} 前置到 PATH，直接运行即可。".format(INSTALL_DIR))
         return 0
     except Exception as exc:
         print("\n安装失败: {}".format(exc))
         print("可手动下载（镜像）：")
         print("  https://ghproxy.net/https://github.com/tectonic-typesetting/tectonic/releases")
-        print("解压 tectonic.exe 到 {}".format(INSTALL_DIR))
+        print("请选 **msvc** 构建，解压 tectonic.exe 到 {}".format(INSTALL_DIR))
         return 1
 
 

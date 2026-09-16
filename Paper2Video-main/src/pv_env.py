@@ -116,6 +116,22 @@ if os.path.isdir(TOOLS_BIN):
     if TOOLS_BIN not in _path_parts:
         os.environ["PATH"] = TOOLS_BIN + os.pathsep + os.environ.get("PATH", "")
 
+# ── 中文路径兼容层 ──
+# 项目路径含中文（E:\Development\26年\...）。Python 自己的 IO 走宽字符 API 没问题，
+# 但**编译型扩展在 C/C++ 层用窄字符路径打开文件会失败**。实测 nagisa 的模型由
+# DyNet(C++) 加载，报 "Could not read model from ...\26年\...\nagisa_v001.model"；
+# 而 qwen_asr 在模块顶层 import nagisa（只为日文对齐），一个可选功能就把整个
+# qwen_asr 拖成不可导入。
+#
+# scripts/fix_cjk_path.py 会把这类包镜像到纯英文目录。这里把该目录前置到
+# sys.path，使 import 命中英文副本。必须在任何 import qwen_asr 之前生效，
+# 所以放在模块导入期执行（pv_env 是流水线的首个导入）。
+#
+# 用 insert 而非 append：site-packages 已在 sys.path 中，只有前置才能覆盖它。
+VENDOR_DIR = os.environ.get("PAPER2VIDEO_VENDOR") or os.path.join(_DEFAULT_ROOT, "vendor")
+if os.path.isdir(VENDOR_DIR) and VENDOR_DIR not in sys.path:
+    sys.path.insert(0, VENDOR_DIR)
+
 
 def model_path(repo_id):
     """返回本地权重目录（若已下载），否则原样返回 repo_id 交给缓存解析。

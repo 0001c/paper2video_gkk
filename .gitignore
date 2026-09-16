@@ -203,3 +203,6 @@ Paper2Video-main/**/*.log
 Paper2Video-main/**/*.fls
 Paper2Video-main/**/*.fdb_latexmk
 Paper2Video-main/**/*.synctex.gz
+
+# 由 scripts/install_avatar_deps.py 生成的过滤版依赖清单
+requirements_local.txt

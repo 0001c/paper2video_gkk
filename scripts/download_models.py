@@ -76,49 +76,55 @@ CATALOG = {
         "eval", "音色相似度：CAM++ 说话人验证（替换 SpeechBrain ECAPA）", 0.03, "modelscope"),
 
     # ── Phase 3：数字人（体量大，前面跑通再下）──
-    "Wan-AI/Wan2.1-I2V-14B-480P": (
-        "phase3", "InfiniteTalk 底模：Wan2.1 图生视频 14B（只取 config/VAE/CLIP/tokenizer）", 5.1, "modelscope"),
-    "MeiGen-AI/InfiniteTalk": (
-        "phase3", "音频驱动数字人 adapter（fp8 量化路径，仓库全量 157GB）", 25.0, "modelscope"),
-    "TencentGameMate/chinese-wav2vec2-base": (
-        "phase3", "InfiniteTalk 音频编码器", 0.4, "modelscope"),
+    # 2026-09-17 换型：InfiniteTalk 退役（其 fp8 路径在 Windows 上会触发 quanto
+    # 的 marlin CUDA 扩展 JIT 编译），改用美团 LongCat-Video-Avatar-1.5。
+    # 组件布局由 run_demo_avatar_single_audio_to_video.py:113-147 决定：
+    #   checkpoint_dir/../LongCat-Video  -> tokenizer / text_encoder(UMT5) / vae / scheduler
+    #   checkpoint_dir                   -> base_model_int8 / lora / whisper-large-v3
+    #                                       / vocal_separator / scheduler
+    "meituan-longcat/LongCat-Video": (
+        "phase3", "数字人底模：只取 tokenizer + UMT5 文本编码器 + VAE（仓库另含 50.6GB bf16 dit 与 5.3GB lora，均用不到）",
+        21.7, "huggingface"),
+    "meituan-longcat/LongCat-Video-Avatar-1.5": (
+        "phase3", "音频驱动数字人：int8 DiT + DMD 蒸馏 LoRA + Whisper-large-v3 + 人声分离 ONNX",
+        20.5, "huggingface"),
 }
 
 # 各仓库的白名单前缀。没有条目的仓库 = 全量下载。
 #
-# ⚠️ Phase 3 这三个仓库必须白名单，否则会多下约 100 GB。依据是 wan/multitalk.py
-# 的两条互斥分支（在 16 GB 卡上我们必须走量化那条）：
+# ⚠️ 这两个 LongCat 仓库必须白名单，否则会多下约 105 GB：
 #
-#   if quant is not None:                      # ← 我们走这里（fp8）
-#       model_state_dict = load_file(quant_dir)   # 单文件即「已合并 adapter 的量化 DiT」
-#       ...
-#   else:
-#       if dit_path is None:
-#           weight_files = [7 个 diffusion_pytorch_model-*.safetensors,  # 62.5 GB
-#                           f"{infinitetalk_dir}"]                       # 9.5 GB
+#   LongCat-Video 全仓 77.6 GB —— 其中 dit/(50.6GB, bf16) 与 lora/(5.3GB) 用不到。
+#   我们走 int8 DiT（在 Avatar 仓库内），底模只借 tokenizer + text_encoder + vae + scheduler。
 #
-# 也就是说，**量化分支根本不加载那 7 个 bf16 分片，也不用 infinitetalk_dir**
-# （它只在上面 else 分支的第 219 行被用到）；底模仓库里真正要读的只有
-# config.json（第 197 行）、VAE、CLIP 与两个 tokenizer。T5 权重也由
-# quant_models/t5_fp8.safetensors 顶替（t5.py 第 506-508 行按
-# `os.path.dirname(quant_dir)/t5_{quant}.safetensors` 去找）。
+#   Avatar 全仓 69.8 GB —— 三处旁支：
+#     · base_model/(30.2GB, bf16)  16GB 卡装不下，改走 base_model_int8/(15.1GB)
+#     · whisper-large-v3/ 内含 flax_model.msgpack(5.9GB) 与三份重复的 fp32 分片
+#       （model.fp32-*、pytorch_model.bin、pytorch_model.fp32-*），共约 26GB 冗余，
+#       只要一份 model.safetensors
+#     · assets/（视频样片）与其它用不到的量化变体
 ALLOW_PATTERNS = {
-    "MeiGen-AI/InfiniteTalk": [
-        "quant_models/infinitetalk_single_fp8",   # .safetensors + .json 地图
-        "quant_models/t5_fp8",                    # fp8 文本编码器
-        "quant_models/t5_map_fp8",                # T5 量化映射表
-        "README.md", "LICENSE.txt", ".gitattributes",
+    "meituan-longcat/LongCat-Video": [
+        "tokenizer/", "text_encoder/", "vae/", "scheduler/",
+        "README.md", ".gitattributes",
     ],
-    "Wan-AI/Wan2.1-I2V-14B-480P": [
+    "meituan-longcat/LongCat-Video-Avatar-1.5": [
+        "base_model_int8/",                      # int8 DiT + 量化 index
+        "lora/dmd_lora.safetensors",             # DMD2 蒸馏 LoRA（8 步采样必需）
+        "whisper-large-v3/model.safetensors",    # v1.5 音频编码器权重
+        "whisper-large-v3/config.json",
+        "whisper-large-v3/generation_config.json",
+        "whisper-large-v3/preprocessor_config.json",
+        "whisper-large-v3/tokenizer.json",
+        "whisper-large-v3/tokenizer_config.json",
+        "whisper-large-v3/special_tokens_map.json",
+        "whisper-large-v3/added_tokens.json",
+        "whisper-large-v3/normalizer.json",
+        "whisper-large-v3/vocab.json",
+        "whisper-large-v3/merges.txt",
+        "vocal_separator/Kim_Vocal_2.onnx",      # 人声分离（混音/多人场景）
+        "scheduler/scheduler_config.json",
         "config.json",
-        "Wan2.1_VAE.pth",
-        "models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth",
-        "xlm-roberta-large/",       # CLIP 的 tokenizer
-        "google/umt5-xxl/",         # T5 的 tokenizer（权重由 t5_fp8 顶替）
-        "LICENSE.txt", ".gitattributes",
-    ],
-    "TencentGameMate/chinese-wav2vec2-base": [
-        "pytorch_model.bin", "config.json", "preprocessor_config.json",
         "README.md", ".gitattributes",
     ],
 }
@@ -508,7 +514,7 @@ def main():
     global WEIGHTS_DIR
 
     parser = argparse.ArgumentParser(description="下载 Paper2Video 模型权重")
-    parser.add_argument("--group", choices=["phase1", "eval", "phase3", "all"],
+    parser.add_argument("--group", choices=sorted({g for g, _, _, _ in CATALOG.values()}) + ["all"],
                         help="按分组下载")
     parser.add_argument("--model", action="append", help="指定 repo_id，可重复")
     parser.add_argument("--source", choices=["auto", "modelscope", "huggingface"], default="auto")

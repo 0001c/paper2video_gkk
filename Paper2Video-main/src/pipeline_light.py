@@ -46,6 +46,8 @@ from slide_code_gen_select_improvement import latex_code_gen_upgrade
 from cursor_render import render_video_with_cursor_from_json
 from subtitle_cursor_prompt_gen import subtitle_cursor_gen
 
+import language_config
+
 from wei_utils import get_agent_config
 
 
@@ -72,9 +74,14 @@ if __name__ == "__main__":
     parser.add_argument("--model_name_v", type=str, default="deepseek-flash")
     parser.add_argument("--paper_latex_root", type=str, default="./assets/demo/latex_proj")
     parser.add_argument("--ref_img", type=str, default="./assets/demo/zeyu.png")
-    parser.add_argument("--ref_audio", type=str, default="./assets/demo/zeyu.wav")
+    # ⚠️ 默认必须是 None 而不是某个固定路径：否则下面的
+    # `args.ref_audio or lang["ref_audio"]` 永远选中这里写的路径，
+    # 语言档位里的参考音频就永远生效不了（中文模式会错用英文参考音频）。
+    parser.add_argument("--ref_audio", type=str, default=None,
+                        help="参考音频（音色克隆源）；不填则按 --video_lang 自动选："
+                             "en -> assets/demo/zeyu.wav，zh -> assets/demo/zeyu_zh.wav")
     parser.add_argument("--ref_text", type=str, default=None,
-                        help="参考音频的文本；不填则用 Qwen3-ASR 自动转写一次")
+                        help="参考音频的文本；不填则优先读同名 .txt，再退回 Qwen3-ASR 转写")
     parser.add_argument("--gpu_list", type=str, default="0",
                         help="逗号分隔的 GPU 序号；单卡填 0。留空会被兜底为 0")
     parser.add_argument("--if_tree_search", type=str2bool, default=True)
@@ -84,7 +91,19 @@ if __name__ == "__main__":
                         choices=["qwen3tts", "f5"],
                         help="语音合成后端；qwen3tts 为默认（Apache-2.0）")
     parser.add_argument("--tts_language", type=str, default=None,
-                        help="TTS/对齐语种；留空自动适配（中英混排推荐）")
+                        help="TTS/对齐语种；留空则跟随语言档位（见 --video_lang）")
+    parser.add_argument("--video_lang", type=str, default=None,
+                        choices=sorted(language_config.VIDEO_PRESETS),
+                        help="输出语言预设，一次性定下「幻灯片语言 + 讲稿语言」。"
+                             "en=全英文（国际会议）；"
+                             "zh=英文幻灯片 + 中文讲解（国内组会/中文答辩）。"
+                             "细节见 language_config.py")
+    parser.add_argument("--slide_lang", type=str, default=None,
+                        choices=sorted(language_config.SLIDE_LANGS),
+                        help="只指定幻灯片语言（覆盖 --video_lang 的这一轴）")
+    parser.add_argument("--script_lang", type=str, default=None,
+                        choices=sorted(language_config.SCRIPT_LANGS),
+                        help="只指定讲稿/TTS/字幕语言（覆盖 --video_lang 的这一轴）")
     parser.add_argument("--talking_head_env", type=str, default="")
     parser.add_argument("--skip_slide_gen", type=str2bool, default=False,
                         help="跳过 LLM 生成幻灯片，直接编译现有 slides.tex（调参时省 token）")
@@ -93,6 +112,16 @@ if __name__ == "__main__":
     stage = json.loads(args.stage)
     print("start", "stage:", stage, "gpu_list:", args.gpu_list)
     pv_env.print_banner()
+
+    # 语言档位：把「幻灯片语言 / 讲稿语言」两个轴解析成一份完整配置。
+    # 没显式给 --ref_audio / --ref_text 时跟随语言档位 —— 中文讲稿要用中文参考
+    # 音频（不同语言共用一段参考音频会让音色和发音都别扭）。
+    lang = language_config.resolve(args.slide_lang, args.script_lang, args.video_lang)
+    print("[pipeline] 语言档位：{}".format(lang["desc"]))
+    args.ref_audio = args.ref_audio or lang["ref_audio"]
+    args.ref_text = args.ref_text or lang["ref_text"]
+    if not args.tts_language:
+        args.tts_language = lang["tts_language"]
 
     cursor_img_path = "./cursor_image/red.png"
     os.makedirs(args.result_dir, exist_ok=True)
@@ -129,7 +158,9 @@ if __name__ == "__main__":
             beamer_path = slide_latex_path.replace(".tex", ".pdf")
             usage_slide = {}
         else:
-            prompt_path = "./prompts/slide_beamer_prompt.txt"
+            # 幻灯片 prompt 由语言档位决定（中文幻灯片那一路尚未实现，
+            # 见 language_config.SLIDE_LANGS 的注释）
+            prompt_path = lang["slide_prompt"]
             usage_slide, beamer_path = latex_code_gen_upgrade(
                 prompt_path=prompt_path, tex_dir=args.paper_latex_root,
                 beamer_save_path=slide_latex_path,
@@ -166,7 +197,7 @@ if __name__ == "__main__":
     if "2" in stage or "0" in stage:
         start_time = time.time()
 
-        prompt_path = "prompts/slide_subtitle_cursor_prompt.txt"
+        prompt_path = lang["script_prompt"]
         subtitle, usage_subtitle = subtitle_cursor_gen(slide_image_dir, prompt_path, agent_config_v)
         with open(subtitle_cursor_save_path, "w", encoding="utf-8") as handle:
             handle.write(subtitle)
@@ -204,7 +235,10 @@ if __name__ == "__main__":
             slide_audio_dir=speech_save_dir,
             cursor_save_path=cursor_save_path,
             gpu_list=args.gpu_list,
-            language=args.tts_language or "English",
+            # 用档位里的 align_language 而不是 tts_language：这两者虽然
+            # 目前取值相同，但语义不同（一个是合成语种、一个是强制对齐的语种），
+            # 分开后将来「中文讲稿配英文参考音频」之类才不会串。
+            language=lang["align_language"],
         )
         token_usage["cursor"] = cursor_token
         after_cursor = time.time()
@@ -250,7 +284,8 @@ if __name__ == "__main__":
         # 烧字幕（时间轴复用 cursor.json，无需二次转写）
         tmp_merage_3 = os.path.join(args.result_dir, "3_merage.mp4")
         add_subtitles(tmp_merage_2, tmp_merage_3, size // 10,
-                      cursor_json_path=cursor_save_path)
+                      cursor_json_path=cursor_save_path,
+                      font_name=lang["subtitle_font"])
 
         elapsed = time.time()
         time_second["merage"] = [elapsed - start_time]

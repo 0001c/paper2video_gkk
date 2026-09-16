@@ -19,6 +19,7 @@ from os import path
 
 # pv_env 必须最先导入：它负责加载 .env、把缓存指向 E 盘、并把工具目录前置到 PATH
 import pv_env
+import language_config
 from pdf_render import render_pdf_to_images
 
 from speech_gen import tts_per_slide
@@ -78,8 +79,25 @@ if __name__ == '__main__':
                              'longcat 后端另有 local-16g / server-8xa6000')
     parser.add_argument('--paper_latex_root', type=str, default='./assets/demo/latex_proj')
     parser.add_argument('--ref_img', type=str, default='./assets/demo/zeyu.png')
-    parser.add_argument('--ref_audio', type=str, default='./assets/demo/zeyu.wav')
-    parser.add_argument('--ref_text', type=str, default=None)
+    # ⚠️ 默认必须是 None 而不是固定路径：否则下面 `args.ref_audio or lang[...]`
+    # 永远选中这里写的路径，语言档位里的参考音频就永远生效不了。
+    parser.add_argument('--ref_audio', type=str, default=None,
+                        help='参考音频（音色克隆源）；不填则按 --video_lang 自动选')
+    parser.add_argument('--ref_text', type=str, default=None,
+                        help='参考音频文本；不填则优先读同名 .txt，再退回 ASR 转写')
+    parser.add_argument('--tts_model', type=str, default='qwen3tts',
+                        choices=['qwen3tts', 'f5'],
+                        help='语音合成后端；qwen3tts 为默认（Apache-2.0）')
+    parser.add_argument('--video_lang', type=str, default=None,
+                        choices=sorted(language_config.VIDEO_PRESETS),
+                        help='输出语言预设：en=全英文（国际会议）；'
+                             'zh=英文幻灯片 + 中文讲解（国内组会/中文答辩）')
+    parser.add_argument('--slide_lang', type=str, default=None,
+                        choices=sorted(language_config.SLIDE_LANGS),
+                        help='只指定幻灯片语言（覆盖 --video_lang 的该轴）')
+    parser.add_argument('--script_lang', type=str, default=None,
+                        choices=sorted(language_config.SCRIPT_LANGS),
+                        help='只指定讲稿/TTS/字幕语言（覆盖 --video_lang 的该轴）')
     parser.add_argument('--gpu_list', type=str2list, default="")
     parser.add_argument('--if_tree_search', type=str2bool, default=True)
     parser.add_argument('--beamer_templete_prompt', type=str, default=None)
@@ -92,6 +110,13 @@ if __name__ == '__main__':
     args = parser.parse_args()
     stage = json.loads(args.stage)
     print("start", "stage:", stage, args.gpu_list)
+
+    # 语言档位：把「幻灯片语言 / 讲稿语言」两个轴解析成一份完整配置。
+    lang = language_config.resolve(args.slide_lang, args.script_lang,
+                                   args.video_lang)
+    print("[pipeline] 语言档位：{}".format(lang["desc"]))
+    args.ref_audio = args.ref_audio or lang["ref_audio"]
+    args.ref_text = args.ref_text or lang["ref_text"]
     
     cursor_img_path = "./cursor_image/red.png"
     os.makedirs(args.result_dir, exist_ok=True) # result dir
@@ -127,7 +152,7 @@ if __name__ == '__main__':
     
     start_time = time.time() # start time
     if "1" in stage or  "0" in stage:
-        prompt_path = "./prompts/slide_beamer_prompt.txt"
+        prompt_path = lang["slide_prompt"]
         if args.if_tree_search is True: 
             usage_slide, beamer_path = latex_code_gen_upgrade(prompt_path=prompt_path, tex_dir=args.paper_latex_root, beamer_save_path=slide_latex_path, 
                                                             model_config_ll=agent_config_t, model_config_vl=agent_config_v, beamer_temp_name=args.beamer_templete_prompt,
@@ -154,7 +179,7 @@ if __name__ == '__main__':
 
     speech_save_dir = path.join(args.result_dir, 'audio')
     if "2" in stage or  "0" in stage:
-        prompt_path = "./prompts/slide_subtitle_cursor_prompt.txt"
+        prompt_path = lang["script_prompt"]
         subtitle, usage_subtitle = subtitle_cursor_gen(slide_image_dir, prompt_path, agent_config_v)
         with open(subtitle_cursor_save_path, 'w') as f: f.write(subtitle)
         if args.model_name_v not in token_usage.keys(): 
@@ -165,8 +190,12 @@ if __name__ == '__main__':
         print("Subtitle and Cursor Prompt Generation", step2_time-start_time)
 
         ## Step 3-1: Speech Generation
-        tts_per_slide(model_type='f5', script_path=subtitle_cursor_save_path, 
-                    speech_save_dir=speech_save_dir, ref_audio=args.ref_audio, ref_text=args.ref_text)  
+        # ⚠️ 原来写死 model_type='f5'，而 F5-TTS 已因许可证（CC-BY-NC）从默认
+        # 依赖里移除，speech_gen.inference_f5 会直接抛 RuntimeError
+        # -> 主流水线的 stage 2 曾经必然失败。改为可配置，默认 qwen3tts。
+        tts_per_slide(model_type=args.tts_model, script_path=subtitle_cursor_save_path,
+                    speech_save_dir=speech_save_dir, ref_audio=args.ref_audio,
+                    ref_text=args.ref_text, language=lang["tts_language"])  
         step3_1_time =  time.time()
         time_second["tts"] = [step3_1_time-step2_time]
         print("Speech Generation", step3_1_time-step2_time)
@@ -174,7 +203,8 @@ if __name__ == '__main__':
         ## Step 3-2: Cursor Generation
         os.environ["PYTHONHASHSEED"] = "random"        
         cursor_token = cursor_gen_per_sentence(script_path=subtitle_cursor_save_path, slide_img_dir=slide_image_dir, 
-                                slide_audio_dir=speech_save_dir, cursor_save_path=cursor_save_path, gpu_list=args.gpu_list)
+                                slide_audio_dir=speech_save_dir, cursor_save_path=cursor_save_path, gpu_list=args.gpu_list,
+                                language=lang["align_language"])
         token_usage["cursor"] = cursor_token
         step3_2_time =  time.time()
         time_second["cursor_gen"] = [step3_2_time-step3_1_time]
@@ -224,7 +254,8 @@ if __name__ == '__main__':
         # render subtitle
         front_size = size//10
         tmp_merage_3 = path.join(args.result_dir, "3_merage.mp4")
-        add_subtitles(tmp_merage_2, tmp_merage_3, size//10)
+        add_subtitles(tmp_merage_2, tmp_merage_3, size//10,
+                      font_name=lang["subtitle_font"])
         step5_time =  time.time()
         time_second["merage"] = [step5_time-step4_time]
         print("Merage", step5_time-step4_time)

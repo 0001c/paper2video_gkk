@@ -60,10 +60,16 @@ PYPI = "https://pypi.tuna.tsinghua.edu.cn/simple"
 TORCH_INDEX = "https://mirror.sjtu.edu.cn/pytorch-wheels/cu128/"
 
 # ── 依赖裁剪规则 ─────────────────────────────────────────────────────
-# 完全丢弃（改用别的装法或不需要）
-DROP = {"torch", "flash-attn", "libsndfile1"}
+# 完全丢弃（改用别的装法、不需要、或源码里零引用）
+DROP = {
+    "torch",            # 改为本地 wheel 装 cu128 版（见 [1/4] 步骤）
+    "flash-attn",       # 改用 xformers（有官方 win wheel，无需编译）
+    "libsndfile1",      # PyPI 上是占位包，上游用 conda 装法
+    "tritonserverclient",  # 源码零引用（Triton 推理服务器客户端，数字人用不到）；
+                           # 且 PyPI 上根本没有可装版本，作者装的是内部源
+}
 # 放宽上界/钉版（上游的钉版在 cp312 上装不上）
-RELAX = {"onnxruntime", "tritonserverclient", "tritonserver"}
+RELAX = {"onnxruntime"}
 
 
 def log(msg=""):

@@ -171,7 +171,7 @@ def main():
 
     ok = True
     print()
-    print("[1/2] 把 triton 依赖改为按需（2 个文件，共 4 处）")
+    print("[1/3] 把 triton 依赖改为按需（2 个文件，共 4 处）")
     touched = set()
     for rel, old, new, desc in build_text_patches():
         path = os.path.join(root, rel)
@@ -183,12 +183,29 @@ def main():
         touched.add(path)
 
     print()
-    print("[2/2] 注意力后端：flashattn2 -> xformers")
+    print("[2/3] 注意力后端：flashattn2 -> xformers")
     config_path = os.path.join(weights, "base_model_int8", "config.json")
     state = patch_attention_config(config_path, dry)
     print("      {}".format(state))
     if "不存在" in state:
         ok = False
+
+    # [3/3] 部署单卡精简推理入口 avatar_infer.py（替代有 Linux/分布式硬伤的 demo）
+    infer_src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "longcat_patches", "avatar_infer.py")
+    infer_dst = os.path.join(root, "avatar_infer.py")
+    print()
+    print("[3/3] 部署精简推理入口 avatar_infer.py")
+    if not os.path.isfile(infer_src):
+        print("      源缺失：{}".format(infer_src))
+        ok = False
+    elif dry:
+        print("      {} -> {}（--check 模式，未写入）".format(
+            os.path.basename(infer_src), os.path.basename(infer_dst)))
+    else:
+        import shutil as _shutil
+        _shutil.copyfile(infer_src, infer_dst)
+        print("      已部署 {} -> {}".format(infer_src, infer_dst))
 
     # 语法自检：文本替换很容易把缩进改坏，必须当场拦住
     print()

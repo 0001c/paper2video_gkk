@@ -57,8 +57,9 @@ if __name__ == '__main__':
     parser.add_argument('--result_dir', type=str, default='./result/zeyu')
     parser.add_argument('--model_name_t', type=str, default='deepseek-flash') 
     parser.add_argument('--model_name_v', type=str, default='deepseek-flash') 
-    # 数字人后端：hallo2 在本机不可用（cu118 无 sm_120 目标），默认换成 InfiniteTalk
-    parser.add_argument('--model_name_talking', type=str, default='infinitetalk')
+    # 数字人后端：hallo2（cu118 无 sm_120）与 InfiniteTalk（fp8 需现场编译 quanto CUDA
+    # 扩展）均在本机不可用，默认换成 LongCat-Video-Avatar-1.5（xformers，无需编译）
+    parser.add_argument('--model_name_talking', type=str, default='longcat')
     parser.add_argument('--talking_profile', type=str, default=None,
                         help='数字人运行档位（见 talking_config.py）：'
                              'local-16g 本机单卡 / server-8xa6000 预留多卡档位')

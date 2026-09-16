@@ -1,14 +1,17 @@
-"""数字人生成（Talking Head）—— InfiniteTalk 后端。
+"""数字人生成（Talking Head）—— LongCat-Video-Avatar-1.5 后端。
 
-替换说明（2026-09，详见 docs/模型替换方案.md）
-----------------------------------------------
-Hallo2 -> MeiGen-AI/InfiniteTalk
-    1. **Hallo2 在本机根本装不上**：官方锁 torch 2.2.2 / cu118，而 cu118 没有
-       sm_120 编译目标，RTX 5070 Ti(Blackwell) 装上即报算力不支持。
-       InfiniteTalk 以 Wan2.1-I2V-14B-480P 为基座，官方要求 CUDA>=12.8，正好解掉。
-    2. 时长：Hallo2 单次生成有硬上限；InfiniteTalk 用 streaming + 时序上下文帧，
-       可无限长。我们每页音频 14~20s，必须靠它。
-    3. 许可证：Apache-2.0。
+替换说明（2026-09-17，详见 docs/模型替换方案.md）
+------------------------------------------------
+Hallo2 -> InfiniteTalk -> **LongCat-Video-Avatar-1.5（美团，MIT）**
+
+换型原因（简述）：
+- Hallo2 官方锁 torch 2.2.2/cu118，cu118 无 sm_120 编译目标，RTX 5070 Ti 装不上；
+- InfiniteTalk 的 fp8 权重加载会触发 quanto 的 marlin CUDA 扩展**现场 JIT 编译**，
+  而本机 nvcc 12.6 最高 compute_90（无 compute_120），只能编 9.0+PTX 且与
+  quanto 的 -DQUANTO_CUDA_ARCH=1200 宏是否冲突无法验证；
+- LongCat-Video-Avatar-1.5 是 diffusers 生态、自带 int8 量化 + DMD2 蒸馏（8 步）、
+  音频编码器为 Whisper-large-v3，注意力后端可用 xformers（官方 win wheel），
+  **全程无需现场编译任何扩展**。
 
 与合成环节的契约（务必保持）
 ----------------------------
@@ -16,20 +19,18 @@ Hallo2 -> MeiGen-AI/InfiniteTalk
 
     <save_dir>/<音频序号，0 起>/<参考图主文件名>/merge_video.mp4
 
-且**必须带音轨**。原因是 `1_merage.bash` / `merge_talking.py` 里写死了这个层级，
-并且会用 ffprobe 检查音轨、无音轨就跳过该页。层级里的 `(i-1)` 是因为幻灯片图片
-从 1.png 开始编号、而音频从 0.wav 开始。
+且**必须带音轨**。原因是 `merge_talking.py` 里写死了这个层级，并且会用
+ffprobe 检查音轨、无音轨就跳过该页。层级里的 `(i-1)` 是因为幻灯片图片从
+1.png 开始编号、而音频从 0.wav 开始。
 
 中文路径的处理（本机特有，但不难）
 ----------------------------------
-本机项目路径是 `E:\\Development\\26年\\...`，**含中文**；而 InfiniteTalk 明确要求
-纯英文路径（其依赖的 cv2 / ffmpeg / 各种 C 扩展在窄字符 API 上会读不到文件）。
-因此这里不直接把中文路径喂给它，而是：
+本机项目路径是 `E:\\Development\\26年\\...`，**含中文**。稳妥起见沿用 ASCII
+暂存机制（虽然 LongCat 不像 InfiniteTalk 那样明确要求纯英文路径，但 torch/
+ffmpeg/librosa 的窄字符 API 在不同环节读中文路径都可能翻车，统一隔离更稳）：
 
     参考图/音频 -> 复制到 ASCII 工作区 -> 在 ASCII 工作区里生成
     -> 把生成的 mp4 搬回中文路径下的目标位置
-
-对 InfiniteTalk 来说它只见到纯英文路径，对上层则完全透明。
 
 运行档位（单卡 / 8×A6000）见 talking_config.py，本文件不写死任何显存策略。
 """
@@ -43,23 +44,22 @@ from os import path
 import pv_env
 from talking_config import (
     TalkingPaths,
-    build_infinitetalk_command,
+    build_avatar_command,
     describe_profile,
     resolve_profile,
 )
 
-# InfiniteTalk 代码根目录（纯英文路径；仓库内自带 wan/、src/、kokoro/，
+# LongCat 代码根目录（纯英文路径；仓库内自带 longcat_video/ 包，
 # 因此运行时的 cwd 必须是它）
-INFINITETALK_ROOT = os.environ.get(
-    "PAPER2VIDEO_INFINITETALK_ROOT", r"E:\ai-models\InfiniteTalk")
+LONGCAT_ROOT = os.environ.get(
+    "PAPER2VIDEO_LONGCAT_ROOT", r"E:\ai-models\LongCat-Video")
 
-# 专用 venv（对应上游的 --talking_head_env；numpy<2 决定了必须用 Python 3.12）
-INFINITETALK_PYTHON = os.environ.get(
-    "PAPER2VIDEO_INFINITETALK_PYTHON",
-    os.path.join(INFINITETALK_ROOT, ".venv", "Scripts", "python.exe"))
+# 专用 venv（对应上游的 --talking_head_env；numpy==1.26.4 决定了必须用 Python 3.12）
+LONGCAT_PYTHON = os.environ.get(
+    "PAPER2VIDEO_LONGCAT_PYTHON",
+    os.path.join(LONGCAT_ROOT, ".venv", "Scripts", "python.exe"))
 
 # 数字人场景描述。参考图已经决定了人物长相，prompt 主要描述「场景/动作/镜头」。
-# InfiniteTalk 的 prompt 用英文效果最好；可按需用环境变量覆盖。
 DEFAULT_TALKING_PROMPT = os.environ.get(
     "PAPER2VIDEO_TALKING_PROMPT",
     "A person is presenting an academic talk, speaking to the camera with natural "
@@ -70,26 +70,21 @@ DEFAULT_TALKING_PROMPT = os.environ.get(
 def resolve_paths(env_python=None) -> TalkingPaths:
     """把各权重目录解析成一套路径。
 
-    权重目录全部走 pv_env 的 `org__name` 约定（与主链路一致），
-    这样换机器时只要 PAPER2VIDEO_WEIGHTS 指向别处即可。
+    注意 LongCat 的目录名必须叫 `LongCat-Video`（不能带 org__ 前缀），因为
+    上游按 `checkpoint_dir/../LongCat-Video` 找底模。这些目录名由
+    scripts/download_models.py 的 LOCAL_DIR 例外表保证。
     """
     weights = pv_env.WEIGHTS_DIR
     return TalkingPaths(
-        repo_dir=INFINITETALK_ROOT,
-        env_python=env_python or INFINITETALK_PYTHON,
-        ckpt_dir=os.path.join(weights, "Wan-AI__Wan2.1-I2V-14B-480P"),
-        wav2vec_dir=os.path.join(weights, "TencentGameMate__chinese-wav2vec2-base"),
-        quant_dir=os.path.join(weights, "MeiGen-AI__InfiniteTalk", "quant_models"),
-        infinitetalk_dir=os.path.join(weights, "MeiGen-AI__InfiniteTalk", "single"),
+        repo_dir=LONGCAT_ROOT,
+        env_python=env_python or LONGCAT_PYTHON,
+        checkpoint_dir=os.path.join(weights, "LongCat-Video-Avatar-1.5"),
+        base_dir=os.path.join(weights, "LongCat-Video"),
     )
 
 
 def _ascii_workspace(idx):
-    """为第 idx 页准备一个纯英文工作区，并返回其路径。
-
-    落在 pv_env.TMP_DIR（本机是 E:\\ai-models\\tmp）—— 整条路径不含中文，
-    这是 InfiniteTalk 能正常读文件的前提。
-    """
+    """为第 idx 页准备一个纯英文工作区，并返回其路径。"""
     root = os.path.join(pv_env.TMP_DIR, "talking", str(idx))
     os.makedirs(root, exist_ok=True)
     return root
@@ -98,13 +93,9 @@ def _ascii_workspace(idx):
 def _stage_inputs(workspace, ref_img_path, audio_path):
     """把参考图与音频复制进 ASCII 工作区，返回暂存后的路径。
 
-    参考图会在这里被**居中裁成正方形**。原因是 InfiniteTalk 明确要求参考图为
-    「正方形人像」，而项目自带的 `zeyu.png` 实测是 **658x660**（差 2 像素）。
-    与其指望使用者每次都先裁好，不如在这一步保证 —— 差几像素就非正方形，
-    真出问题时几乎不会有人联想到是这个原因。
-
-    同时把透明通道合成到白底：PNG 直接 `convert("RGB")` 会把透明区域变黑，
-    人像边缘会糊出一圈黑边。
+    参考图会在这一层把透明通道合成到白底（PNG 直接 convert("RGB") 会把透明
+    区域变黑），并把音频统一转成 16k 单声道 wav（LongCat 的音频编码器与
+    librosa.load(sr=16000) 都按这个约定）。
     """
     from PIL import Image
 
@@ -117,12 +108,7 @@ def _stage_inputs(workspace, ref_img_path, audio_path):
             image = flat
         else:
             image = handle.convert("RGB")
-
-        width, height = image.size
-        side = min(width, height)
-        left = (width - side) // 2
-        top = (height - side) // 2
-        image.crop((left, top, left + side, top + side)).save(staged_img)
+        image.save(staged_img)
 
     staged_audio = os.path.join(workspace, "driving_audio" +
                                 path.splitext(audio_path)[1])
@@ -131,10 +117,10 @@ def _stage_inputs(workspace, ref_img_path, audio_path):
 
 
 def _write_input_json(workspace, staged_img, staged_audio, prompt):
-    """写 InfiniteTalk 的输入描述文件（单人的 cond_audio 键固定为 person1）。"""
+    """写 LongCat 的输入描述文件（与上游 demo 的 JSON 约定一致）。"""
     payload = {
         "prompt": prompt,
-        "cond_video": staged_img,
+        "cond_image": staged_img,
         "cond_audio": {"person1": staged_audio},
     }
     json_path = os.path.join(workspace, "input.json")
@@ -143,7 +129,7 @@ def _write_input_json(workspace, staged_img, staged_audio, prompt):
     return json_path, payload
 
 
-def run_infinitetalk_inference(task):
+def run_avatar_inference(task):
     """生成一页数字人视频。
 
     ``task`` 是元组，便于未来接 multiprocessing（spawn 模式要求顶层可 pickle）：
@@ -153,7 +139,6 @@ def run_infinitetalk_inference(task):
     idx, ref_img_path, audio_path, save_dir, gpu_id, env_python, profile = task
 
     ref_stem = path.splitext(path.basename(ref_img_path))[0]
-    # 目标层级必须与 1_merage.bash 一致：<save_dir>/<idx>/<ref_stem>/merge_video.mp4
     target_dir = os.path.join(save_dir, str(idx), ref_stem)
     target_video = os.path.join(target_dir, "merge_video.mp4")
 
@@ -165,16 +150,15 @@ def run_infinitetalk_inference(task):
     workspace = _ascii_workspace(idx)
     staged_img, staged_audio = _stage_inputs(workspace, ref_img_path, audio_path)
     input_json, _ = _write_input_json(workspace, staged_img, staged_audio,
-                                     DEFAULT_TALKING_PROMPT)
+                                      DEFAULT_TALKING_PROMPT)
 
-    # save_file 给的是前缀，InfiniteTalk 会自己在后面补 .mp4
-    save_prefix = os.path.join(workspace, "out")
-    cmd = build_infinitetalk_command(profile, paths, input_json, save_prefix)
+    output_dir = os.path.join(workspace, "out")
+    os.makedirs(output_dir, exist_ok=True)
+    cmd = build_avatar_command(profile, paths, input_json, output_dir)
 
     env = os.environ.copy()
     if gpu_id is not None:
         env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-    # 让 InfiniteTalk 内部也复用主链路的缓存位置，避免写满 C 盘
     env.setdefault("HF_HOME", pv_env.HF_HOME)
 
     print("[talking_gen] 档位：{}".format(describe_profile(profile)))
@@ -182,9 +166,11 @@ def run_infinitetalk_inference(task):
     print("[talking_gen] 命令：{}".format(" ".join(cmd)))
 
     result = subprocess.run(cmd, cwd=paths.repo_dir, env=env)
-    produced = save_prefix + ".mp4"
+
+    # 推理脚本固定输出 avatar_out.mp4，并在 stdout 末尾打一行 AVATAR_OUTPUT=<path>
+    produced = os.path.join(output_dir, "avatar_out.mp4")
     if result.returncode != 0 or not path.exists(produced):
-        return idx, False, "InfiniteTalk 退出码={}，产物存在={}".format(
+        return idx, False, "LongCat 退出码={}，产物存在={}".format(
             result.returncode, path.exists(produced))
 
     os.makedirs(target_dir, exist_ok=True)
@@ -199,23 +185,22 @@ def talking_gen_per_slide(model_type, input_list, save_dir, gpu_list, env_path,
 
     参数
     ----
-    model_type : "infinitetalk"（新）或 "hallo2"（旧，本机不可用）
+    model_type : "longcat"（新）或 "infinitetalk"/"hallo2"（旧，本机不可用）
     input_list : [[参考图路径, 音频路径], ...]，一页一项
     save_dir   : 产物根目录
     gpu_list   : GPU 序号列表
-    env_path   : InfiniteTalk 专用解释器（上游的 --talking_head_env）
+    env_path   : 数字人专用解释器（上游的 --talking_head_env）
 
-    ⚠️ 这里是**串行**执行的，不再像上游那样开 Pool。原因是 InfiniteTalk 的并行
-       是在自己内部完成的：多卡时它用 torchrun 起 N 个 rank（FSDP + Ulysses），
-       外层再套一层 Pool 会变成「每个任务都开 N 张卡」的冲突用法。
-       所以单卡/多卡的差异只在 talking_config 的档位里，不在这里。
+    ⚠️ 这里**串行**执行，不再像上游那样开 Pool。多卡时 LongCat 用 torchrun +
+       context_parallel 在**内部**完成并行，外层再套 Pool 会变成「每个任务都开
+       N 张卡」的冲突用法。所以单卡/多卡的差异只在 talking_config 的档位里。
     """
-    if model_type not in ("infinitetalk", "hallo2"):
-        raise ValueError("未知的 model_type: {}（可选 infinitetalk / hallo2）".format(model_type))
-    if model_type == "hallo2":
+    if model_type not in ("longcat", "infinitetalk", "hallo2"):
+        raise ValueError("未知的 model_type: {}（可选 longcat / infinitetalk / hallo2）".format(model_type))
+    if model_type in ("infinitetalk", "hallo2"):
         raise NotImplementedError(
-            "hallo2 在本机不可用：官方锁 torch 2.2.2/cu118，而 cu118 无 sm_120 "
-            "编译目标，RTX 5070 Ti 无法运行。请使用 --model_name_talking infinitetalk。")
+            "{} 已退役：InfiniteTalk 的 fp8 加载需现场编译 quanto CUDA 扩展、"
+            "Hallo2 锁 cu118 无 sm_120。请使用 --model_name_talking longcat。".format(model_type))
 
     global DEFAULT_TALKING_PROMPT
     if prompt:
@@ -242,7 +227,7 @@ def talking_gen_per_slide(model_type, input_list, save_dir, gpu_list, env_path,
     print("[talking_gen] 待生成 {} 页，档位：{}".format(len(tasks), describe_profile(resolved)))
     results = []
     for task in tasks:
-        results.append(run_infinitetalk_inference(task))
+        results.append(run_avatar_inference(task))
 
     failures = [r for r in results if not r[1]]
     if failures:

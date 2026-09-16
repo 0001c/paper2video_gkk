@@ -105,12 +105,25 @@ def merge_slides_and_talking(slide_dir, talking_dir, output_dir, video_path,
             "没有任何可用分片：请先确认数字人视频已生成且带音轨"
             "（目录 {}）".format(talking_dir))
 
-    # 分片参数完全一致，可以无损拼接。list.txt 与分片同目录，避免上游那种
-    # 「list.txt 写 cwd、内容却是相对路径」的耦合。
+    # 分片参数完全一致，可以无损拼接。
+    #
+    # ⚠️ list 里的路径**必须是绝对路径**。ffmpeg 的 concat 解复用器把 list 里的
+    # 相对路径按「**list 文件所在目录**」解析，而不是按 cwd —— 与本文件原先写的
+    # cwd 相对路径（`../../result/xxx/merage/page_001.mp4`）一叠加，就变成了
+    #
+    #     <前导>/merage/../../result/xxx/merage/page_001.mp4
+    #
+    # ffmpeg 报 `Impossible to open ...`，且退出码是 4294967294（即 -2），
+    # 看起来像被信号杀掉，很不好读。
+    #
+    # 实测触发条件：`--result_dir` 传**相对**路径时必崩；传绝对路径时侥幸能过 ——
+    # 因为那时 `output_dir` 本身就是绝对的。这正是模块 docstring 里说的上游那个
+    # 「list 写在哪、内容相对谁」的耦合，本实现原本只挪了 list 的位置，没解决
+    # 内容这一半。改成 abspath 后两种传法都稳。
     list_path = path.join(output_dir, "concat_list.txt")
     with open(list_path, "w", encoding="utf-8") as handle:
         for seg in segments:
-            handle.write("file '{}'\n".format(_as_posix(seg)))
+            handle.write("file '{}'\n".format(_as_posix(path.abspath(seg))))
 
     _run([
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",

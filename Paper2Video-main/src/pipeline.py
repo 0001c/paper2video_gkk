@@ -43,7 +43,17 @@ def copy_folder(src_dir, dst_dir):
     os.makedirs(os.path.dirname(dst_dir), exist_ok=True)
     shutil.copytree(src_dir, dst_dir)
 
-def str2list(s): return [int(x) for x in s.split(',')]
+def str2list(s):
+    """把 "0,1" 解析成 [0, 1]。
+
+    ⚠️ 空串必须容忍：`--gpu_list` 的默认值就是 ""，而 argparse 会**对字符串默认值
+    也套用 type 转换**，于是 `int("")` 会在解析参数阶段直接 ValueError 崩掉 ——
+    崩在 main() 之前，报错信息也看不出是哪个参数。空串按「未指定」处理成 []，
+    下游 talking_gen/cursor_gen 都有 gpu_list 为空的兜底。
+    """
+    parts = [p.strip() for p in str(s or "").split(",") if p.strip()]
+    return [int(p) for p in parts]
+
 
 def str2bool(value):
     """argparse 的 type=bool 会把 "False" 也解析成 True（非空字符串恒为真），
@@ -101,6 +111,14 @@ if __name__ == '__main__':
         with open(path.join(args.result_dir, "token.json"), 'r') as f: 
             token_usage = json.load(f)
     else: token_usage = {}
+
+    # ⚠️ 各阶段的耗时是在各自 stage 块的 if 里写进 time_second 的，没跑的阶段
+    # 就不会写。这里先清掉上一轮留下的同名键，避免「本次没跑某阶段，但 sat.json
+    # 里还留着上一次的数字」这种误导；收尾时再统一补 None 保证键集合稳定。
+    _STAGE_KEYS = ("slide_gen", "subtitle_cursor_prompt_gen", "tts",
+                   "cursor_gen", "talking_gen", "merage")
+    for _key in _STAGE_KEYS:
+        time_second.pop(_key, None)
     
     ## Step 1: Slide Generation
     slide_latex_path = path.join(args.paper_latex_root, "slides.tex")
@@ -212,9 +230,16 @@ if __name__ == '__main__':
         print("Merage", step5_time-step4_time)
         
     # sat. save
-    time_second = {"slide_gen": [step1_time-start_time, usage_slide], 
-                   "subtitle_cursor_prompt_gen": [step2_time-step1_time, usage_subtitle],
-                   "tts": step3_1_time-step2_time, "cursor_gen": step3_2_time-step3_1_time, 
-                   "talking_gen": step4_time-step3_2_time, "merage": step5_time-step4_time}
+    # ⚠️ 这里刻意**不**重建 time_second。原写法是
+    #     time_second = {"slide_gen": [step1_time-start_time, usage_slide], ...}
+    # 有两个问题：
+    #   ① 引用了只在 stage 1/2 的 if 里赋值的 step1_time / step2_time /
+    #      step3_1_time / step3_2_time / usage_slide / usage_subtitle ——
+    #      于是「只跑 stage 3（数字人+合成），复用已有的 slide/audio」这个很常用
+    #      的用法会直接 NameError 崩在最后一步（sat.json 保持旧内容，极具迷惑性）；
+    #   ② 会把各 stage 块里刚写好的真实耗时整段覆盖掉（那些是本轮实测值）。
+    # 改为：各阶段块自己写自己那段，这里只补齐「没跑的阶段」为 None。
+    for _key in _STAGE_KEYS:
+        time_second.setdefault(_key, None)
     with open(path.join(args.result_dir, "sat.json"), 'w') as f: json.dump(time_second, f, indent=4)
     with open(path.join(args.result_dir, "token.json"), 'w') as f: json.dump(token_usage, f, indent=4)

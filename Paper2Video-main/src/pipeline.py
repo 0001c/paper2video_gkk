@@ -57,12 +57,15 @@ if __name__ == '__main__':
     parser.add_argument('--result_dir', type=str, default='./result/zeyu')
     parser.add_argument('--model_name_t', type=str, default='deepseek-flash') 
     parser.add_argument('--model_name_v', type=str, default='deepseek-flash') 
-    # 数字人后端：hallo2（cu118 无 sm_120）与 InfiniteTalk（fp8 需现场编译 quanto CUDA
-    # 扩展）均在本机不可用，默认换成 LongCat-Video-Avatar-1.5（xformers，无需编译）
-    parser.add_argument('--model_name_talking', type=str, default='longcat')
+    # 数字人后端：hallo2（cu118 无 sm_120）、InfiniteTalk（fp8 需现场编译 quanto
+    # CUDA 扩展）、LongCat（注意力序列 36480，sm_120 上无可用高效 kernel）均在本机
+    # 不可用，默认换成 MuseTalk —— 它只生成 256x256 人脸（序列仅 1024），标准
+    # UNet2DConditionModel + SDPA 即可，结构性绕开该问题。
+    parser.add_argument('--model_name_talking', type=str, default='musetalk')
     parser.add_argument('--talking_profile', type=str, default=None,
-                        help='数字人运行档位（见 talking_config.py）：'
-                             'local-16g 本机单卡 / server-8xa6000 预留多卡档位')
+                        help='数字人运行档位（见 talking_config.list_profiles()）：'
+                             'musetalk-local 本机单卡 / musetalk-server 预留多卡；'
+                             'longcat 后端另有 local-16g / server-8xa6000')
     parser.add_argument('--paper_latex_root', type=str, default='./assets/demo/latex_proj')
     parser.add_argument('--ref_img', type=str, default='./assets/demo/zeyu.png')
     parser.add_argument('--ref_audio', type=str, default='./assets/demo/zeyu.wav')
@@ -162,7 +165,8 @@ if __name__ == '__main__':
     ## Step 4: Talking Video Generation（数字人）
     start_time = time.time() # start time
     if "3" in stage or  "0" in stage:
-        print("[数字人] 档位：{}".format(describe_profile(resolve_profile(args.talking_profile))))
+        print("[数字人] 档位：{}".format(describe_profile(
+            resolve_profile(args.talking_profile, backend=args.model_name_talking))))
         talking_save_dir = path.join(args.result_dir, 'talking_{}'.format(args.model_name_talking))
         talking_inference_input = []
         # ⚠️ 必须按**数字**排序：文件名是 0.wav..11.wav，而 os.listdir 顺序不保证，

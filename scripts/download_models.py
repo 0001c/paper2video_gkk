@@ -154,7 +154,11 @@ ALLOW_PATTERNS = {
     # 另：yzd-v/DWPose（388MB）与 ByteDance/LatentSync 的 syncnet 都不需要
     #     —— 前者只服务于 mmpose（我们用 face-alignment 的 68 点替换掉了），
     #     后者仅训练/评估用。
-    "TMElyralab/MuseTalk": ["musetalkV15/", "README.md", ".gitattributes"],
+    #
+    # ⚠️ 这里**刻意不下 README.md / .gitattributes**：本仓库的 LOCAL_DIR 是 ""
+    #    （见下），根级文件会落到共享的 models/ 根上，污染同级目录。
+    #    其余三家的根级文件落在各自的子目录里，无害，故保留。
+    "TMElyralab/MuseTalk": ["musetalkV15/"],
     "stabilityai/sd-vae-ft-mse": [
         "config.json", "diffusion_pytorch_model.bin", "README.md", ".gitattributes",
     ],
@@ -194,6 +198,14 @@ LOCAL_DIR = {
     "stabilityai/sd-vae-ft-mse": "sd-vae",
     "openai/whisper-tiny": "whisper",
     "ManyOtherFunctions/face-parse-bisent": "face-parse-bisent",
+
+    # TMElyralab/MuseTalk 例外为 ""：白名单只取 `musetalkV15/`，而 MuseTalk
+    # 期望的正是 `models/musetalkV15/{unet.pth,musetalk.json}`（上游默认值与
+    # README 的 v1.5 命令都是这个路径）。若按默认规则落成
+    # `models/TMElyralab__MuseTalk/musetalkV15/`，就必须给 inference.py 传
+    # 额外的前缀，且与 sd-vae/whisper/face-parse-bisent 三家的风格不一致。
+    # 置 "" 后 os.path.join(WEIGHTS_DIR, "") 即 models/ 根，子路径原样拼上。
+    "TMElyralab/MuseTalk": "",
 }
 
 

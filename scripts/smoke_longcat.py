@@ -46,7 +46,7 @@ def main():
     import torch
     from avatar_infer import build_pipeline  # noqa: E402
 
-    paths = tg.resolve_paths()
+    paths = tg.resolve_paths(backend="longcat")
     checkpoint_dir = paths.checkpoint_dir
 
     # 1) 暂存输入（复用 talking_gen 的逻辑，含透明通道白底合成）

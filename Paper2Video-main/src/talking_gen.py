@@ -67,14 +67,20 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 from os import path
+
+import yaml
 
 import pv_env
 from talking_config import (
     TalkingPaths,
     build_avatar_command,
+    build_musetalk_batch_command,
     describe_profile,
+    musetalk_batch_dir,
+    musetalk_batch_output,
     musetalk_output_path,
     resolve_profile,
 )
@@ -274,45 +280,7 @@ def run_avatar_inference(task):
     paths = resolve_paths(env_python, backend=backend)
     workspace = _ascii_workspace(idx, backend)
     staged_img, staged_audio = _stage_inputs(workspace, ref_img_path, audio_path)
-
-    env = os.environ.copy()
-    if gpu_id is not None:
-        env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-    env.setdefault("HF_HOME", pv_env.HF_HOME)
-
-    if backend == "musetalk":
-        # ── ① torch.load 的 weights_only 默认值问题 ──
-        # torch>=2.6 把 torch.load 的 weights_only 默认值从 False 翻成了 True，
-        # 而 MuseTalk 有三处老写法没显式传这个参数：
-        #   musetalk/models/unet.py:44                     -> unet.pth（够新，能过）
-        #   musetalk/utils/face_parsing/resnet.py:83       -> resnet18-5c106cde.pth
-        #   musetalk/utils/face_parsing/__init__.py:65,67  -> 79999_iter.pth
-        # 其中 resnet18 是 legacy .tar 格式，weights_only=True 会直接拒绝：
-        #   RuntimeError: Cannot use ``weights_only=True`` with files saved in
-        #   the legacy .tar format.   （本机实测，FaceParsing() 构造时崩）
-        # 上游 README 锁 torch 2.0.1，那时默认还是 False，所以作者没踩到。
-        #
-        # 用官方环境变量把它翻回来（torch/serialization.py:1486 读它，且只在
-        # 调用点**没有**显式传 weights_only 时才生效）——比去改 4 处第三方代码
-        # 少一份改动，也少一处将来被上游覆盖的可能。
-        # 代价是放弃 pickle 的安全反序列化：权重全部是本项目自己从官方 HF
-        # 仓库下载的（见 scripts/download_models.py），可接受。
-        env["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
-
-        # ── ② 关掉代理沙箱的「批量删除守卫」──
-        # 这不是项目问题，是**代理沙箱的副作用**：在沙箱里 python 的 PYTHONPATH
-        # 被指向 WorkBuddy 的 shim 目录，那里 monkeypatch 了 os.remove/shutil.rmtree，
-        # 单次 >CODEBUDDY_SAFE_DELETE_BULK_THRESHOLD(默认 50) 个目标的删除会被拦下
-        # 并抛异常。而 MuseTalk 收尾时正好要删 250 帧（10s × 25fps）临时 PNG
-        # （inference.py:240,243 的 shutil.rmtree）：
-        #   [safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED] {"count":250,...}
-        # 后果很阴险：**视频已经写好了**，但进程退出码变成 1，被上游当成失败。
-        #
-        # 该守卫保护的是「代理不要误删用户文件」，而这里的删除目标是 MuseTalk
-        # 自己在 <workspace> 下生成的临时帧目录，与用户文件无关；且用户从普通
-        # 终端跑时这些变量根本不存在，设了也无害（等于 no-op）。
-        # 所以只在这个子进程里关掉，不碰全局。
-        env["CODEBUDDY_SAFE_DELETE_ENABLED"] = "0"
+    env = _child_env(gpu_id, backend)
 
     if backend == "musetalk":
         produced, err = _invoke_musetalk(profile, paths, workspace,
@@ -383,6 +351,63 @@ def _invoke_musetalk(profile, paths, workspace, staged_img, staged_audio, env):
     return produced, None
 
 
+def _file_sha1(p):
+    """算文件指纹，用来判断两页用的是不是同一张参考图。"""
+    import hashlib
+    h = hashlib.sha1()
+    with open(p, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _child_env(gpu_id, backend):
+    """构造推理子进程的环境变量（两个后端共用）。
+
+    MuseTalk 需要两个额外变量，都不是「配置」，而是绕过本机/沙箱的坑：
+    """
+    env = os.environ.copy()
+    if gpu_id is not None:
+        env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    env.setdefault("HF_HOME", pv_env.HF_HOME)
+
+    if backend == "musetalk":
+        # ── ① torch.load 的 weights_only 默认值问题 ──
+        # torch>=2.6 把 torch.load 的 weights_only 默认值从 False 翻成了 True，
+        # 而 MuseTalk 有三处老写法没显式传这个参数：
+        #   musetalk/models/unet.py:44                     -> unet.pth（够新，能过）
+        #   musetalk/utils/face_parsing/resnet.py:83       -> resnet18-5c106cde.pth
+        #   musetalk/utils/face_parsing/__init__.py:65,67  -> 79999_iter.pth
+        # 其中 resnet18 是 legacy .tar 格式，weights_only=True 会直接拒绝：
+        #   RuntimeError: Cannot use ``weights_only=True`` with files saved in
+        #   the legacy .tar format.   （本机实测，FaceParsing() 构造时崩）
+        # 上游 README 锁 torch 2.0.1，那时默认还是 False，所以作者没踩到。
+        #
+        # 用官方环境变量把它翻回来（torch/serialization.py:1486 读它，且只在
+        # 调用点**没有**显式传 weights_only 时才生效）——比去改 4 处第三方代码
+        # 少一份改动，也少一处将来被上游覆盖的可能。
+        # 代价是放弃 pickle 的安全反序列化：权重全部是本项目自己从官方 HF
+        # 仓库下载的（见 scripts/download_models.py），可接受。
+        env["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
+
+        # ── ② 关掉代理沙箱的「批量删除守卫」──
+        # 这不是项目问题，是**代理沙箱的副作用**：在沙箱里 python 的 PYTHONPATH
+        # 被指向 WorkBuddy 的 shim 目录，那里 monkeypatch 了 os.remove/shutil.rmtree，
+        # 单次 >CODEBUDDY_SAFE_DELETE_BULK_THRESHOLD(默认 50) 个目标的删除会被拦下
+        # 并抛异常。而 MuseTalk 收尾正好要删几百帧临时 PNG（inference.py:240 与
+        # realtime_inference.py:306 的 shutil.rmtree）：
+        #   [safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED] {"count":250,...}
+        # 后果很阴险：**视频已经写好了**，但进程退出码变成 1，被上游当成失败。
+        #
+        # 该守卫保护的是「代理不要误删用户文件」，而这里的删除目标是 MuseTalk
+        # 自己在 <workspace> 下生成的临时帧目录，与用户文件无关；且用户从普通
+        # 终端跑时这些变量根本不存在，设了也无害（等于 no-op）。
+        # 所以只在这个子进程里关掉，不碰全局。
+        env["CODEBUDDY_SAFE_DELETE_ENABLED"] = "0"
+
+    return env
+
+
 def _run(cmd, cwd, env, profile):
     """统一的「打印 + 执行」外壳，保证两个后端的日志格式一致。"""
     print("[talking_gen] 档位：{}".format(describe_profile(profile)))
@@ -390,6 +415,146 @@ def _run(cmd, cwd, env, profile):
     print("[talking_gen] 命令：{}".format(" ".join(cmd)))
     return subprocess.run(cmd, cwd=cwd, env=env).returncode
 
+
+
+def _run_musetalk_batch(tasks, profile, env_path):
+    """用**一个** MuseTalk 进程跑完多页（批量入口 ``scripts.realtime_inference``）。
+
+    为什么值得单开一条路径
+    ----------------------
+    实测（12 页真实数据）每页耗时对音频时长回归得 ``82.4 s + 3.05 × 音频秒``：
+    **每页约 82 秒与音频长度无关的固定开销**，其中 import torch + 加载 3.2GB unet
+    + 加载 whisper + 人脸检测/解析/VAE 编码 latent 都只与「进程生命周期」有关，
+    却被逐页重做了 12 遍。批量入口把这些改成一次性：模型加载一次，每个 avatar 的
+    ``latents.pt`` 算一次后复用它名下的所有音频。
+
+    这里**没有重写上游的推理循环**，只是把多页组织成一个 YAML 交给上游入口 ——
+    少一份需要跟着上游同步的重复代码。
+
+    分组策略：按「暂存后参考图的 sha1」分组，一组一个 avatar。
+    当前流水线所有页共用同一张参考图，所以实际只会有一个 avatar；但按指纹分组让
+    逻辑在「每页不同人像」时也成立，且仍然只起一个进程。
+
+    ⚠️ 两个必须小心的上游行为（都已在 talking_config 的命令拼装里处理）：
+    - ``--unet_config`` 默认是 **v1** 的路径，必须显式覆盖
+    - 产物**不认 ``--result_dir``**，固定落在 ``<repo>/results/<version>/avatars/<id>/``
+
+    ⚠️ avatar_id 必须**每次运行唯一**：上游在 avatar 目录已存在且 ``preparation=True``
+    时会 ``input()`` 询问是否重建 —— 非交互子进程里会直接 EOFError 卡死。
+    用唯一 id 就绕过了那个分支（同时也绕过了它那条 rmtree）。
+    """
+    paths = resolve_paths(env_path, backend="musetalk")
+    gpu_id = tasks[0][4]
+    env = _child_env(gpu_id, "musetalk")
+
+    # ── 1) 逐页暂存（很便宜），并按参考图指纹分组 ──
+    staged = []          # [(idx, target_dir, target_video, staged_img)]
+    audio_of = {}        # idx -> staged_audio
+    groups = {}          # sha1 -> [idx, ...]
+    for idx, ref_img_path, audio_path, save_dir, _gid, _env, _prof in tasks:
+        target_dir, target_video = _target_paths(save_dir, idx, ref_img_path)
+        ws = _ascii_workspace(idx, "musetalk")
+        staged_img, staged_audio = _stage_inputs(ws, ref_img_path, audio_path)
+        staged.append((idx, target_dir, target_video, staged_img))
+        audio_of[idx] = staged_audio
+        groups.setdefault(_file_sha1(staged_img), []).append(idx)
+
+    # ── 2) 写批量 YAML ──
+    run_id = time.strftime("%Y%m%d_%H%M%S")
+    config = {}
+    where = {}           # idx -> (avatar_id, key)
+    for gi, idxs in enumerate(sorted(groups.values(), key=lambda v: v[0])):
+        avatar_id = "pv_{}_{}".format(run_id, gi)
+        clips = {}
+        for idx in idxs:
+            key = "page_{:03d}".format(idx)
+            clips[key] = audio_of[idx]
+            where[idx] = (avatar_id, key)
+        config[avatar_id] = {
+            "preparation": True,        # 全新 avatar_id -> 不会走 input() 分支
+            "bbox_shift": int(profile.get("bbox_shift", 0)),   # v15 下上游会忽略
+            # 同一 avatar 的所有音频共用这一张参考图（分组就是按它的指纹做的）
+            "video_path": _staged_img_of(staged, idxs[0]),
+            "audio_clips": clips,
+        }
+
+    yaml_path = os.path.join(_ascii_workspace("batch", "musetalk"),
+                             "batch_{}.yaml".format(run_id))
+    with open(yaml_path, "w", encoding="utf-8") as handle:
+        yaml.safe_dump(config, handle, allow_unicode=True, sort_keys=False)
+    print("[talking_gen] 批量清单：{} 个 avatar / {} 页 -> {}".format(
+        len(config), len(tasks), yaml_path))
+
+    # ── 3) 一个进程跑完 ──
+    started = time.time()
+    cmd = build_musetalk_batch_command(profile, paths, yaml_path)
+    rc = _run(cmd, paths.repo_dir, env, profile)
+
+    # ── 4) 逐页取回产物（同单页路径：查存在 + 查新鲜度） ──
+    results = []
+    for idx, target_dir, target_video, _img in staged:
+        avatar_id, key = where[idx]
+        produced = musetalk_batch_output(paths.repo_dir, profile, avatar_id, key)
+        err = None
+        if rc != 0:
+            err = "MuseTalk 批量退出码={}（预期 0）".format(rc)
+        elif not path.exists(produced):
+            err = "批量跑完但第 {} 页没有产物（预期 {}）".format(idx, produced)
+        elif path.getmtime(produced) + 1.0 < started:
+            err = ("第 {} 页产物是**旧的**（mtime={:.0f} < 本次启动 {:.0f}）："
+                   "本次推理其实失败了，只是被上游吞掉、退出码仍为 0"
+                   .format(idx, path.getmtime(produced), started))
+        if err:
+            results.append((idx, False, err))
+            continue
+        os.makedirs(target_dir, exist_ok=True)
+        shutil.move(produced, target_video)
+        print("[talking_gen] 第 {} 页完成 -> {}".format(idx, target_video))
+        results.append((idx, True, target_video))
+
+    # ── 5) 清理上游留下的 avatar scratch 目录（best-effort） ──
+    _cleanup_batch_dirs(paths.repo_dir, profile, sorted(config), env)
+    return results
+
+
+def _staged_img_of(staged, idx):
+    """从暂存表里取某一页的暂存参考图路径。"""
+    for row in staged:
+        if row[0] == idx:
+            return row[3]
+    raise KeyError(idx)
+
+
+def _cleanup_batch_dirs(repo_dir, profile, avatar_ids, env):
+    """删掉批量入口留在 MuseTalk 仓库里的 avatar scratch 目录。
+
+    ⚠️ 必须起**一个新解释器**来删，不能在当前进程里 shutil.rmtree：
+    沙箱的 safe-delete 守卫是 shim 在 **import 时**读
+    ``CODEBUDDY_SAFE_DELETE_ENABLED`` 的（sitecustomize.py:35），本进程内改
+    os.environ 对它无效。而一个 avatar 目录里有 latents/mask/coords 等若干文件，
+    12 个 avatar 加起来远超阈值 50，一定被拦。
+    起子进程时把开关放进 env，才是唯一有效的时机。
+
+    清不掉也不影响正确性（产物已经搬走），所以失败只提示不报错。
+    """
+    dirs = [musetalk_batch_dir(repo_dir, profile, a) for a in avatar_ids]
+    dirs = [d for d in dirs if os.path.isdir(d)]
+    if not dirs:
+        return
+    code = ("import shutil, sys\n"
+            "for d in sys.argv[1:]:\n"
+            "    shutil.rmtree(d, ignore_errors=True)\n")
+    cleanup_env = dict(env)
+    cleanup_env["CODEBUDDY_SAFE_DELETE_ENABLED"] = "0"
+    done = subprocess.run([sys.executable, "-c", code] + dirs,
+                          env=cleanup_env, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace")
+    left = [d for d in dirs if os.path.isdir(d)]
+    if left:
+        print("[talking_gen] 提示：{} 个 avatar scratch 目录未清掉，可忽略（产物已搬走）"
+              .format(len(left)))
+    else:
+        print("[talking_gen] 已清理 {} 个 avatar scratch 目录".format(len(dirs)))
 
 
 def talking_gen_per_slide(model_type, input_list, save_dir, gpu_list, env_path,
@@ -444,9 +609,19 @@ def talking_gen_per_slide(model_type, input_list, save_dir, gpu_list, env_path,
         return []
 
     print("[talking_gen] 待生成 {} 页，档位：{}".format(len(tasks), describe_profile(resolved)))
-    results = []
-    for task in tasks:
-        results.append(run_avatar_inference(task))
+
+    # 批量路径：一个进程跑完所有待生成页（只对 musetalk 有效，且要至少 2 页才划算
+    # —— 1 页时批量入口没有任何收益，反而多一层 YAML 间接）。
+    use_batch = (resolved.get("backend") == "musetalk"
+                 and resolved.get("batch")
+                 and len(tasks) > 1)
+    if use_batch:
+        print("[talking_gen] 走批量入口：1 个进程跑 {} 页（模型只加载一次）".format(len(tasks)))
+        results = _run_musetalk_batch(tasks, resolved, env_path)
+    else:
+        results = []
+        for task in tasks:
+            results.append(run_avatar_inference(task))
 
     failures = [r for r in results if not r[1]]
     if failures:

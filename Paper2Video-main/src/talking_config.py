@@ -80,7 +80,10 @@ PROFILES = {
         "parsing_mode": "jaw",   # v1.5 的默认融合模式
         "left_cheek_width": 90,
         "right_cheek_width": 90,
-        "use_float16": True,     # fp16 推理，省显存也更快
+        "use_float16": True,     # 单页入口的开关；批量入口无此参数（它硬编码 .half()）
+        # 走批量入口（scripts.realtime_inference）：一个进程跑完所有页，
+        # 模型只加载一次、人脸 latent 只算一次。理由见 talking_gen 的说明。
+        "batch": True,
         "parallel": {"mode": "single"},
     },
 
@@ -100,6 +103,7 @@ PROFILES = {
         "left_cheek_width": 90,
         "right_cheek_width": 90,
         "use_float16": True,
+        "batch": True,
         "parallel": {"mode": "single"},
     },
 
@@ -312,6 +316,75 @@ def build_musetalk_command(profile: dict, paths: TalkingPaths,
 # MuseTalk 推理的固定产物名（--output_vid_name）。取回路径的唯一真源在
 # musetalk_output_path()，改这里就够。
 MUSETALK_OUTPUT_NAME = "musetalk_out.mp4"
+
+
+def build_musetalk_batch_command(profile: dict, paths: TalkingPaths,
+                                 inference_yaml: str,
+                                 extra_args: Optional[List[str]] = None) -> List[str]:
+    """MuseTalk **批量**入口（``scripts.realtime_inference``）的命令行。
+
+    为什么用它
+    ----------
+    单页入口（``scripts.inference``）每页新起一个进程，于是 import torch +
+    加载 3.2GB unet + 加载 whisper + 人脸检测/解析/VAE 编码 latent **每页都重做一遍**。
+    实测（12 页真实数据）每页耗时对音频时长回归得
+
+        耗时 ≈ 82.4 s + 3.05 × 音频秒
+
+    即**每页有约 82 秒与音频长度无关的固定开销**，占 12 页总时间的约 59%。
+    批量入口把这些一次性做完：模型加载一次，每个 avatar 的 ``latents.pt``
+    缓存一次后复用给它的所有音频。
+
+    与单页入口的差异（都是上游实现决定的，不是我们改的）
+    ----------------------------------------------------
+    - ``--unet_config`` 的**默认值是 v1 的路径**（``models/musetalk/musetalk.json``），
+      必须显式覆盖成 v15 的，否则加载失败。
+    - **没有 ``--use_float16``**：它硬编码 ``pe/vae/unet .half()``，所以批量路径
+      恒为 fp16。
+    - ``bbox_shift`` 在 v15 下同样被强制为 0。
+    - **产物目录不认 ``--result_dir``**：``Avatar.base_path`` 硬编码为
+      ``./results/<version>/avatars/<avatar_id>``（相对 cwd）。所以产物要按
+      :func:`musetalk_batch_output_path` 去 MuseTalk 仓库里取。
+    """
+    _check_single_gpu(profile, "MuseTalk")
+
+    models_dir = paths.musetalk_models_dir()
+    cmd = [
+        paths.env_python, "-m", "scripts.realtime_inference",
+        "--inference_config", inference_yaml,
+        # 上游默认值是 v1 的路径，必须显式覆盖（见 docstring）
+        "--unet_model_path", os.path.join(models_dir, "musetalkV15", "unet.pth"),
+        "--unet_config", os.path.join(models_dir, "musetalkV15", "musetalk.json"),
+        "--whisper_dir", os.path.join(models_dir, "whisper"),
+        "--version", profile.get("version", "v15"),
+        "--fps", str(profile.get("fps", 25)),
+        "--batch_size", str(profile.get("batch_size", 8)),
+        "--extra_margin", str(profile.get("extra_margin", 10)),
+        "--parsing_mode", str(profile.get("parsing_mode", "jaw")),
+        "--left_cheek_width", str(profile.get("left_cheek_width", 90)),
+        "--right_cheek_width", str(profile.get("right_cheek_width", 90)),
+    ]
+    if paths.ffmpeg_dir:
+        cmd += ["--ffmpeg_path", paths.ffmpeg_dir]
+    if extra_args:
+        cmd += list(extra_args)
+    return cmd
+
+
+def musetalk_batch_dir(repo_dir: str, profile: dict, avatar_id: str) -> str:
+    """批量入口里某个 avatar 的 scratch 目录（上游硬编码在 ``./results`` 下）。"""
+    return os.path.join(repo_dir, "results", profile.get("version", "v15"),
+                        "avatars", avatar_id)
+
+
+def musetalk_batch_output(repo_dir: str, profile: dict, avatar_id: str, key: str) -> str:
+    """批量入口的产物路径：``<avatar_dir>/vid_output/<key>.mp4``。
+
+    ``key`` 就是 YAML 里 ``audio_clips`` 的键（我们用它当页码标识）。
+    依据 realtime_inference.py:300 的 ``join(self.video_out_path, out_vid_name + ".mp4")``。
+    """
+    return os.path.join(musetalk_batch_dir(repo_dir, profile, avatar_id),
+                        "vid_output", key + ".mp4")
 
 
 def musetalk_output_path(profile: dict, result_dir: str) -> str:

@@ -81,21 +81,28 @@ def main():
     print("[smoke] 音频嵌入完成，shape={}，显存 {:.0f}MB".format(
         tuple(full_emb.shape), vram_mb()), flush=True)
 
-    # 4) 生成（单段 93 帧，覆盖 10s 音频）
+    # 4) 生成。num_frames 决定视频时长与序列长度（=(num_frames-1)/4+1 帧 latent）。
+    #    93 帧 -> 24 latent 帧 -> 序列 36480，SDPA O(N²) 极慢；
+    #    45 帧 -> 12 latent 帧 -> 序列 18240，减半、O(N²) 降到 1/4。
+    #    用环境变量 PAPER2VIDEO_SMOKE_FRAMES 快速验证小帧数是否可行。
+    num_frames = int(os.environ.get("PAPER2VIDEO_SMOKE_FRAMES", "45"))
+    num_frames = num_frames if (num_frames - 1) % 4 == 0 else 93
     from diffusers.utils import load_image
     image = load_image(staged_img)
     indices = torch.arange(2 * 2 + 1) - 2
-    center = torch.arange(0, 93, 1).unsqueeze(1) + indices.unsqueeze(0)
+    center = torch.arange(0, num_frames, 1).unsqueeze(1) + indices.unsqueeze(0)
     center = torch.clamp(center, min=0, max=full_emb.shape[0] - 1)
     audio_emb = full_emb[center][None, ...].to(device)
 
     generator = torch.Generator(device=device).manual_seed(42)
     t1 = time.time()
     peak = 0
+    print("[smoke] 生成 {} 帧（{} latent 帧）...".format(
+        num_frames, (num_frames - 1) // 4 + 1), flush=True)
     output, latent = pipe.generate_ai2v(
         image=image, prompt=payload["prompt"],
         negative_prompt="subtitles, style, blurred, low quality",
-        resolution="480p", num_frames=93, num_inference_steps=8,
+        resolution="480p", num_frames=num_frames, num_inference_steps=8,
         text_guidance_scale=1.0, audio_guidance_scale=1.0,
         output_type="both", generator=generator, audio_emb=audio_emb,
         use_distill=True,

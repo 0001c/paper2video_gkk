@@ -88,6 +88,27 @@ CATALOG = {
     "meituan-longcat/LongCat-Video-Avatar-1.5": (
         "phase3", "音频驱动数字人：int8 DiT + DMD 蒸馏 LoRA + Whisper-large-v3 + 人声分离 ONNX",
         20.5, "huggingface"),
+
+    # ── 数字人（MuseTalk 路线，2026-09-17）──
+    # 换型原因：LongCat 的主注意力序列 36480，在 Blackwell(sm_120)+Windows 上
+    # flash-attn 装不了 / xformers kernel 只到 sm_90 / SDPA 太慢，三条路全堵。
+    # MuseTalk 只生成 256x256 人脸区域（注意力序列仅 1024，小 1270 倍），
+    # 且用标准 diffusers UNet2DConditionModel，SDPA 即可 —— 结构性绕开该死结。
+    # 详见 docs/MuseTalk接入方案.md
+    #
+    # ⚠️ 这组的落盘目录是 MuseTalk 仓库的 models/ 下（不是 weights/），
+    #    因为其代码把 VAE 与 face-parse 的路径写死了（见 LOCAL_DIR 注释）。
+    #    下载命令带 --weights-dir：
+    #      python scripts/download_models.py --group musetalk \
+    #          --weights-dir E:/ai-models/MuseTalk/models --source huggingface
+    "TMElyralab/MuseTalk": (
+        "musetalk", "口型同步主权重 v1.5（只取 musetalkV15/；v1.0 的 3.24GB 不要）", 3.24, "huggingface"),
+    "stabilityai/sd-vae-ft-mse": (
+        "musetalk", "SD VAE（编码人脸 latent）", 0.32, "huggingface"),
+    "openai/whisper-tiny": (
+        "musetalk", "音频编码器 whisper-tiny", 0.15, "huggingface"),
+    "ManyOtherFunctions/face-parse-bisent": (
+        "musetalk", "人脸解析 BiSeNet（生成嘴部遮罩）", 0.10, "huggingface"),
 }
 
 # 各仓库的白名单前缀。没有条目的仓库 = 全量下载。
@@ -127,6 +148,23 @@ ALLOW_PATTERNS = {
         "config.json",
         "README.md", ".gitattributes",
     ],
+
+    # ── MuseTalk 路线 ──
+    # 该仓库只有 4 个模型文件，其中 musetalk/（v1.0，3.24GB）用不到，只要 v1.5。
+    # 另：yzd-v/DWPose（388MB）与 ByteDance/LatentSync 的 syncnet 都不需要
+    #     —— 前者只服务于 mmpose（我们用 face-alignment 的 68 点替换掉了），
+    #     后者仅训练/评估用。
+    "TMElyralab/MuseTalk": ["musetalkV15/", "README.md", ".gitattributes"],
+    "stabilityai/sd-vae-ft-mse": [
+        "config.json", "diffusion_pytorch_model.bin", "README.md", ".gitattributes",
+    ],
+    "openai/whisper-tiny": [
+        "config.json", "pytorch_model.bin", "preprocessor_config.json",
+        "generation_config.json", "README.md", ".gitattributes",
+    ],
+    "ManyOtherFunctions/face-parse-bisent": [
+        "79999_iter.pth", "resnet18-5c106cde.pth", "README.md", ".gitattributes",
+    ],
 }
 
 # 多线程下载的并发度。HF 镜像实测单流可达 130 MB/s，这里主要用于
@@ -146,6 +184,16 @@ MAX_WORKERS = 4
 LOCAL_DIR = {
     "meituan-longcat/LongCat-Video": "LongCat-Video",
     "meituan-longcat/LongCat-Video-Avatar-1.5": "LongCat-Video-Avatar-1.5",
+
+    # MuseTalk 的路径写死在代码里，落盘名必须完全一致：
+    #   musetalk/models/vae.py           -> VAE(model_path="models/" + vae_type)，vae_type 默认 "sd-vae"
+    #   musetalk/utils/face_parsing/__init__.py:60 -> "./models/face-parse-bisent/resnet18-5c106cde.pth"
+    #   musetalk/utils/face_parsing/__init__.py:61 -> "./models/face-parse-bisent/79999_iter.pth"
+    #   而 scripts/inference.py 的 --whisper_dir 默认 "./models/whisper"
+    # 故配合 --weights-dir E:/ai-models/MuseTalk/models 使用。
+    "stabilityai/sd-vae-ft-mse": "sd-vae",
+    "openai/whisper-tiny": "whisper",
+    "ManyOtherFunctions/face-parse-bisent": "face-parse-bisent",
 }
 
 

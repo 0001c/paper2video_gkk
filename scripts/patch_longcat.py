@@ -95,6 +95,43 @@ def build_text_patches():
     return patches
 
 
+# ── xformers -> SDPA 兜底补丁 ──────────────────────────────────────
+# 两个 attention.py 的 `elif self.enable_xformers:` 分支完全一致，都在末尾
+# 调用 `xformers.ops.memory_efficient_attention(...)`。问题：xformers 0.0.35
+# 的 CUDA kernel 只编到 sm_90，在 Blackwell(sm_120) 上 dispatch 会报
+# `NotImplementedError: No operator found ... capability (12, 0) (too new)`。
+# 而 torch 自带的 `F.scaled_dot_product_attention` 原生支持 bf16 + sm_120，
+# 且这正是 InfiniteTalk 当初缺 flash-attn 时的退化路径。故在 xformers 调用
+# 外包一层 try/except，失败时降级到 SDPA（语义等价，只是少了 memory-efficient）。
+_XFORMERS_CALL_OLD = (
+    "            x = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None, op=None,)\n"
+)
+_XFORMERS_CALL_NEW = (
+    "            try:\n"
+    "                x = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None, op=None,)\n"
+    "            except (NotImplementedError, RuntimeError):\n"
+    "                # Blackwell(sm_120) 上 xformers 0.0.35 的 kernel 未编入（仅到 sm_90），\n"
+    "                # 降级到 torch 原生 SDPA。注意 SDPA 要 [B, H, S, D]，而此处 q/k/v 已被\n"
+    "                # rearrange 成 xformers 的 [B, S, H, D]，故先 transpose 回 B H S D；\n"
+    "                # SDPA 支持 q 与 kv 序列长度不同的 cross-attention（q_noise 那路）。\n"
+    "                x = torch.nn.functional.scaled_dot_product_attention(\n"
+    "                    q.transpose(1, 2).contiguous(),\n"
+    "                    k.transpose(1, 2).contiguous(),\n"
+    "                    v.transpose(1, 2).contiguous(),\n"
+    "                ).transpose(1, 2)\n"
+)
+
+
+def build_sdpa_patches():
+    """两个 attention.py 各自加一条 xformers -> SDPA 的兜底。"""
+    return [
+        (os.path.join("longcat_video", "modules", "attention.py"),
+         _XFORMERS_CALL_OLD, _XFORMERS_CALL_NEW, "xformers 失败时降级 SDPA"),
+        (os.path.join("longcat_video", "modules", "avatar", "attention.py"),
+         _XFORMERS_CALL_OLD, _XFORMERS_CALL_NEW, "xformers 失败时降级 SDPA"),
+    ]
+
+
 def apply_text_patch(path, old, new, dry_run):
     if not os.path.isfile(path):
         return "文件不存在"
@@ -183,19 +220,29 @@ def main():
         touched.add(path)
 
     print()
-    print("[2/3] 注意力后端：flashattn2 -> xformers")
+    print("[2/4] 注意力后端：flashattn2 -> xformers（配置）")
     config_path = os.path.join(weights, "base_model_int8", "config.json")
     state = patch_attention_config(config_path, dry)
     print("      {}".format(state))
     if "不存在" in state:
         ok = False
 
-    # [3/3] 部署单卡精简推理入口 avatar_infer.py（替代有 Linux/分布式硬伤的 demo）
+    print()
+    print("[3/4] xformers 失败时降级 SDPA（Blackwell 上 xformers kernel 未编入）")
+    for rel, old, new, desc in build_sdpa_patches():
+        path = os.path.join(root, rel)
+        state = apply_text_patch(path, old, new, dry)
+        print("      {:<44} {:<12} {}".format(rel, state, desc))
+        if state not in ("已打过", "已改写", "需要改写"):
+            ok = False
+        touched.add(path)
+
+    # [4/4] 部署单卡精简推理入口 avatar_infer.py（替代有 Linux/分布式硬伤的 demo）
     infer_src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                              "longcat_patches", "avatar_infer.py")
     infer_dst = os.path.join(root, "avatar_infer.py")
     print()
-    print("[3/3] 部署精简推理入口 avatar_infer.py")
+    print("[4/4] 部署精简推理入口 avatar_infer.py")
     if not os.path.isfile(infer_src):
         print("      源缺失：{}".format(infer_src))
         ok = False

@@ -79,13 +79,18 @@ def build_pipeline(args, device):
 
     # 只支持 v1.5（v1.0 的 wav2vec2 与无限时长需求不匹配，见方案文档）
     model_type = "avatar-v1.5"
+    # 单卡：cp_split_hw 必须显式给 [1, 1] 而非 None —— 模型的 forward() 会无条件
+    # 下标访问 self.cp_split_hw[0]（longcat_video_dit_avatar.py:475）。上游 demo 里
+    # 这个值来自 get_optimal_split(cp_size)，单卡时 cp_size=1 -> [1,1]；我们省掉了
+    # 分布式初始化，就必须手动补上这个值，否则 forward 直接 TypeError。
+    cp_split_hw = [1, 1]
     if args.use_int8:
         print("[avatar_infer] 加载 INT8 量化 DiT", flush=True)
         dit = load_quantized_dit(checkpoint_dir, subfolder="base_model_int8",
-                                 cp_split_hw=None)
+                                 cp_split_hw=cp_split_hw)
     else:
         dit = LongCatVideoAvatarTransformer3DModel.from_pretrained(
-            checkpoint_dir, subfolder="base_model", cp_split_hw=None,
+            checkpoint_dir, subfolder="base_model", cp_split_hw=cp_split_hw,
             torch_dtype=torch.bfloat16)
 
     if args.use_distill:

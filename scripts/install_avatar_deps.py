@@ -130,10 +130,20 @@ def filtered_requirements():
         blocks.extend(kept)
 
     out = os.path.join(ROOT, "requirements_local.txt")
+    guard = [
+        "# 由 scripts/install_avatar_deps.py 生成，勿手改",
+        "#",
+        "# 下面三行是「防替换守卫」：它们已由前置步骤装好（带 +cu128 本地版本号），",
+        "# 而 PEP 440 下 `2.11.0+cu128` 满足 `==2.11.0`，所以解析器会认为已满足、",
+        "# 不会去 PyPI 拉那个 124MB 的 CPU-only 版 torch 把 CUDA 版顶掉。",
+        "torch==2.11.0",
+        "torchvision==0.26.0",
+        "xformers==0.0.35",
+        "",
+    ]
     with open(out, "w", encoding="utf-8") as handle:
-        handle.write("# 由 scripts/install_avatar_deps.py 生成，勿手改\n")
-        handle.write("\n".join(blocks) + "\n")
-    log("    已生成 {}（{} 条）".format(out, len(blocks)))
+        handle.write("\n".join(guard + blocks) + "\n")
+    log("    已生成 {}（守卫 3 条 + 依赖 {} 条）".format(out, len(blocks)))
     return out
 
 

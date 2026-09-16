@@ -158,3 +158,100 @@ MuseTalk 是 **lip-sync（口型同步）** 模型，**只重绘嘴部区域**�
 5. **改配置**：`talking_config.py` 档位换成 MuseTalk 参数集
    （`--version v15`、`--fps 25`、`--bbox_shift`、`--extra_margin`）
 6. **冒烟测试**：单页（1 张图 + 10s 音频），验证口型同步 / 耗时 / 显存
+
+---
+
+## 九、实测修正（2026-09-17，比原方案更精确的发现）
+
+### 9.1 `face_detection` 是**不可满足**的依赖（原方案估计不足）
+
+我把 PyPI 上 `face-detection` 的所有版本都拆开看过：
+
+| 版本 | `__init__.py` 导出 | 含 `FaceAlignment`？ |
+|---|---|---|
+| 0.1.1 | `detect_faces, DSFDDetector` | ❌ |
+| 0.1.4 | `build_detector, available_detectors, DSFDDetector, RetinaNet*` | ❌ |
+| 0.2.0–0.2.2 | `Detector` 系列（且 0.2.2 无 wheel，仅 sdist） | ❌ |
+
+而 `face-alignment` 1.5.0 也**不提供** `face_detection` 模块。
+结论：`from face_detection import FaceAlignment, LandmarksType` **无法被任何已发布的包满足**，
+必须改用 `face-alignment` 的 `FaceAlignment`。
+
+补充：`face-detection` 是**纯 Python**（无 C 扩展），所以它本身的 sdist 能装 ——
+问题不在编译，而在**它压根没有那个类**。
+
+### 9.2 `face-alignment` 的两个新发现
+
+**① 必须禁用 torch dynamo**
+
+`face_alignment/api.py:118-143` 会调 `torch.compile` 做加速，并且用 try/except 包了。
+但 **`torch.compile` 是惰性的**：构造时不报错，真正编译发生在**首次 forward**（在 try 之外）。
+本机拿不到 `cl.exe` + MSVC 环境，于是崩在推理阶段：
+
+```
+torch._inductor.exc.InductorError: RuntimeError: Compiler: cl is not found.
+```
+
+**解法**：在导入 face_alignment 后、构造 `FaceAlignment` 前设置
+`torch._dynamo.config.disable = True`（`torch.compile` 退化为 no-op，走 eager）。
+FAN 只跑 256×256，eager 速度完全够。
+
+**② `get_landmarks` 的返回是三元组**
+
+文档（`api.py:200-208`）说明：`return_bboxes=True` / `return_landmark_score=False` 时返回
+**`(landmark, landmark_score, detected_face)`**。所以要用
+
+```python
+lms, _score, boxes = fa.get_landmarks(img, return_bboxes=True)
+```
+
+且无脸时返回 `(None, None, None)`（第 217 行），必须判空。
+
+### 9.3 关键点语义已实证对齐
+
+对项目自带 `zeyu.png` 实测，FAN 的 68 点里 **28/29/30 正是鼻梁三点**
+（x 完全相同、y 递增）：
+
+```
+[28] = [319.0, 216.0]
+[29] = [319.0, 233.0]
+[30] = [319.0, 249.0]
+landmarks: (1, 68, 2)    bboxes: (1, 5) = [x1,y1,x2,y2,score]
+```
+
+与 MuseTalk 用 `face_land_mark[28/29/30]` 计算 bbox 的语义完全一致。
+
+### 9.4 补丁后的端到端实测（预处理环节已通过）
+
+`patch_musetalk.py` 共 7 处替换（头部 1 + 关键点 2 + 检测框 2 + 兜底 2），
+应用后幂等、语法自检通过。实测 `get_landmark_and_bbox(['ref_image.png'])`：
+
+```
+bbox[0] = (207, 85, 438, 377)      宽 231 × 高 292
+实际裁剪 shape: (292, 231, 3)
+bbox_shift 提示: Manually adjust range : [ -16~16 ]
+PREP_OK
+```
+
+### 9.5 ⚠️ 又一个中文路径陷阱（与本项目既有对策重合）
+
+MuseTalk 的 `read_imgs()` 用 `cv2.imread` 读图，而 **OpenCV 的窄字符 API 读不了中文路径**：
+
+```
+[WARN] cv::findDecoder imread_('E:\Development\26年\...\zeyu.png'): can't open/read file
+```
+
+返回 `None` 后一路崩到 face_alignment（`'NoneType' object has no attribute 'ndim'`）。
+**解法与既有设计重合**：`talking_gen.py` 的 `_stage_inputs` 本来就会把参考图复制到
+ASCII 工作区（`E:\ai-models\tmp\talking\<idx>\`），所以真实链路不受影响 ——
+但这也说明**暂存机制不能省**。
+
+### 9.6 环境复用（省掉 1 小时）
+
+MuseTalk 的依赖与 LongCat 高度重叠（torch 2.11+cu128 / numpy 1.26.4 / transformers /
+diffusers / opencv / librosa / soundfile / einops 均已就绪），只需追加
+`face-alignment`、`omegaconf`、`moviepy`、`imageio-ffmpeg`、`ffmpeg-python`。
+故**复用 `E:\ai-models\LongCat-Video\.venv`** 作为数字人后端共用环境，
+无需重建 venv、无需重装 2.6GB 的 torch。
+
+（`tensorflow` 依然不需要 —— 全仓库零引用。）

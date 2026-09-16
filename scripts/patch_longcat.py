@@ -122,13 +122,61 @@ _XFORMERS_CALL_NEW = (
 )
 
 
+# 第二处：avatar/attention.py 的 encoder cross-attention（q 与 encoder_k/v 等长，
+# attn_bias=None，但同样是 xformers kernel 在 sm_120 不可用）
+_ENCODER_CALL_OLD = (
+    "            x = xformers.ops.memory_efficient_attention(q, encoder_k, encoder_v, attn_bias=None, op=None,)\n"
+)
+_ENCODER_CALL_NEW = (
+    "            try:\n"
+    "                x = xformers.ops.memory_efficient_attention(q, encoder_k, encoder_v, attn_bias=None, op=None,)\n"
+    "            except (NotImplementedError, RuntimeError):\n"
+    "                x = torch.nn.functional.scaled_dot_product_attention(\n"
+    "                    q.transpose(1, 2).contiguous(),\n"
+    "                    encoder_k.transpose(1, 2).contiguous(),\n"
+    "                    encoder_v.transpose(1, 2).contiguous(),\n"
+    "                ).transpose(1, 2)\n"
+)
+
+# 第三处：modules/attention.py 的 MultiHeadCrossAttention，带 BlockDiagonalMask
+# （变长序列注意力）。单卡单样本时 B=1，BlockDiagonalMask 退化为普通注意力，
+# 直接降级 SDPA 即可（q/k/v 已被压平成 [1, S, H, D]）。
+_BDMASK_CALL_OLD = (
+    "        elif self.enable_xformers:\n"
+    "            import xformers.ops\n"
+    "            attn_bias = xformers.ops.fmha.attn_bias.BlockDiagonalMask.from_seqlens([N] * B, kv_seqlen)\n"
+    "            x = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=attn_bias)\n"
+)
+_BDMASK_CALL_NEW = (
+    "        elif self.enable_xformers:\n"
+    "            import xformers.ops\n"
+    "            try:\n"
+    "                attn_bias = xformers.ops.fmha.attn_bias.BlockDiagonalMask.from_seqlens([N] * B, kv_seqlen)\n"
+    "                x = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=attn_bias)\n"
+    "            except (NotImplementedError, RuntimeError):\n"
+    "                x = torch.nn.functional.scaled_dot_product_attention(\n"
+    "                    q.transpose(1, 2).contiguous(),\n"
+    "                    k.transpose(1, 2).contiguous(),\n"
+    "                    v.transpose(1, 2).contiguous(),\n"
+    "                ).transpose(1, 2)\n"
+)
+
+
 def build_sdpa_patches():
-    """两个 attention.py 各自加一条 xformers -> SDPA 的兜底。"""
+    """两个 attention.py 里所有 xformers 调用点都加 SDPA 兜底（共 4 处）。"""
     return [
+        # modules/attention.py 主 attention（attn_bias=None）
         (os.path.join("longcat_video", "modules", "attention.py"),
-         _XFORMERS_CALL_OLD, _XFORMERS_CALL_NEW, "xformers 失败时降级 SDPA"),
+         _XFORMERS_CALL_OLD, _XFORMERS_CALL_NEW, "主 attention 降级 SDPA"),
+        # modules/attention.py MultiHeadCrossAttention（BlockDiagonalMask）
+        (os.path.join("longcat_video", "modules", "attention.py"),
+         _BDMASK_CALL_OLD, _BDMASK_CALL_NEW, "cross-attn 降级 SDPA"),
+        # avatar/attention.py 主 attention（attn_bias=None）
         (os.path.join("longcat_video", "modules", "avatar", "attention.py"),
-         _XFORMERS_CALL_OLD, _XFORMERS_CALL_NEW, "xformers 失败时降级 SDPA"),
+         _XFORMERS_CALL_OLD, _XFORMERS_CALL_NEW, "主 attention 降级 SDPA"),
+        # avatar/attention.py encoder cross-attention
+        (os.path.join("longcat_video", "modules", "avatar", "attention.py"),
+         _ENCODER_CALL_OLD, _ENCODER_CALL_NEW, "encoder cross-attn 降级 SDPA"),
     ]
 
 

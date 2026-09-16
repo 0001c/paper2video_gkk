@@ -133,6 +133,30 @@ ALLOW_PATTERNS = {
 # 「小文件多、大文件少」的仓库，避免被单个小文件拖住串行等待。
 MAX_WORKERS = 4
 
+# 落盘目录名的例外。
+#
+# 默认规则是 repo_id 里的 `/` 换成 `__`（如 `org/name` -> `org__name`），但
+# LongCat 必须破例：上游 `run_demo_avatar_single_audio_to_video.py:113-115` 把
+# 底模目录名**硬编码**成 `checkpoint_dir` 的兄弟节点 `LongCat-Video`：
+#
+#     AutoTokenizer.from_pretrained(os.path.join(checkpoint_dir, '..', 'LongCat-Video'), ...)
+#
+# 所以这两个目录必须叫 `LongCat-Video` 与 `LongCat-Video-Avatar-1.5`，否则
+# 加载时直接 FileNotFoundError。--verify 会按本表反查目录，故仍然可用。
+LOCAL_DIR = {
+    "meituan-longcat/LongCat-Video": "LongCat-Video",
+    "meituan-longcat/LongCat-Video-Avatar-1.5": "LongCat-Video-Avatar-1.5",
+}
+
+
+def local_repo_dir(repo):
+    """repo_id -> 本地落盘目录的绝对路径（应用 LOCAL_DIR 例外）。
+
+    注意 WEIGHTS_DIR 在 main() 里会被 --weights-dir 覆盖，所以这里必须
+    在调用时读全局，不能把结果缓存到模块级常量。
+    """
+    return os.path.join(WEIGHTS_DIR, LOCAL_DIR.get(repo, repo.replace("/", "__")))
+
 
 # ──────────────────────────────────────────────────────────────
 # 工具
@@ -318,7 +342,7 @@ def download_repo(repo, source):
         raise RuntimeError("清单为空（仓库不存在或全部被白名单过滤）")
 
     total = sum(files.values())
-    local_dir = os.path.join(WEIGHTS_DIR, repo.replace("/", "__"))
+    local_dir = local_repo_dir(repo)
     os.makedirs(local_dir, exist_ok=True)
 
     def _present(path, size):
@@ -371,7 +395,7 @@ def download_repo(repo, source):
 
 def fetch_one(repo, source="auto"):
     group, desc, approx_gb, preferred = CATALOG[repo]
-    local_dir = os.path.join(WEIGHTS_DIR, repo.replace("/", "__"))
+    local_dir = local_repo_dir(repo)
 
     print("\n" + "=" * 78)
     print("[{}] {}".format(group, repo))
@@ -411,7 +435,7 @@ def verify_repo(repo, source="auto"):
     注意 CAM++ 只存在于 ModelScope、GUI-Owl 只存在于 HF，因此**不能**
     因为用户指定了某个源就对另一个源一概不查。
     """
-    local_dir = os.path.join(WEIGHTS_DIR, repo.replace("/", "__"))
+    local_dir = local_repo_dir(repo)
     order = list(LISTERS.keys())
     if source in order:
         order.remove(source)
@@ -457,7 +481,7 @@ def recover(repo):
     用于修复「huggingface_hub 因沙箱拦截 .lock 删除而没能完成改名」的残留。
     逐个源都扫一遍文件清单，用**大小唯一匹配**定位目标名。
     """
-    local_dir = os.path.join(WEIGHTS_DIR, repo.replace("/", "__"))
+    local_dir = local_repo_dir(repo)
     cache = os.path.join(local_dir, ".cache", "huggingface", "download")
     if not os.path.isdir(cache):
         print("  {}: 无 .cache 目录，跳过".format(repo))

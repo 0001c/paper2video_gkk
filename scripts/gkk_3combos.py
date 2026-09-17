@@ -18,6 +18,7 @@ Python 直接把 Unicode 字符串交给 Windows API，没有这层字节转换�
     python scripts/gkk_3combos.py <combo> [stage]
       combo : gkk_en | gkk_en_zh | gkk_zh | all
       stage : 透传给 --stage 的 JSON，默认 ["1","2","3"]
+      其余 : 原样追加给 pipeline.py（如 --reuse_script True）
 
 三个组合（语言是两个独立的轴，不是单一开关）:
     gkk_en     幻灯片 英文 + 讲稿 英文
@@ -49,7 +50,7 @@ COMBOS = {
 }
 
 
-def run_combo(name, slide_lang, script_lang, stage):
+def run_combo(name, slide_lang, script_lang, stage, extra=None):
     log_path = os.path.join(LOGDIR, '{}.log'.format(name))
     os.makedirs(LOGDIR, exist_ok=True)
 
@@ -64,6 +65,8 @@ def run_combo(name, slide_lang, script_lang, stage):
         '--gpu_list', '0',
         '--if_tree_search', 'False',
     ]
+    if extra:
+        cmd += list(extra)
 
     print('=== {}  slide_lang={} script_lang={} stage={} ==='.format(
         name, slide_lang, script_lang, stage), flush=True)
@@ -92,6 +95,8 @@ def run_combo(name, slide_lang, script_lang, stage):
 def main():
     combo = sys.argv[1] if len(sys.argv) > 1 else 'all'
     stage = sys.argv[2] if len(sys.argv) > 2 else '["1","2","3"]'
+    # 其余参数原样追加给 pipeline.py（例如 --reuse_script True、--paper_type humanities）
+    extra = sys.argv[3:]
 
     if combo == 'all':
         names = ['gkk_en', 'gkk_en_zh', 'gkk_zh']
@@ -107,7 +112,7 @@ def main():
     results = []
     for name in names:
         slide_lang, script_lang = COMBOS[name]
-        rc, dt = run_combo(name, slide_lang, script_lang, stage)
+        rc, dt = run_combo(name, slide_lang, script_lang, stage, extra)
         results.append((name, rc, dt))
 
     print('=' * 62)

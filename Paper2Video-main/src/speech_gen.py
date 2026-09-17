@@ -235,7 +235,8 @@ def _cap_tokens(text):
     return int(max(6.0, _estimate_seconds(text) * 2.5) * TTS_FRAMES_PER_SEC) + 180
 
 
-def inference_qwen3tts(text_prompt, save_path, ref_audio, ref_text, language=None):
+def inference_qwen3tts(text_prompt, save_path, ref_audio, ref_text, language=None,
+                       max_new_tokens=None):
     """零样本音色克隆合成，写入 save_path；**返回实际音频时长（秒）**。
 
     language 传 ``None`` 走自动语种适配（中英混排推荐）。

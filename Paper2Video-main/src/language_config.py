@@ -61,17 +61,15 @@ SLIDE_LANGS = {
     },
     "zh": {
         "desc": "中文幻灯片",
-        # 尚未实现。要做需要同时满足三件事，缺一不可：
-        #   ① 写 prompts/slide_beamer_prompt_zh.txt，把首行 "English" 与末尾
-        #      "All content should be in English." 改成中文要求，章节标题中文化；
-        #   ② 在该 prompt 里**明确要求 LLM 在导言区加 \usepackage{ctex}**
-        #      （导言区由 LLM 生成，不是模板给的，所以只能靠 prompt 约束）；
-        #      实测 tectonic 会自动拉 ctex/xeCJK + 自带 Fandol 中文字体，
-        #      不需要装任何东西、也不需要换引擎；
-        #   ③ 实测 VLM（subtitle_cursor_prompt 那一环）能否准确读出**中文
-        #      幻灯片图**里的文字 —— 这是唯一没验证过的环节，若中文 OCR 弱，
-        #      光标会乱指。
-        "prompt": None,
+        # 2026-09-18 实现。prompt 里写死了两条**实测得来**的硬约束：
+        #   · 导言区必须 \usepackage{ctex} —— tectonic 会自动拉 ctex/xeCJK
+        #     与自带的 Fandol 中文字体，不需要装字体、也不需要换引擎；
+        #   · **表格必须用 tabularray 的 tblr** —— ctex 与传统 tabular /
+        #     booktabs 存在**宏包级冲突**，编译必然报 "Misplaced \noalign"，
+        #     且与单元格是否含中文无关（实测纯英文表格同样失败）。
+        #     这一条是本次实现的主要障碍，已验证 tblr 在「表格 + 浮动体 +
+        #     中文图注 + 图片 + columns」下全部正常。
+        "prompt": path.join(SRC_DIR, "prompts", "slide_beamer_prompt_zh.txt"),
         "needs_ctex": True,
     },
 }

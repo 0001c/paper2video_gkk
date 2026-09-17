@@ -32,8 +32,41 @@ def extract_json_block(text: str, first_only: bool = True):
     return matches
 
 def extract_beamer_code(tex_str):
-    match = re.search(r"(\\documentclass(?:\[[^\]]*\])?\{beamer\}.*?\\end\{document\})", tex_str, re.DOTALL)
-    return match.group(1) if match else None
+    """从模型返回里提取可用的 beamer 代码。
+
+    原实现是一行正则::
+
+        re.search(r"(\\documentclass(?:\\[[^\\]]*\\])?\\{beamer\\}.*?\\end\\{document\\})", ...)
+
+    有两处会把**有效代码**误判成"没生成出来"：
+
+    * **只认 ``{beamer}``** —— 中文场景常用 ``\\documentclass{ctexbeamer}``
+      （ctex 提供的 beamer 文档类），那样整段代码会被丢弃；
+    * **强制要求 ``\\end{document}``** —— 输出被 max_tokens 截断时（本项目用的
+      DeepSeek-V4.1-Flash 是推理模型，长思维链会挤占输出预算）同样被丢弃，
+      而截断的代码常常**只差一个收尾**，交给下游的编译纠错环节完全可能救回来。
+
+    改为两段式：优先取完整的 document 环境；取不到就退化为「有开头就取到末尾，
+    并在末尾补上 ``\\end{document}``」。
+    """
+    if not isinstance(tex_str, str) or not tex_str.strip():
+        return None
+
+    complete = re.search(
+        r"(\\documentclass(?:\[[^\]]*\])?\{(?:ctex)?beamer\}.*?\\end\{document\})",
+        tex_str, re.DOTALL)
+    if complete:
+        return complete.group(1)
+
+    head = re.search(
+        r"(\\documentclass(?:\[[^\]]*\])?\{(?:ctex)?beamer\}.*)",
+        tex_str, re.DOTALL)
+    if head:
+        code = head.group(1).rstrip()
+        if "\\end{document}" not in code:
+            code += "\n\\end{document}\n"
+        return code
+    return None
 
 def latex_code_gen_upgrade(prompt_path, tex_dir, beamer_save_path, 
                            model_config_ll, model_config_vl,
@@ -75,9 +108,21 @@ def latex_code_gen_upgrade(prompt_path, tex_dir, beamer_save_path,
         # 不能带着 None 往下走：下面那句 open(path,"w") 会**先把文件截断成 0 字节**，
         # 再因为 write(None) 抛 TypeError。结果是「代码没生成出来」反而把上一版
         # 已经能编译的 slides.tex 毁掉。这里直接抛错，保住磁盘上的旧文件。
+        # 报错信息带上「返回长度 + 首尾片段」：否则只能猜是截断、格式错还是没生成，
+        # 而这三种的修法完全不同（提高 max_tokens / 放宽正则 / 调 prompt）。
+        _raw = response.msgs[-1].content or ""
         raise RuntimeError(
-            "幻灯片代码生成失败：模型返回中未找到可用的 beamer 代码。原始返回：\n{}".format(
-                response.msgs[-1].content[:2000]))
+            "幻灯片代码生成失败：模型返回中未找到可用的 beamer 代码。\n"
+            "  返回长度      : {} 字符\n"
+            "  含 \\documentclass: {}\n"
+            "  含 \\end{{document}}: {}\n"
+            "  开头 500 字符 :\n{}\n"
+            "  ----\n"
+            "  结尾 500 字符 :\n{}".format(
+                len(_raw),
+                "\\documentclass" in _raw,
+                "\\end{document}" in _raw,
+                _raw[:500], _raw[-500:]))
     with open(beamer_save_path, "w", encoding="utf-8") as f: f.write(code)
     ok, feedback = compile_tex(beamer_save_path)
 

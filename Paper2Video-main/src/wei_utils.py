@@ -1,3 +1,5 @@
+import os
+
 from camel.types import ModelPlatformType, ModelType
 from camel.configs import ChatGPTConfig, QwenConfig, VLLMConfig, OpenRouterConfig, GeminiConfig
 
@@ -16,6 +18,35 @@ _OPENAI_COMPATIBLE_ALIASES = (
 )
 
 
+def _max_output_tokens():
+    """输出 token 上限（可用 ``PAPER2VIDEO_MAX_TOKENS`` 覆盖），默认 32768。
+
+    ⚠️ 为什么从 16384 提到 32768（2026-09-18 实测）——
+    跑 `gkk_en_zh`（11 张幻灯片 + **中文**讲稿）时报的是
+    「VLM 连续 3 次未能给出可用的讲稿」，**看起来完全像网关抖动**。
+    但末次 usage 是 `completion_tokens=16386`，**正好贴死在旧上限 16384 上**：
+    输出被截断成不完整内容 → camel 解析不出消息（`msgs=[]`）→
+    被判空逻辑归类成「返回空响应」。**根因是上限太小，不是网络问题。**
+
+    为什么英文能过、中文撞顶：DeepSeek-V4.1-Flash 是**推理模型**，
+    思维链计入 completion_tokens（实测回一个 "OK" 就吃掉 18 token）。
+    英文讲稿约 11k token 能过；中文要求 80~110 汉字/页 × 11 页，输出量更大。
+
+    排查这类「空响应」时**先看 usage 里的 completion_tokens 是否贴着上限**，
+    再怀疑网络 —— 两者症状一模一样，判错方向会白折腾一整轮。
+    """
+    raw = os.environ.get("PAPER2VIDEO_MAX_TOKENS", "").strip()
+    if raw:
+        try:
+            value = int(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            print("[wei_utils] PAPER2VIDEO_MAX_TOKENS 不是正整数，"
+                  "回落到默认 32768：{!r}".format(raw))
+    return 32768
+
+
 def get_agent_config(model_type):
     agent_config = {}
     if model_type in _OPENAI_COMPATIBLE_ALIASES:
@@ -29,7 +60,8 @@ def get_agent_config(model_type):
         agent_config = {
             "model_type": model_type,
             "model_platform": ModelPlatformType.OPENAI_COMPATIBLE_MODEL,
-            "model_config": {**ChatGPTConfig().as_dict(), "max_tokens": 16384},
+            "model_config": {**ChatGPTConfig().as_dict(),
+                             "max_tokens": _max_output_tokens()},
             "max_images": 99,   # DeepSeek-V4.1-Flash 支持 1M 上下文，可整篇论文+全部幻灯片
         }
     elif model_type == 'qwen':

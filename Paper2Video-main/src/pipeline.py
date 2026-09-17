@@ -31,7 +31,7 @@ from cursor_gen import cursor_gen_per_sentence
 # from slide_code_gen import latex_code_gen
 from slide_code_gen_select_improvement import latex_code_gen_upgrade
 from cursor_render import render_video_with_cursor_from_json
-from subtitle_cursor_prompt_gen import subtitle_cursor_gen
+from subtitle_cursor_prompt_gen import subtitle_cursor_gen, validate_script_output
 
 from wei_utils import get_agent_config
 
@@ -92,6 +92,11 @@ if __name__ == '__main__':
                         choices=sorted(language_config.VIDEO_PRESETS),
                         help='输出语言预设：en=全英文（国际会议）；'
                              'zh=英文幻灯片 + 中文讲解（国内组会/中文答辩）')
+    parser.add_argument('--paper_type', type=str, default=None,
+                        choices=sorted(language_config.PAPER_TYPES),
+                        help='论文类型：auto=由模型判断（默认）；'
+                             'research=实验型研究；humanities=人文社科。'
+                             '显式指定时用确定性指令覆盖 prompt 里的软判据')
     parser.add_argument('--slide_lang', type=str, default=None,
                         choices=sorted(language_config.SLIDE_LANGS),
                         help='只指定幻灯片语言（覆盖 --video_lang 的该轴）')
@@ -100,6 +105,8 @@ if __name__ == '__main__':
                         help='只指定讲稿/TTS/字幕语言（覆盖 --video_lang 的该轴）')
     parser.add_argument('--gpu_list', type=str2list, default="")
     parser.add_argument('--if_tree_search', type=str2bool, default=True)
+    parser.add_argument('--reuse_script', type=str2bool, default=False,
+                        help='stage 2：若讲稿文件已存在且校验通过，跳过 VLM 调用\n（讲稿生成是唯一必须联网付费的一步，补跑时可省这一次费用）')
     parser.add_argument('--beamer_templete_prompt', type=str, default=None)
     parser.add_argument('--stage', type=str, default="[\"0\"]") 
     parser.add_argument('--talking_head_env', type=str, default="") 
@@ -115,6 +122,12 @@ if __name__ == '__main__':
     lang = language_config.resolve(args.slide_lang, args.script_lang,
                                    args.video_lang)
     print("[pipeline] 语言档位：{}".format(lang["desc"]))
+    # 论文类型的确定性覆盖指令；auto 时为 None，行为与本层引入之前一致
+    slide_extra_prompt = language_config.paper_type_directive(
+        args.paper_type, lang["slide_lang"])
+    if slide_extra_prompt:
+        print("[pipeline] 论文类型显式指定为 {}，已附加覆盖指令".format(
+            args.paper_type))
     args.ref_audio = args.ref_audio or lang["ref_audio"]
     args.ref_text = args.ref_text or lang["ref_text"]
     
@@ -160,14 +173,25 @@ if __name__ == '__main__':
     start_time = time.time() # start time
     if "1" in stage or  "0" in stage:
         prompt_path = lang["slide_prompt"]
-        if args.if_tree_search is True: 
-            usage_slide, beamer_path = latex_code_gen_upgrade(prompt_path=prompt_path, tex_dir=args.paper_latex_root, beamer_save_path=slide_latex_path, 
-                                                            model_config_ll=agent_config_t, model_config_vl=agent_config_v, beamer_temp_name=args.beamer_templete_prompt,
-                                                            if_tree_search=args.if_tree_search)
-        else:
-            paper_latex_path = path.join(args.paper_latex_root, "main.tex") 
-            usage_slide = latex_code_gen(prompt_path=prompt_path, tex_dir=args.paper_latex_root, tex_path=paper_latex_path, beamer_save_path=slide_latex_path, model_config=agent_config_t)
-            
+        # ⚠️ 上游这里的 if/else 有一条**永远会崩的分支**：else 里调用的
+        # ``latex_code_gen`` 来自 ``slide_code_gen``，而那一行 import 在本文件
+        # 第 31 行是**注释掉的**（上游只用 latex_code_gen_upgrade 这一条线）。
+        # 于是只要传 ``--if_tree_search False``，就会立刻
+        #   NameError: name 'latex_code_gen' is not defined
+        # 而 `--if_tree_search` 默认 True，所以这个坑平时不显形 ——
+        # 之前几次「跑通了」全是用 pipeline_light.py（它只有单分支）。
+        #
+        # 修法：与 pipeline_light.py 保持一致，只保留一条分支，把开关**透传**给
+        # latex_code_gen_upgrade 自己处理（它在内部决定是否跑「每帧 4 候选 + VLM 选优」）。
+        # 行为与参数从此一致，也去掉了对未导入名字的引用。
+        usage_slide, beamer_path = latex_code_gen_upgrade(
+            prompt_path=prompt_path, tex_dir=args.paper_latex_root,
+            beamer_save_path=slide_latex_path,
+            model_config_ll=agent_config_t, model_config_vl=agent_config_v,
+            beamer_temp_name=args.beamer_templete_prompt,
+            if_tree_search=args.if_tree_search,
+            extra_prompt=slide_extra_prompt)
+
         # 上游这里用 pdf2image.convert_from_path，但它依赖 poppler（Windows 上要额外装），
         # 而仓库自带的 pdf2img() 本来就是 PyMuPDF 实现。统一改走 PyMuPDF，免装 poppler。
         slide_imgs = render_pdf_to_images(beamer_path, dpi=400)
@@ -191,8 +215,29 @@ if __name__ == '__main__':
     speech_save_dir = path.join(args.result_dir, 'audio')
     if "2" in stage or  "0" in stage:
         prompt_path = lang["script_prompt"]
-        subtitle, usage_subtitle = subtitle_cursor_gen(slide_image_dir, prompt_path, agent_config_v)
-        with open(subtitle_cursor_save_path, 'w') as f: f.write(subtitle)
+        # ── --reuse_script：讲稿已存在且校验通过时，跳过 VLM 调用 ──
+        # 讲稿生成是整条链路里**唯一必须联网付费**的一步（VLM 要读全部幻灯片）；
+        # TTS / 光标定位 / 数字人 / 合片全是本地计算。所以「后续阶段失败、只重跑
+        # stage 2」时，没有这个开关就会把已付过费的调用再做一遍。
+        reused = False
+        if args.reuse_script and path.isfile(subtitle_cursor_save_path):
+            _cached = open(subtitle_cursor_save_path, encoding="utf-8").read()
+            _n = len([n for n in os.listdir(slide_image_dir)
+                      if n.lower().endswith(".png")])
+            _ok, _why = validate_script_output(_cached, _n)
+            if _ok:
+                subtitle, usage_subtitle, reused = _cached, {}, True
+                print("[Stage 2] --reuse_script：复用已有讲稿（{} 页，"
+                      "跳过 VLM 调用 => 本次无 API 费用）".format(_n))
+            else:
+                print("[Stage 2] --reuse_script：已有讲稿不合格（{}），改为重新生成"
+                      .format(_why))
+        if not reused:
+            subtitle, usage_subtitle = subtitle_cursor_gen(
+                slide_image_dir, prompt_path, agent_config_v)
+            # 显式 utf-8：读回处固定用 utf-8，写入端不该依赖环境默认编码
+            with open(subtitle_cursor_save_path, "w", encoding="utf-8") as f:
+                f.write(subtitle)
         if args.model_name_v not in token_usage.keys(): 
             token_usage[args.model_name_v] = [usage_subtitle]
         else: token_usage[args.model_name_v].append(usage_subtitle)

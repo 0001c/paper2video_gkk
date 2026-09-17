@@ -70,7 +70,8 @@ def extract_beamer_code(tex_str):
 
 def latex_code_gen_upgrade(prompt_path, tex_dir, beamer_save_path, 
                            model_config_ll, model_config_vl,
-                           beamer_temp_name=None, if_fix=True, if_tree_search=True):
+                           beamer_temp_name=None, if_fix=True, if_tree_search=True,
+                           extra_prompt=None):
     model = ModelFactory.create(
         model_platform=model_config_ll["model_platform"],
         model_type=model_config_ll["model_type"],
@@ -99,6 +100,14 @@ def latex_code_gen_upgrade(prompt_path, tex_dir, beamer_save_path,
         ]
         
     main_inference_prompt = "\n".join(map(str, main_inference_prompt))
+
+    # ── 论文类型的显式覆盖（来自 --paper_type）──
+    # 放在**最后**：指令的权威性靠"离提问最近"保证。prompt 模板里那套
+    # 「若源论文属于人文社科类…」是让模型自行判断的**软开关**，遇到边界论文
+    # （例如带实验章节的社会科学论文）可能判错。显式指定类型时，在这里用确定性
+    # 指令覆盖模型判断；默认 None（auto）时行为与本改动前完全一致。
+    if extra_prompt:
+        main_inference_prompt = main_inference_prompt + "\n\n" + extra_prompt
     user_msg = BaseMessage.make_user_message(role_name="User", content=main_inference_prompt)
     response = safe_step(agent, user_msg)
     token_usage["slide_gen"] = response.info['usage']

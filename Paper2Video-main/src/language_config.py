@@ -126,6 +126,91 @@ VIDEO_PRESETS = {
 }
 
 
+# ──────────────────────────────────────────────────────────────
+# 论文类型（--paper_type）
+# ──────────────────────────────────────────────────────────────
+# 为什么要有这一层：幻灯片 prompt 里关于「人文社科要不要替换实验章节」的判据，
+# 写在模板里只能由**模型自己判断**——那是个软开关。边界论文（例如带实验章节的
+# 社会科学论文、或带理论框架图的人文论文）会被判错，而错的方向是「凭空生成实验
+# 数据」或「丢掉本该有的实验页」，都很难事后补救。
+#
+# 所以给出显式档位：`auto` 保持原行为（沿用模板里的软判据），显式指定时
+# 由 paper_type_directive() 生成一段**覆盖性指令**追加到 prompt 末尾，
+# 用确定性要求压过模型的自由判断。
+PAPER_TYPES = {
+    "auto": {
+        "desc": "由模型自行判断（默认；判据见幻灯片 prompt 模板）",
+        "directive": None,
+    },
+    "research": {
+        "desc": "实验型研究：有实验 / 数据集 / 量化结果",
+        "directive": {
+            "zh": (
+                "【本次运行的类型覆盖：以下要求优先于上面关于章节结构的任何描述】\n"
+                "已确认源论文属于**实验型研究**（含实验、数据集或量化结果）。"
+                "请严格按上面列出的原结构生成，必须保留「方法 / 实验方法 / 实验设置 / "
+                "实验结果 / 消融实验」这一类章节。\n"
+                "其中所有数据、数据集名、指标名与数值**只能取自源文本**，不得编造；"
+                "若源文本确实缺少某一项（例如没做消融实验），就**省略该章节**，"
+                "不要用相近内容补造。"),
+            "en": (
+                "[Paper-type override for this run — this takes precedence over any "
+                "chapter-structure description above]\n"
+                "The source paper is confirmed to be an EMPIRICAL research paper (it has "
+                "experiments, datasets or quantitative results). Follow the original "
+                "structure listed above and KEEP the chapters \"Method / Experimental "
+                "method / Experimental setting / Experimental results / Ablation "
+                "experiment\".\n"
+                "All data, dataset names, metric names and numbers must come from the "
+                "source text only — invent nothing. If the source genuinely lacks one of "
+                "them (e.g. no ablation study was run), OMIT that chapter rather than "
+                "filling it with something similar."),
+        },
+    },
+    "humanities": {
+        "desc": "人文社科：无实验、无量化数据（如本文艺理论、史学研究）",
+        "directive": {
+            "zh": (
+                "【本次运行的类型覆盖：以下要求优先于上面关于章节结构的任何描述】\n"
+                "已确认源论文属于**人文社科类**（无实验、无量化数据）。请只使用这套结构："
+                "封面页 / 研究动机 / 相关工作 / 理论框架与概念谱系 / 分析路径与材料 / "
+                "案例与文本分析（可分多页）/ 论证的边界与延伸 / 不足之处 / 未来工作 / 结束页。\n"
+                "**不要**生成任何「实验方法 / 实验设置 / 实验结果 / 消融实验」章节；"
+                "**不要**出现数据集名、指标名或数值、对比表格。"
+                "源文本没有的内容一律不写，宁可少一页。"),
+            "en": (
+                "[Paper-type override for this run — this takes precedence over any "
+                "chapter-structure description above]\n"
+                "The source paper is confirmed to be a HUMANITIES / social-science paper "
+                "(no experiments, no quantitative data). Use ONLY this structure: Title / "
+                "Motivation / Related Work / Theoretical framework and conceptual "
+                "genealogy / Analytical approach and materials / Case and textual "
+                "analysis (may span several pages) / Boundaries and extensions of the "
+                "argument / Deficiencies / Future research / End slide.\n"
+                "Do NOT generate any \"Experimental method / Experimental setting / "
+                "Experimental results / Ablation experiment\" chapter, and do NOT include "
+                "dataset names, metric names, numeric values or comparison tables. "
+                "Write nothing that is absent from the source; fewer slides is fine."),
+        },
+    },
+}
+
+
+def paper_type_directive(paper_type, slide_lang="en"):
+    """把 ``--paper_type`` 翻成一段**覆盖性指令**（追加到 prompt 末尾）。
+
+    ``auto`` / ``None`` 返回 ``None`` —— 此时完全沿用 prompt 模板里的软判据，
+    行为与本层引入之前一致。
+    """
+    if not paper_type or paper_type == "auto":
+        return None
+    if paper_type not in PAPER_TYPES:
+        raise KeyError("未知的论文类型 {!r}；可选：{}".format(
+            paper_type, ", ".join(sorted(PAPER_TYPES))))
+    table = PAPER_TYPES[paper_type]["directive"] or {}
+    return table.get(slide_lang) or table.get("en")
+
+
 def resolve(slide_lang=None, script_lang=None, preset=None,
             for_print=True):
     """把语言选择解析成一份完整、可用的配置。

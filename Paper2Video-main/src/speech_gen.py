@@ -201,22 +201,107 @@ def transcribe_with_whisperx(audio_path, lang="en", device=None):
 # 语音合成
 # ──────────────────────────────────────────────────────────────
 
+# ──────────────────────────────────────────────────────────────
+# 退化生成的护栏（2026-09-18）
+# ──────────────────────────────────────────────────────────────
+# Qwen3-TTS 会**随机陷入超长自回归生成**：实测两次，单页从 ~30 秒退化到 10 分钟
+# 以上仍未结束（CPU 单核满载、GPU ~34%）。卡住那页只有 125 汉字，比已经成功的那页
+# 还短 —— 所以这**与文本内容无关**，是采样层面的偶发退化，改文本救不了，只能加护栏。
+#
+# generate_voice_clone 接受 max_new_tokens 并透传到底层 generate（实测：
+# 80 -> 6.32s、400 -> 14.64s），而 Qwen3-TTS 是 **12Hz** 编码，
+# 于是「音频秒数 ≈ token 数 / 12」—— 据此给出确定性的时长上限。
+TTS_FRAMES_PER_SEC = 12.0
+
+# 语速常量只用于估算上限，取偏快一侧；宁可上限宽松，也不要误杀正常语速
+_CJK_PER_SEC = 3.7        # 中文实测（本项目的 12 页中文讲稿）
+_EN_WORDS_PER_SEC = 2.2   # 英文
+_PAUSE_PER_BREAK = 0.35   # 句间 \n\n\n 的静音
+
+
+def _estimate_seconds(text):
+    """估算一段讲稿的朗读时长（秒）。只用于给生成设上限。"""
+    cjk = len(re.findall(r"[\u4e00-\u9fff]", text))
+    words = len(re.findall(r"[A-Za-z]+", text))
+    return (cjk / _CJK_PER_SEC + words / _EN_WORDS_PER_SEC
+            + text.count("\n\n\n") * _PAUSE_PER_BREAK)
+
+
+def _cap_tokens(text):
+    """给一段讲稿算一个**宽松但有界**的 token 上限。
+
+    2.5 倍余量 + 固定冗余：正常语速不会撞上；退化生成会被硬截断。
+    """
+    return int(max(6.0, _estimate_seconds(text) * 2.5) * TTS_FRAMES_PER_SEC) + 180
+
+
 def inference_qwen3tts(text_prompt, save_path, ref_audio, ref_text, language=None):
-    """零样本音色克隆合成，写入 save_path。
+    """零样本音色克隆合成，写入 save_path；**返回实际音频时长（秒）**。
 
     language 传 ``None`` 走自动语种适配（中英混排推荐）。
+    ``max_new_tokens`` 是本项目对付**退化生成**的护栏（见上方常量区注释）：
+    给它一个时长上限，最坏也只是这一页在到达上限时被截断，
+    而不会让整条流水线卡在十分钟以上。
     """
     import soundfile as sf
 
     os.makedirs(path.dirname(str(save_path)) or ".", exist_ok=True)
     prompt = get_clone_prompt(ref_audio, ref_text)
+    kwargs = {}
+    if max_new_tokens:
+        kwargs["max_new_tokens"] = int(max_new_tokens)
     wavs, sr = get_tts_model().generate_voice_clone(
         text=text_prompt,
         language=language,
         voice_clone_prompt=prompt,
+        **kwargs
     )
     sf.write(str(save_path), wavs[0], sr)
-    return save_path
+    return len(wavs[0]) / float(sr)
+
+
+def synth_page_qwen3tts(text_prompt, save_path, ref_audio, ref_text, language=None,
+                        page_label=""):
+    """合成一页讲稿，带**两级退化护栏**。返回 ``(路径, 时长秒)``。
+
+    ① 整页生成带宽松上限；② 撞上限（= 判为退化）则逐句生成再拼接。
+    """
+    import numpy as np
+    import soundfile as sf
+
+    cap = _cap_tokens(text_prompt)
+    dur = inference_qwen3tts(text_prompt, save_path, ref_audio, ref_text,
+                             language=language, max_new_tokens=cap)
+    if dur < cap / TTS_FRAMES_PER_SEC * 0.95:
+        return save_path, dur
+
+    print("[speech_gen] {} 撞到时长上限（实得 {:.1f}s / 上限 {:.1f}s）—— 判为退化生成，"
+          "改为逐句合成".format(page_label or "该页", dur, cap / TTS_FRAMES_PER_SEC))
+
+    sentences = [s.strip() for s in text_prompt.split("\n\n\n") if s.strip()]
+    if len(sentences) <= 1:
+        sentences = [s.strip() for s in
+                     re.split(r"(?<=[。！？!?；;])", text_prompt) if s.strip()]
+    if len(sentences) <= 1:
+        print("[speech_gen] {} 无法再分句，保留被截断的结果".format(page_label or "该页"))
+        return save_path, dur
+
+    parts, sr = [], None
+    for i, sent in enumerate(sentences):
+        tmp = "{}.part{}.wav".format(path.splitext(str(save_path))[0], i)
+        inference_qwen3tts(sent, tmp, ref_audio, ref_text, language=language,
+                           max_new_tokens=_cap_tokens(sent))
+        wav, sr = sf.read(tmp, dtype="float32")
+        os.remove(tmp)
+        if parts:
+            parts.append(np.zeros(int(sr * 0.35), dtype="float32"))
+        parts.append(wav)
+    merged = np.concatenate(parts)
+    sf.write(str(save_path), merged, sr)
+    dur = len(merged) / float(sr)
+    print("[speech_gen] {} 逐句合成完成：{} 句 -> {:.1f}s".format(
+        page_label or "该页", len(sentences), dur))
+    return save_path, dur
 
 
 def inference_f5(text_prompt, save_path, ref_audio, ref_text):
@@ -285,8 +370,10 @@ def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=
         speech_result_path = path.join(speech_save_dir, "{}.wav".format(str(slide_idx)))
 
         if model_type == "qwen3tts":
-            inference_qwen3tts(subtitle, speech_result_path, ref_audio, ref_text,
-                               language=language)
+            # 走带护栏的入口：退化生成最多被截断，不会让整轮卡住
+            synth_page_qwen3tts(subtitle, speech_result_path, ref_audio, ref_text,
+                                language=language,
+                                page_label="第 {} 页".format(slide_idx))
         elif model_type == "f5":
             inference_f5(subtitle, speech_result_path, ref_audio, ref_text)
         else:

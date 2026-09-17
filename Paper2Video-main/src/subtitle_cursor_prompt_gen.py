@@ -45,6 +45,45 @@ def validate_script_output(text, expected_slides):
     return (not issues), "；".join(issues)
 
 
+def _empty_response_hint(response, model_config):
+    """把「空响应」**当场**区分成「被截断」还是「真·空」，别等人工回头猜。
+
+    为什么需要这个函数
+    ------------------
+    这两种根因在日志上**长得一模一样**（camel 都只给 ``msgs=[]``），
+    但修法完全相反：
+
+    - **输出被 max_tokens 截断** → 调大上限或分批输出。
+    - **真的没产出**（欠费 / 限流 / 鉴权）→ 先查余额与额度。
+
+    本项目**已经为此误判过两次**：第一次判成「余额耗尽」、第二次判成「网关抖动」，
+    两次排查方向全错。而第二次的真相就摆在 usage 里
+    （``completion_tokens=16386`` 贴死上限 16384），只是当时没打印出来。
+
+    判据（只有一条，优先于一切猜测）：
+        completion_tokens 是否 **贴着** max_tokens。贴着 = 截断。
+    注意推理模型的**思维链也计入 completion_tokens**，所以"正文很短却撞顶"
+    是正常的 —— 额度是被思考吃掉的。
+    """
+    usage = (getattr(response, "info", None) or {}).get("usage") or {}
+    completion = usage.get("completion_tokens")
+    limit = (model_config.get("model_config") or {}).get("max_tokens") \
+        if isinstance(model_config, dict) else None
+
+    if completion is None:
+        return ("usage 里没有 completion_tokens → 模型侧未返回内容，"
+                "先查 API 余额 / 限流 / 鉴权")
+    if limit and completion >= limit * 0.98:
+        return ("completion_tokens={} 已贴着上限 max_tokens={} → **输出被截断**"
+                "（推理模型的思维链也计入 completion_tokens）。"
+                "修法：调大 PAPER2VIDEO_MAX_TOKENS 或分批输出 —— 不要怀疑网络"
+                .format(completion, limit))
+    if not completion:
+        return "completion_tokens=0 → 模型没产出任何 token，先查余额 / 限流 / 鉴权"
+    return ("completion_tokens={}（未贴上限却解析不出消息）→ 多半是输出格式"
+            "不符合预期，检查 prompt 与该模型的能力匹配".format(completion))
+
+
 def subtitle_cursor_gen(slide_imgs_dir, prompt_path, model_config, retries=None):
     """让 VLM 看全部幻灯片，产出「讲稿 | 光标目标」的逐页文本。
 
@@ -106,19 +145,27 @@ def subtitle_cursor_gen(slide_imgs_dir, prompt_path, model_config, retries=None)
                           attempt, attempts, why, len(images), len(content), wait))
                 time.sleep(wait)
             continue
-        last_note = repr(response)[:200]
+        usage = (getattr(response, "info", None) or {}).get("usage") or {}
+        hint = _empty_response_hint(response, model_config)
+        last_note = "{} | usage={}".format(repr(response)[:300], usage)
         if attempt < attempts:
             wait = 3 * attempt
             print("[subtitle_cursor_gen] 第 {}/{} 次返回空响应（幻灯片 {} 张，"
-                  "prompt {}），{}s 后重试".format(
-                      attempt, attempts, len(images), path.basename(prompt_path), wait))
+                  "prompt {}）\n    判定：{}\n    {}s 后重试".format(
+                      attempt, attempts, len(images), path.basename(prompt_path),
+                      hint, wait))
             time.sleep(wait)
 
     raise RuntimeError(
         "VLM 连续 {} 次未能给出可用的讲稿，放弃。幻灯片 {} 张、prompt={}。\n"
         "  末次问题：{}\n"
-        "  排查方向：① 模型/网关侧是否限流或超时；② 输出是否被 max_tokens 截断；"
-        "③ 幻灯片过多导致上下文超限；④ 换 --model_name_v 试试。\n"
+        "  排查顺序（按命中率排，不要跳步）：\n"
+        "    ① 看上面 usage 的 completion_tokens 是否贴着 max_tokens ——"
+        "贴着就是**输出被截断**（推理模型思维链也占额度），"
+        "调大 PAPER2VIDEO_MAX_TOKENS 或分批输出，**不要先怀疑网络**；\n"
+        "    ② 再查 API 余额与限流（欠费时网关返回空、不给错误码，症状与①一样）；\n"
+        "    ③ 幻灯片过多导致上下文超限；\n"
+        "    ④ 换 --model_name_v 试试。\n"
         "  重试次数可用环境变量 PAPER2VIDEO_VLM_RETRIES 调整。".format(
             attempts, len(images), path.basename(prompt_path), last_note))
 

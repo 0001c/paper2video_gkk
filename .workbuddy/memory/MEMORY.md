@@ -53,3 +53,25 @@
 
 **许可证雷区**：`OmniAvatar-1.3B` 的 model card 无 license 字段；
 `tencent/HunyuanVideo-Avatar` 是腾讯社区协议（非商用）→ 商业交付只用 Apache-2.0 的 InfiniteTalk。
+
+## H5 可视化改造（2026-09-18 设计，待用户确认）
+
+方案文档 `docs/Web可视化方案.md`。改造**只加外壳、不碰算法**（TTS/光标/数字人代码一律不动）。
+
+三条最容易踩的硬约束：
+
+1. **入口是 LaTeX 源码目录，不是 PDF**：`--paper_latex_root` 下必须有 `main.tex`。
+   目前的 `assets/papers/gkk_mengxin/main.tex` 是人工从 PDF 重建的，**无自动化** ——
+   这是 H5 的核心缺口（用户手上必然是 PDF）。
+2. **H5 只需要一组 API key**：`OPENAI_API_KEY` / `OPENAI_API_BASE`（DeepSeek）。
+   `.env` 的 `DASHSCOPE_API_KEY` 只在 `check_env.py` 查存在性，流水线不读。
+3. **`--if_tree_search` 必须写死 False**：`pipeline.py:31` 那行 import 被注释掉，
+   而默认值 True 会走 `latex_code_gen` → `NameError`。**坏的是默认值**，
+   之前跑通全靠 `pipeline_light.py` 掩盖。不要把这个开关暴露到界面上。
+
+成本口径：`result/<名字>/token.json` 记实际用量；实测一篇约 5.6 万 token，
+**讲稿生成占 76%**（要喂全部幻灯片图），故 `--reuse_script` 是省钱主力。
+
+架构要点：FastAPI + **单 worker 串行队列**（单卡 16GB 并行必 OOM）；
+流水线走 **子进程** `Popen(argv, cwd=绝对路径)`，不经 shell（MSYS 的 cd 遇中文路径会失败）；
+服务**只监听 127.0.0.1**（界面含 API key 与文件系统访问）。

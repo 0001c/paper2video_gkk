@@ -314,6 +314,166 @@ def draw_red_dots_on_image(image_path, point, radius=5, out_path="output.jpg"):
 
 
 # ──────────────────────────────────────────────────────────────
+# PDF 文本定位（不依赖 grounding 模型）
+# ──────────────────────────────────────────────────────────────
+
+_TEXT_KEEP = re.compile(r"[0-9a-z\u4e00-\u9fff]+")
+
+
+def normalize_text(text):
+    """文本规范化：小写、只留字母数字与汉字、压空白。
+
+    中英通用 —— 比 ``\\b\\w+\\b`` 可靠（后者对中文等于没分词）。
+    """
+    return " ".join(_TEXT_KEEP.findall(str(text).lower()))
+
+
+def extract_quote(description):
+    """取出描述里**引号包裹**的短语；没有引号则返回 ``None``。
+
+    新 prompt 要求描述形如 ``... | "Slide Builder"``（逐字引用幻灯片原文），
+    这里把引号内容取出用于精确定位。同时兼容中英文引号。
+    """
+    if not description:
+        return None
+    for pattern in (r'"([^"]{2,160})"',
+                    "\u201c([^\u201d]{2,160})\u201d",
+                    r"'([^']{2,160})'"):
+        match = re.search(pattern, description)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+def strip_cursor_prefix(description):
+    """去掉 ``cursor on the`` 一类前缀，留下目标描述。
+
+    这是为了兼容**改 prompt 之前**的旧描述（概念化表述）—— 让它们至少有机会
+    命中，而不是一律回退到 grounding 模型。
+    """
+    text = re.sub(r"^\s*cursor\s+(on|to|at)\s+(the\s+)?", "",
+                  str(description or ""), flags=re.I)
+    return text.strip(" .\u3002\uff0c,\"'")
+
+
+class PdfSlideLocator:
+    """用幻灯片 PDF 的**文本坐标**定位短语 —— 不经过任何神经网络。
+
+    为什么需要它（都是实测结论）：
+
+    * **GUI-Owl 是 UI grounding 模型**。它的 system prompt（照搬官方工具调用
+      协议，不能自创）明确要求「click any **buttons, links, icons**」，而幻灯片
+      上根本没有这类控件。实测它会给出「区域级」答案：`the presentation icon`
+      与 `the method overview section` 两条不同描述落到相距仅 73px 的位置；
+      页8 的 4 条描述落点 y 全挤在同一条水平带上。
+    * **提高喂图分辨率没有用**：GROUNDING_MAX_EDGE 1008 -> 2016 后，落点距
+      目标反而更远（70.8pt -> 129.3pt）。瓶颈是模型的跨域行为，不是清晰度。
+
+    而 LaTeX 编译出的 ``slides.pdf`` 里，**每一行文字的坐标都是精确已知的**。
+    只要描述能给出「幻灯片上的原文短语」，就能直接查到位置：像素级精度、
+    零推理开销、完全可解释、可离线复现（无随机性）。
+
+    查不到时不报错，由调用方回退 GUI-Owl —— 所以它是**增强**而非替换。
+    """
+
+    def __init__(self, pdf_path, img_width, img_height):
+        import fitz
+
+        self.doc = fitz.open(pdf_path)
+        self.img_width = int(img_width)
+        self.img_height = int(img_height)
+        self._lines_cache = {}
+        self._page_cache = {}
+
+    @property
+    def page_count(self):
+        return self.doc.page_count
+
+    def _page(self, page_idx):
+        if page_idx not in self._page_cache:
+            self._page_cache[page_idx] = self.doc.load_page(page_idx)
+        return self._page_cache[page_idx]
+
+    def _lines(self, page_idx):
+        """该页的文字行 ``[(bbox, text)]``。
+
+        取**行级**而非块级：块往往是整段甚至整栏，落点会落在段落中心；
+        行级才能指到「正在讲的那一行」。
+        """
+        if page_idx not in self._lines_cache:
+            page = self._page(page_idx)
+            lines = []
+            for block in page.get_text("dict").get("blocks", []):
+                if block.get("type") != 0:          # 0 = 文本块
+                    continue
+                for line in block.get("lines", []):
+                    text = "".join(span.get("text", "")
+                                   for span in line.get("spans", []))
+                    if text.strip():
+                        lines.append((line["bbox"], text))
+            self._lines_cache[page_idx] = lines
+        return self._lines_cache[page_idx]
+
+    def _to_pixels(self, page, bbox):
+        """PDF 点 -> 成片像素。按**原始渲染尺寸**换算（400dpi 下 2016x1512）。"""
+        sx = self.img_width / page.rect.width
+        sy = self.img_height / page.rect.height
+        x0, y0, x1, y1 = bbox
+        return (int(round((x0 + x1) / 2 * sx)), int(round((y0 + y1) / 2 * sy)))
+
+    def locate(self, page_idx, phrase, min_ratio=0.75):
+        """在 ``page_idx`` 页定位短语，返回像素坐标；失败返回 ``None``。
+
+        三级策略，由精确到宽松：
+          ① ``page.search_for`` —— 原文完全一致时最准
+          ② 行级「规范化包含」—— 容忍大小写与标点差异
+          ③ 行级模糊匹配（difflib ``>= min_ratio``）
+        """
+        phrase = str(phrase or "").strip().strip("\"'")
+        if not phrase or page_idx < 0 or page_idx >= self.doc.page_count:
+            return None
+
+        page = self._page(page_idx)
+
+        try:
+            rects = page.search_for(phrase)
+        except Exception:
+            rects = []
+        if rects:
+            first = rects[0]
+            return self._to_pixels(page, (first.x0, first.y0, first.x1, first.y1))
+
+        target = normalize_text(phrase)
+        if not target:
+            return None
+
+        hits = [(bbox, text) for bbox, text in self._lines(page_idx)
+                if target in normalize_text(text)]
+        if hits:
+            # 多行都包含时取**最短**的那行：最贴近原短语，避免落到整段中心
+            bbox, _ = min(hits, key=lambda item: len(normalize_text(item[1])))
+            return self._to_pixels(page, bbox)
+
+        import difflib
+
+        best_bbox, best_ratio = None, 0.0
+        for bbox, text in self._lines(page_idx):
+            ratio = difflib.SequenceMatcher(
+                None, target, normalize_text(text)).ratio()
+            if ratio > best_ratio:
+                best_bbox, best_ratio = bbox, ratio
+        if best_bbox is not None and best_ratio >= min_ratio:
+            return self._to_pixels(page, best_bbox)
+        return None
+
+    def close(self):
+        try:
+            self.doc.close()
+        except Exception:
+            pass
+
+
+# ──────────────────────────────────────────────────────────────
 # 时间轴
 # ──────────────────────────────────────────────────────────────
 
@@ -470,9 +630,46 @@ def timesteps(subtitles, aligned_result, audio_path):
 # 主流程
 # ──────────────────────────────────────────────────────────────
 
+def _open_pdf_locator(pdf_path, img_width, img_height, page_count):
+    """打开 PDF 定位器，并**校验页数 == 幻灯片张数**。
+
+    校验是必需的：pipeline 会把 ``--paper_latex_root`` **整个目录**复制到
+    ``result/<run>/latex_proj``，而那个目录里可能自带一个 ``slides.pdf``
+    （上游 demo 的示例，16 页）。如果本次没跑 stage 1、只是复用了已有的
+    ``slide_imgs``，这个 PDF 就与幻灯片**不同源** —— 拿它定位会**静默错位**，
+    比不定还糟（实测踩过：用示例 PDF 当 ground truth，把描述匹配率算成 14%，
+    换成同源 PDF 后是 45%）。
+
+    所以宁可退回 grounding，也不要错位。
+    """
+    if not pdf_path:
+        print("[cursor_gen] 未提供幻灯片 PDF，跳过 PDF 文本定位（全部走 grounding）")
+        return None
+    if not path.isfile(pdf_path):
+        print("[cursor_gen] 幻灯片 PDF 不存在，跳过 PDF 文本定位：{}".format(pdf_path))
+        return None
+    try:
+        locator = PdfSlideLocator(pdf_path, img_width, img_height)
+    except Exception as exc:
+        print("[cursor_gen] 打开 PDF 失败，跳过 PDF 文本定位：{}".format(exc))
+        return None
+    if locator.page_count != page_count:
+        print("[cursor_gen] ⚠️ PDF 页数({}) != 幻灯片张数({})，对应关系不可信，"
+              "放弃 PDF 定位以免错位；请确认该 PDF 与 slide_imgs 来自同一次编译"
+              .format(locator.page_count, page_count))
+        locator.close()
+        return None
+    print("[cursor_gen] PDF 文本定位已启用：{}（{} 页）".format(pdf_path, page_count))
+    return locator
+
+
 def cursor_gen_per_sentence(script_path, slide_img_dir, slide_audio_dir,
-                            cursor_save_path, gpu_list=None, language="English"):
+                            cursor_save_path, gpu_list=None, language="English",
+                            slide_pdf_path=None):
     """逐句定位光标并生成时间轴，写入 cursor_save_path。
+
+    定位分两条路，**优先 PDF 文本坐标**（像素级精确、零推理开销、可离线复现），
+    查不到才回退 GUI-Owl grounding。理由见 :class:`PdfSlideLocator` 的说明。
 
     单卡环境走「模型常驻 + 串行推理」；多卡才启用进程池。
     """
@@ -489,6 +686,13 @@ def cursor_gen_per_sentence(script_path, slide_img_dir, slide_audio_dir,
     if len(slide_imgs) < len(parsed_speech):
         raise ValueError("幻灯片数量({})少于脚本页数({})".format(len(slide_imgs), len(parsed_speech)))
 
+    # 幻灯片渲染尺寸：PDF 坐标换算与「中心点兜底」都要用。
+    # 同样避开 cv2.imread：它读不了含中文路径（理由见 infer_cursor）。
+    from PIL import Image as _Image
+
+    with _Image.open(str(slide_imgs[0])) as _handle:
+        slide_w, slide_h = _handle.size
+
     # 组装任务
     task_list = []
     for slide_idx in range(len(parsed_speech)):
@@ -496,31 +700,62 @@ def cursor_gen_per_sentence(script_path, slide_img_dir, slide_audio_dir,
         for sentence_idx, (prompt, cursor_prompt) in enumerate(parsed_speech[slide_idx]):
             task_list.append((slide_idx, sentence_idx, prompt, cursor_prompt, image_path, 0))
 
-    devices = pv_env.gpu_list(gpu_list)
+    # ── 第一级：PDF 文本坐标 ──
+    resolved = [None] * len(task_list)
+    locator = _open_pdf_locator(slide_pdf_path, slide_w, slide_h, len(parsed_speech))
+    if locator is not None:
+        for pos, task in enumerate(task_list):
+            slide_idx, _, _, cursor_prompt, _, _ = task
+            phrase = extract_quote(cursor_prompt) or strip_cursor_prefix(cursor_prompt)
+            point = locator.locate(slide_idx, phrase)
+            if point is not None:
+                resolved[pos] = point
+        hit = sum(1 for item in resolved if item is not None)
+        print("[cursor_gen] PDF 文本定位命中 {}/{} 条（其余回退 GUI-Owl）".format(
+            hit, len(task_list)))
+        locator.close()
 
-    if len(devices) <= 1:
+    # ── 第二级：GUI-Owl grounding，只处理 PDF 没命中的 ──
+    devices = pv_env.gpu_list(gpu_list)
+    pending = [task for pos, task in enumerate(task_list) if resolved[pos] is None]
+
+    if not pending:
+        print("[cursor_gen] 全部由 PDF 文本定位完成，未加载 grounding 模型")
+        fallback = []
+    elif len(devices) <= 1:
         # 单卡：模型常驻，避免每句重载
-        print("[cursor_gen] 单卡串行模式，共 {} 条指令".format(len(task_list)))
-        cursor_result = []
-        for idx, task in enumerate(task_list):
-            cursor_result.append(_infer_task(task))
+        print("[cursor_gen] 单卡串行模式，共 {} 条指令".format(len(pending)))
+        fallback = []
+        for idx, task in enumerate(pending):
+            fallback.append(_infer_task(task))
             if (idx + 1) % 10 == 0:
-                print("[cursor_gen] {}/{}".format(idx + 1, len(task_list)))
+                print("[cursor_gen] {}/{}".format(idx + 1, len(pending)))
     else:
         import multiprocessing as mp
-        print("[cursor_gen] 多卡模式 {}，共 {} 条指令".format(devices, len(task_list)))
-        for idx, task in enumerate(task_list):
-            task_list[idx] = task[:5] + (devices[idx % len(devices)],)
+        print("[cursor_gen] 多卡模式 {}，共 {} 条指令".format(devices, len(pending)))
+        pending = [task[:5] + (devices[i % len(devices)],)
+                   for i, task in enumerate(pending)]
         ctx = mp.get_context("spawn")
         with ctx.Pool(processes=len(devices)) as pool:
-            cursor_result = pool.map(_infer_task, task_list)
+            fallback = pool.map(_infer_task, pending)
+
+    # 合回原始顺序，并标注来源（便于统计两条路各占多少）
+    cursor_result = []
+    fallback_iter = iter(fallback)
+    for pos, task in enumerate(task_list):
+        slide_idx, sentence_idx, prompt, cursor_prompt, _, _ = task
+        if resolved[pos] is not None:
+            cursor_result.append({
+                "slide": slide_idx, "sentence": sentence_idx, "speech_text": prompt,
+                "cursor_prompt": cursor_prompt, "cursor": resolved[pos],
+                "token": "", "source": "pdf",
+            })
+        else:
+            item = next(fallback_iter)
+            item["source"] = "grounding"
+            cursor_result.append(item)
 
     # 「no」指令与解析失败 -> 画面中心
-    # 同样避开 cv2.imread：它读不了中文路径（理由见 infer_cursor 里的说明）。
-    from PIL import Image as _Image
-
-    with _Image.open(str(slide_imgs[0])) as _handle:
-        slide_w, slide_h = _handle.size
     center = (slide_w // 2, slide_h // 2)
     for item in cursor_result:
         if item["cursor"] is None:

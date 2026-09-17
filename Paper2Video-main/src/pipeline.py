@@ -148,6 +148,13 @@ if __name__ == '__main__':
     ## Step 1: Slide Generation
     slide_latex_path = path.join(args.paper_latex_root, "slides.tex")
     slide_image_dir = path.join(args.result_dir, 'slide_imgs')
+
+    # 供光标定位做 PDF 文本坐标匹配。优先用 stage 1 标记过的**同源**副本；
+    # 不存在时退回 latex_proj/slides.pdf（template 自带示例的可能是错的，
+    # cursor_gen 会用页数校验拦下来并回退 grounding）。
+    slide_pdf_path = path.join(args.result_dir, 'slides_rendered.pdf')
+    if not path.isfile(slide_pdf_path):
+        slide_pdf_path = path.join(args.paper_latex_root, 'slides.pdf')
     os.makedirs(slide_image_dir, exist_ok=True)
     
     start_time = time.time() # start time
@@ -165,6 +172,10 @@ if __name__ == '__main__':
         # 而仓库自带的 pdf2img() 本来就是 PyMuPDF 实现。统一改走 PyMuPDF，免装 poppler。
         slide_imgs = render_pdf_to_images(beamer_path, dpi=400)
         for i, img in enumerate(slide_imgs): img.save(path.join(slide_image_dir, f"{i+1}.png")) # save slides as images
+        # 另存一份「与 slide_imgs 同源」的 PDF（理由见 pipeline_light 里的说明）
+        _rendered_pdf = path.join(args.result_dir, 'slides_rendered.pdf')
+        shutil.copy2(beamer_path, _rendered_pdf)
+        print("[Stage 1] 已保存同源 PDF -> {}".format(_rendered_pdf))
         if args.model_name_t not in token_usage.keys(): 
             token_usage[args.model_name_t] = [usage_slide]
         else: token_usage[args.model_name_t].append(usage_slide)
@@ -204,7 +215,7 @@ if __name__ == '__main__':
         os.environ["PYTHONHASHSEED"] = "random"        
         cursor_token = cursor_gen_per_sentence(script_path=subtitle_cursor_save_path, slide_img_dir=slide_image_dir, 
                                 slide_audio_dir=speech_save_dir, cursor_save_path=cursor_save_path, gpu_list=args.gpu_list,
-                                language=lang["align_language"])
+                                language=lang["align_language"], slide_pdf_path=slide_pdf_path)
         token_usage["cursor"] = cursor_token
         step3_2_time =  time.time()
         time_second["cursor_gen"] = [step3_2_time-step3_1_time]

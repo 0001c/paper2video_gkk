@@ -32,6 +32,7 @@ import sys
 import json
 import time
 import argparse
+import shutil
 import subprocess
 
 # 必须在其它模块之前导入：pv_env 负责加载 .env、指向 E 盘缓存、前置工具目录 PATH
@@ -140,6 +141,14 @@ if __name__ == "__main__":
     token_usage = json.load(open(token_path)) if os.path.exists(token_path) else {}
 
     slide_image_dir = os.path.join(args.result_dir, "slide_imgs")
+
+    # 供光标定位做 PDF 文本坐标匹配。优先用 stage 1 标记过的**同源**副本；
+    # 不存在时退回 latex_proj/slides.pdf —— 但那份可能是模板自带的示例，
+    # 所以 cursor_gen 会校验「页数 == 幻灯片张数」，不符就放弃 PDF 定位
+    # 并回退 grounding（宁可退化，也不要错位）。
+    slide_pdf_path = os.path.join(args.result_dir, "slides_rendered.pdf")
+    if not os.path.isfile(slide_pdf_path):
+        slide_pdf_path = os.path.join(args.paper_latex_root, "slides.pdf")
     speech_save_dir = os.path.join(args.result_dir, "audio")
     subtitle_cursor_save_path = os.path.join(args.result_dir, "subtitle_w_cursor.txt")
     cursor_save_path = os.path.join(args.result_dir, "cursor.json")
@@ -183,6 +192,16 @@ if __name__ == "__main__":
         for index, image in enumerate(images):
             image.save(os.path.join(slide_image_dir, "{}.png".format(index + 1)))
         print("[Stage 1] 渲染 {} 张幻灯片 -> {}".format(len(images), slide_image_dir))
+
+        # 把**渲染所依据的 PDF** 另存一份，明确标记它与 slide_imgs 同源。
+        # 为什么需要：光标定位会拿 PDF 做文本坐标匹配，而 latex_proj/slides.pdf
+        # 未必是本次编译的产物 —— pipeline 会把 --paper_latex_root **整个目录**
+        # 复制到 result 下，模板里自带的示例 slides.pdf 会被一起带过来
+        # （实测：模板示例 16 页 vs 本次 12 页，页数都对不上）。错位的坐标比
+        # 没有坐标更糟，所以这里留一份可信的。
+        rendered_pdf = os.path.join(args.result_dir, "slides_rendered.pdf")
+        shutil.copy2(beamer_path, rendered_pdf)
+        print("[Stage 1] 已保存同源 PDF -> {}".format(rendered_pdf))
 
         if args.model_name_t not in token_usage:
             token_usage[args.model_name_t] = [usage_slide]
@@ -239,6 +258,7 @@ if __name__ == "__main__":
             # 目前取值相同，但语义不同（一个是合成语种、一个是强制对齐的语种），
             # 分开后将来「中文讲稿配英文参考音频」之类才不会串。
             language=lang["align_language"],
+            slide_pdf_path=slide_pdf_path,
         )
         token_usage["cursor"] = cursor_token
         after_cursor = time.time()

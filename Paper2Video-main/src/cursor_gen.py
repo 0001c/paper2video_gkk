@@ -242,10 +242,19 @@ def infer_cursor(instruction, image_path, device=None):
 
     model, processor = get_gui_model()
 
-    image = cv2.imread(str(image_path))
-    if image is None:
+    # ⚠️ 这里**不要**用 cv2.imread 取尺寸：OpenCV 走 Windows 的 ANSI API，
+    # 读不了含中文的路径（实测报 `cv::findDecoder ... can't open/read file`，
+    # 随后被下面的 FileNotFoundError 抛出）。生产链路目前只是因为
+    # `--result_dir` 传的是**相对路径**（字符串本身是纯 ASCII，由系统按 cwd
+    # 解析）才没暴露；一旦有人传绝对路径 `E:\Development\26年\...`，光标定位会
+    # 直接崩在这一行。PIL 内部用宽字符 API，中英路径都能读。
+    from PIL import Image as _Image
+
+    try:
+        with _Image.open(str(image_path)) as handle:
+            img_w, img_h = handle.size
+    except FileNotFoundError:
         raise FileNotFoundError("找不到幻灯片图片: {}".format(image_path))
-    img_h, img_w = image.shape[:2]
 
     # 真图只用来取尺寸；喂给模型的是缩小版（见 prepare_grounding_image 的说明）。
     model_image_path = prepare_grounding_image(image_path)
@@ -352,36 +361,108 @@ def get_audio_length(audio_path):
     return 0.0
 
 
+def content_chars(text):
+    """提取「有效字符」：字母、数字、汉字（``str.isalnum()`` 对汉字为真）。
+
+    这是给**对齐单元**与**句子**建立同一计量口径用的。
+
+    为什么不能沿用 ``re.findall(r"\\b\\w+\\b", ...)`` 数长度：``\\b`` 是**词边界**，
+    而中文不写空格 —— 一整串汉字只会命中一次。实测同一页的三句话，
+    ``\\w+`` 给出 3 / 9 / 3，而它们的有效字符是 36 / 51 / 46，
+    **差了一个数量级**。详见 timesteps 的说明。
+    """
+    return [char for char in str(text).lower() if char.isalnum()]
+
+
 def timesteps(subtitles, aligned_result, audio_path):
     """把词级对齐结果折算成每句话的起止时间。
 
     ``aligned_result`` 需是 whisperx 兼容结构：
     ``{"segments": [{"words": [{"word":..,"start":..,"end":..}, ...]}]}``。
     Qwen3-ForcedAligner 的输出已由 ``speech_gen.align_with_qwen3`` 适配成该形状。
-    """
-    aligned_words_in_order = []
-    for segment in aligned_result["segments"]:
-        aligned_words_in_order.extend(segment["words"])
 
-    if not aligned_words_in_order:
+    ⚠️ 这里**不能**按「英文词数」切分中文（修复前的老写法）::
+
+        words_num = len(re.findall(r"\\b\\w+\\b", sentence.lower()))
+
+    中文没有词边界，一句话会被算成 1~3 个"词"，而 Qwen3-ForcedAligner 对中文
+    输出的是**逐字**时间戳（89 个单元 / 133 个有效字符）。于是 ``current_idx``
+    推进得极慢，每句都只能从"音频开头附近"取值：
+
+        句0    0.08 ->   0.56   ( 0.48s)   ← 真实 36 字
+        句1    0.56 ->   3.20   ( 2.64s)   ← 真实 51 字
+        句2    3.20 ->  19.92   (16.72s)   ← 由末尾那句 `result[-1]["end"] = 音频总长` 兜底独占 84%
+
+    后果不是"精度差一点"，而是**光标在错误的时间停在错误的位置**：开头几句一闪
+    而过（顺序仍对，看着像"准"），随后长时间钉在末句的坐标上 —— 而末句常讲流程图 /
+    图表，观感就成了"总跑去指图片"。
+
+    改为把对齐单元展开成**字符级时间轴**，再按句子的有效字符数单调切分：
+
+    * 中英同口径（都是字符），不再依赖分词
+    * 保留对齐器给出的真实语速与停顿分布（不是按字数均分整段音频）
+    * 单调递增、句间无缝
+
+    实测前提：对齐侧与句子侧的有效字符数**完全相等**（第 0 页 133 == 133）。
+    偏差过大时会打印告警，便于上游文本口径变化时及时发现。
+    """
+    words = []
+    for segment in aligned_result.get("segments", []):
+        words.extend(segment.get("words", []))
+
+    if not words:
         return []
 
-    aligned_words_num = len(aligned_words_in_order) - 1
+    # ── ① 展开成字符级时间点：每个有效字符拿到自己的结束时刻 ──
+    # 英文词（如 "Paper2Video"）是一个对齐单元，但含多个字符 —— 在它的
+    # start/end 之间按字符数均匀插值，这样"字符"才成为中英统一的计量单位。
+    char_times = []
+    for word in words:
+        text = str(word.get("word", ""))
+        start = float(word.get("start") or 0.0)
+        end = float(word.get("end") or start)
+        if end < start:
+            end = start
+        chars = content_chars(text)
+        if not chars:
+            continue
+        span = end - start
+        count = len(chars)
+        for offset in range(count):
+            char_times.append(start + span * (offset + 1) / count)
+
+    if not char_times:
+        return []
+
+    # ── ② 按有效字符数切分句子 ──
+    lengths = [max(1, len(content_chars(sentence))) for sentence in subtitles]
+    total_chars = len(char_times)
+    total_expected = sum(lengths)
+
+    if abs(total_chars - total_expected) > max(3, 0.02 * total_expected):
+        print("[cursor_gen] ⚠️ 对齐字符数({}) 与讲稿字符数({}) 偏差较大，"
+              "时间轴将按比例分配".format(total_chars, total_expected))
 
     result = []
-    current_idx = 0
-    for sentence in subtitles:
-        words_num = len(re.findall(r"\b\w+\b", sentence.lower()))
-        start = aligned_words_in_order[min(aligned_words_num, current_idx)]["end"]
-
-        current_idx += words_num
-        end = aligned_words_in_order[min(aligned_words_num, current_idx)]["end"]
-
-        result.append({"start": start, "end": end, "text": sentence})
+    pos = 0
+    for sentence, length in zip(subtitles, lengths):
+        start_pos = pos
+        pos = min(pos + length, total_chars)
+        start_time = 0.0 if start_pos == 0 else char_times[start_pos - 1]
+        end_time = char_times[pos - 1]
+        result.append({"start": round(start_time, 3), "end": round(end_time, 3),
+                       "text": sentence})
 
     if result:
-        result[0]["start"] = 0
-        result[-1]["end"] = get_audio_length(audio_path)
+        result[0]["start"] = 0.0
+        # 末句：对齐器可能漏掉尾部静音，**只在明显短于音频时**才补齐。
+        # 老实现是无条件 `result[-1]["end"] = get_audio_length(...)`，
+        # 那正是"末句独吞时长"的直接成因之一 —— 它会把前面所有句子的
+        # 错误从"偏短"放大成"末句吃掉 80%+"。
+        audio_len = get_audio_length(audio_path)
+        if audio_len and result[-1]["end"] < audio_len - 0.3:
+            result[-1]["end"] = round(audio_len, 3)
+
     return result
 
 
@@ -435,8 +516,11 @@ def cursor_gen_per_sentence(script_path, slide_img_dir, slide_audio_dir,
             cursor_result = pool.map(_infer_task, task_list)
 
     # 「no」指令与解析失败 -> 画面中心
-    import cv2
-    slide_h, slide_w = cv2.imread(slide_imgs[0]).shape[:2]
+    # 同样避开 cv2.imread：它读不了中文路径（理由见 infer_cursor 里的说明）。
+    from PIL import Image as _Image
+
+    with _Image.open(str(slide_imgs[0])) as _handle:
+        slide_w, slide_h = _handle.size
     center = (slide_w // 2, slide_h // 2)
     for item in cursor_result:
         if item["cursor"] is None:

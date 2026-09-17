@@ -158,18 +158,29 @@ def require_api_key(name="OPENAI_API_KEY"):
 
 
 def gpu_list(default=None):
-    """解析 PAPER2VIDEO_GPU_LIST。
+    """解析 GPU 列表。
 
-    原代码 ``--gpu_list`` 默认空串会让 ``str2list("")`` 抛 ValueError，
-    或让 ``num_gpus = len(gpu_list)`` 得到 0 而触发除零。这里统一兜底为 [0]。
+    接受三种形态，因为两个流水线传进来的类型并不一致，而调用方都是**直接透传**：
+
+    * ``None``      —— 读环境变量 ``PAPER2VIDEO_GPU_LIST``
+    * ``"0,1"``     —— ``pipeline_light.py`` 的 ``--gpu_list`` 是 str
+    * ``[0, 1]``    —— ``pipeline.py`` 的 ``--gpu_list`` 走 str2list，是 list
+
+    原先只做 ``str(raw).split(",")``，于是 ``pipeline.py`` 传 list 时
+    ``str([0])`` 得到 ``"[0]"`` → ``int("[0]")`` 抛 ValueError，**stage 2
+    的光标定位必崩**（pipeline_light 传 str 所以没暴露）。
+
+    另外，``--gpu_list`` 默认空串会让 ``str2list("")`` 抛 ValueError，
+    或让 ``num_gpus = len(gpu_list)`` 得到 0 而触发除零。这里统一兜底为 ``[0]``。
     """
-    raw = os.environ.get("PAPER2VIDEO_GPU_LIST") or ""
-    if default is not None:
-        raw = default
-    parts = [p.strip() for p in str(raw).split(",") if p.strip() != ""]
+    raw = default if default is not None else (os.environ.get("PAPER2VIDEO_GPU_LIST") or "")
+    if isinstance(raw, (list, tuple, set)):
+        parts = [str(item).strip() for item in raw if str(item).strip() != ""]
+    else:
+        parts = [piece.strip() for piece in str(raw).split(",") if piece.strip() != ""]
     if not parts:
         return [0]
-    return [int(p) for p in parts]
+    return [int(piece) for piece in parts]
 
 
 def low_vram():

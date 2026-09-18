@@ -215,3 +215,10 @@ assets/gkk/
 
 # 结构化生成的产物（可重跑生成）
 .workbuddy/struct_out/
+
+# 前端依赖与构建产物
+web/frontend/node_modules/
+web/static/
+
+# Web 服务的运行时任务目录
+jobs/

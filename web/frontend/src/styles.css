@@ -1,0 +1,324 @@
+/* ─────────────────────────────────────────────────────────────
+   Paper2Video Web · 学术感主题
+
+   设计意图（不是随便挑的颜色）：
+   学术出版物的视觉语言与「企业后台」相反 —— 它靠**留白、细线、
+   衬线标题、克制的墨色**建立秩序感，而不是靠大圆角、彩色块和阴影。
+   所以这里做三件事：
+     1. 覆盖 TDesign 的圆角（8px → 2~4px）—— 圆角越大越"互联网"；
+     2. 标题用衬线族（Georgia / 宋体），正文留无衬线以保证可读性；
+     3. 主色用墨蓝（#1b3a5c）而非亮蓝，背景用极浅的暖白（#fbfaf8），
+        像纸张而不是屏幕。
+   这三条决定了"像论文"还是"像管理系统"，比任何装饰都关键。
+   ───────────────────────────────────────────────────────────── */
+
+:root {
+  --paper-bg: #fbfaf8;
+  --paper-surface: #ffffff;
+  --paper-ink: #1a1a1a;
+  --paper-ink-soft: #5c5c5c;
+  --paper-ink-faint: #8a8a8a;
+  --paper-rule: #e2ded7;
+  --paper-rule-strong: #cbc5bb;
+  --paper-accent: #1b3a5c;
+  --paper-accent-soft: #4a6b8a;
+  --paper-ok: #2d6a4f;
+  --paper-warn: #9c6b1f;
+  --paper-err: #9b2226;
+
+  --font-serif: Georgia, "Times New Roman", "Songti SC", "SimSun", "Noto Serif CJK SC", serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei",
+               "PingFang SC", "Hiragino Sans GB", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+
+  /* 覆盖 TDesign token：小圆角 + 衬线标题 */
+  --td-brand-color: #1b3a5c;
+  --td-brand-color-hover: #2a4d73;
+  --td-brand-color-active: #142c46;
+  --td-radius-small: 2px;
+  --td-radius-default: 3px;
+  --td-radius-medium: 4px;
+  --td-radius-large: 6px;
+  --td-font-family: var(--font-sans);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--paper-bg);
+  color: var(--paper-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── 版心：论文式的窄栏，两侧留白 ── */
+.sheet {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 0 24px 96px;
+}
+
+/* ── 页眉 ── */
+.masthead {
+  border-bottom: 1px solid var(--paper-rule-strong);
+  padding: 40px 0 22px;
+  margin-bottom: 36px;
+}
+.masthead h1 {
+  font-family: var(--font-serif);
+  font-size: 26px;
+  font-weight: 400;
+  letter-spacing: 0.01em;
+  margin: 0 0 6px;
+  color: var(--paper-ink);
+}
+.masthead .sub {
+  font-size: 13px;
+  color: var(--paper-ink-soft);
+  margin: 0;
+}
+.masthead .meta {
+  margin-top: 14px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--paper-ink-faint);
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+/* ── 区块：以「编号 + 细标题 + 细分隔线」建立层级 ── */
+.section {
+  margin-bottom: 34px;
+}
+.section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding-bottom: 8px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--paper-rule);
+}
+.section-num {
+  font-family: var(--font-serif);
+  font-size: 15px;
+  color: var(--paper-accent);
+  min-width: 20px;
+}
+.section-title {
+  font-family: var(--font-serif);
+  font-size: 16px;
+  font-weight: 400;
+  margin: 0;
+  letter-spacing: 0.01em;
+}
+.section-note {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--paper-ink-faint);
+}
+
+/* ── 字段网格 ── */
+.grid {
+  display: grid;
+  gap: 16px 20px;
+}
+.grid-2 { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.grid-3 { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+
+.field label {
+  display: block;
+  font-size: 12px;
+  color: var(--paper-ink-soft);
+  margin-bottom: 5px;
+  letter-spacing: 0.02em;
+}
+.field .hint {
+  font-size: 11.5px;
+  color: var(--paper-ink-faint);
+  margin-top: 5px;
+  line-height: 1.5;
+}
+
+/* 输入类控件的观感与 TDesign 对齐但更"扁" */
+.field input[type="text"],
+.field input[type="password"],
+.field select,
+.field textarea {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--paper-rule-strong);
+  border-radius: var(--td-radius-default);
+  background: var(--paper-surface);
+  color: var(--paper-ink);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.field input:focus, .field select:focus, .field textarea:focus {
+  border-color: var(--paper-accent);
+}
+.field textarea {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+/* ── 拖放上传区 ── */
+.dropzone {
+  border: 1px dashed var(--paper-rule-strong);
+  border-radius: var(--td-radius-medium);
+  background: var(--paper-surface);
+  padding: 22px 18px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.dropzone:hover, .dropzone.over {
+  border-color: var(--paper-accent);
+  background: #f7f9fb;
+}
+.dropzone .big {
+  font-size: 13.5px;
+  color: var(--paper-ink);
+  margin-bottom: 4px;
+}
+.dropzone .small {
+  font-size: 11.5px;
+  color: var(--paper-ink-faint);
+}
+.dropzone .picked {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--paper-accent);
+  margin-top: 6px;
+}
+
+/* ── 状态行 ── */
+.statusline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  padding: 4px 0;
+}
+.dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  flex: none; display: inline-block;
+}
+.dot.ok { background: var(--paper-ok); }
+.dot.run { background: var(--paper-accent); }
+.dot.wait { background: var(--paper-rule-strong); }
+.dot.err { background: var(--paper-err); }
+.statusline .tail { margin-left: auto; font-family: var(--font-mono); font-size: 11.5px; color: var(--paper-ink-faint); }
+
+/* 细进度条：4px，不用渐变/发光 */
+.bar {
+  height: 4px;
+  background: #eceae6;
+  border-radius: 2px;
+  overflow: hidden;
+  margin: 14px 0 10px;
+}
+.bar > i {
+  display: block; height: 100%;
+  background: var(--paper-accent);
+  transition: width 0.4s ease;
+}
+
+/* 逐页进度点 */
+.pips { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 10px; }
+.pips span { width: 9px; height: 9px; border-radius: 1px; display: inline-block; }
+.pips .done { background: var(--paper-ok); }
+.pips .cur  { background: var(--paper-accent); }
+.pips .todo { background: #e6e3de; }
+
+/* ── 日志尾巴：等宽、低对比、可滚动 ── */
+.logtail {
+  margin-top: 14px;
+  background: #f6f5f2;
+  border: 1px solid var(--paper-rule);
+  border-radius: var(--td-radius-default);
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--paper-ink-soft);
+  max-height: 150px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── 预览面板 ── */
+.preview {
+  margin-top: 14px;
+  border: 1px solid var(--paper-rule);
+  border-radius: var(--td-radius-medium);
+  background: var(--paper-surface);
+}
+.preview .phead {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--paper-rule);
+  font-size: 12.5px; color: var(--paper-ink-soft);
+}
+.preview .pbody {
+  padding: 14px;
+  font-family: var(--font-serif);
+  font-size: 13px;
+  line-height: 1.85;
+  color: var(--paper-ink);
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+/* ── 提示条：不用弹窗，内联在发生处 ── */
+.notice {
+  display: flex; gap: 9px; align-items: flex-start;
+  padding: 9px 12px;
+  border-radius: var(--td-radius-default);
+  font-size: 12.5px;
+  line-height: 1.6;
+  margin-top: 12px;
+}
+.notice.info { background: #f2f6fa; border-left: 2px solid var(--paper-accent); }
+.notice.ok   { background: #f1f7f3; border-left: 2px solid var(--paper-ok); }
+.notice.warn { background: #fbf6ec; border-left: 2px solid var(--paper-warn); }
+.notice.err  { background: #fbf1f1; border-left: 2px solid var(--paper-err); }
+.notice b { font-weight: 500; }
+
+/* ── 操作行 ── */
+.actions {
+  display: flex; gap: 10px; align-items: center;
+  padding-top: 8px; flex-wrap: wrap;
+}
+.actions .spacer { flex: 1; }
+
+/* ── 产物列表 ── */
+.artifacts { display: flex; flex-direction: column; gap: 1px; margin-top: 12px; }
+.artifacts a {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px;
+  text-decoration: none;
+  color: var(--paper-accent);
+  border-bottom: 1px solid var(--paper-rule);
+  font-size: 13px;
+}
+.artifacts a:hover { background: #f7f9fb; }
+.artifacts .sz { margin-left: auto; font-family: var(--font-mono); font-size: 11.5px; color: var(--paper-ink-faint); }
+
+video { width: 100%; border-radius: var(--td-radius-default); background: #000; margin-top: 10px; }
+
+/* 小屏放宽版心 */
+@media (max-width: 640px) {
+  .sheet { padding: 0 16px 64px; }
+  .masthead h1 { font-size: 21px; }
+}

@@ -32,7 +32,7 @@ type Opt = { value: string; label: string };
 /* 阶段表由后端下发（/api/options.phases）—— 步骤条渲染它，
    总进度也由后端算（progress.overall_pct），前端**不自己拼公式**。
    两边各存一份"阶段权重"是这类进度条最容易漂的地方。 */
-type Phase = { key: string; label: string; weight: number; has_pages: boolean };
+type Phase = { key: string; label: string; weight: number; has_pages: boolean; unit: string };
 
 type Options = {
   presets: (Opt & { slide_lang: string; script_lang: string })[];
@@ -108,7 +108,14 @@ type Progress = {
   phase_count?: number;
   /* 阶段加权总进度（0~100） */
   overall_pct?: number;
-  /* 只有 has_pages 的阶段才有值，其余为 null */
+  /* 当前阶段自己的计数（**单位随阶段不同**：语音/数字人是"页"，光标定位是"条"）。
+     光标阶段特别需要它：一次真实任务里有 18 条回退成 GUI-Owl 的指令、
+     跑了约 9 分钟，而那时界面上只有"光标定位"四个字、日志也只在第 10 条时打一次，
+     于是"在动"和"卡死"完全分不出来（使用者就是这么报的）。 */
+  count_done?: number | null;
+  count_total?: number | null;
+  count_unit?: string | null;
+  /* 兼容字段：后端仍下发 page_*（语义同 count_*） */
   page_done?: number | null;
   page_total?: number | null;
   phase_elapsed_s?: number | null;
@@ -641,10 +648,11 @@ export default function App() {
   const phases: Phase[] = opts?.phases ?? [];
   const curIdx = p?.phase_index ?? -1;
   const stalled = !!p?.stalled;
-  const pageTotal = p?.page_total ?? 0;
-  const pageDone = p?.page_done ?? 0;
+  const countTotal = p?.count_total ?? p?.page_total ?? 0;
+  const countDone = p?.count_done ?? p?.page_done ?? 0;
+  const countUnit = p?.count_unit || "页";
 
-  // "已用 / 约"：没有逐页进度的阶段**不编造进度**，改用时间说明"它还活着"。
+  // "已用 / 约 / 第 k 条"：没有计数的阶段**不编造进度**，改用时间说明"它还活着"。
   const fmtMin = (s: number | null | undefined) =>
     s == null ? "" : s >= 90 ? `${(s / 60).toFixed(1)} 分钟` : `${Math.round(s)} 秒`;
   const phaseHint = useMemo(() => {
@@ -652,11 +660,9 @@ export default function App() {
     const parts: string[] = [];
     if (p.phase_elapsed_s != null) parts.push(`已用 ${fmtMin(p.phase_elapsed_s)}`);
     if (p.phase_expected_s != null) parts.push(`约 ${fmtMin(p.phase_expected_s)}（粗估）`);
-    if (pageTotal > 0 && phases.find((x) => x.key === p.phase_key)?.has_pages) {
-      parts.push(`第 ${pageDone} / ${pageTotal} 页`);
-    }
+    if (countTotal > 0) parts.push(`第 ${countDone} / ${countTotal} ${countUnit}`);
     return parts.join(" · ");
-  }, [p, pageTotal, pageDone, phases]);
+  }, [p, countTotal, countDone, countUnit]);
 
   const running = job && ["running", "queued"].includes(job.status);
 
@@ -1170,12 +1176,12 @@ export default function App() {
               </div>
             )}
 
-            {/* 逐页格子只在"有页数概念"的阶段显示。
+            {/* 计数格子只在"有计数"的阶段显示（语音/数字人=页，光标=条）。
                 原先它一直挂着，幻灯片/讲稿/合片阶段是一排永远不动的空点。 */}
-            {pageTotal > 0 && (
+            {countTotal > 0 && (
               <div className="pips">
-                {Array.from({ length: pageTotal }).map((_, i) => (
-                  <span key={i} className={i < pageDone ? "done" : i === pageDone ? "cur" : "todo"} />
+                {Array.from({ length: countTotal }).map((_, i) => (
+                  <span key={i} className={i < countDone ? "done" : i === countDone ? "cur" : "todo"} />
                 ))}
               </div>
             )}

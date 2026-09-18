@@ -278,22 +278,30 @@ def _total_pages(result_dir):
 # LLM 结构化（PDF/Word 输入，实测 1~3 分钟）。
 # 权重只是"进度条刻度"，不参与任何计算，换机器可重新标定。
 PHASES = (
-    # key,       中文名,        权重,  有逐页进度, 无更新多久算卡住（秒）
-    ("extract",  "分析论文",     0.02, False, 180),
-    ("struct",   "结构化正文",   0.10, False, 300),
-    ("slides",   "生成幻灯片",   0.09, False, 300),
-    ("script",   "生成讲稿",     0.06, False, 300),
-    ("tts",      "合成语音",     0.30, True,  180),
-    ("cursor",   "光标定位",     0.03, False, 300),
-    ("talking",  "生成数字人",   0.32, True,  420),
-    ("merge",    "合成视频",     0.06, False, 300),
-    ("finish",   "收尾",         0.02, False, 300),
+    # key,       中文名,        权重,  有计数进度, 计数单位, 无更新多久算卡住（秒）
+    #
+    # 关于权重：取自实测耗时占比，但要注意**光标阶段方差极大** ——
+    # PDF 文本定位全命中时它只要几秒（实测 2.6s / 17.2s），
+    # 而回退到 GUI-Owl 的指令每条约 30 秒（实测 18 条 ≈ 9 分钟，且其中一条异常到 6 分半）。
+    # 所以给 0.05 并配合"第 k/N 条"的计数显示：静态权重表达不了这种方差，
+    # 界面上的"第 k / N 条 + 已用 X 分钟"才是可信的那部分。
+    ("extract",  "分析论文",     0.02, False, "",   180),
+    ("struct",   "结构化正文",   0.10, False, "",   300),
+    ("slides",   "生成幻灯片",   0.09, False, "",   300),
+    ("script",   "生成讲稿",     0.05, False, "",   300),
+    ("tts",      "合成语音",     0.29, True,  "页", 180),
+    ("cursor",   "光标定位",     0.05, True,  "条", 600),
+    ("talking",  "生成数字人",   0.32, True,  "页", 420),
+    ("merge",    "合成视频",     0.06, False, "",   300),
+    ("finish",   "收尾",         0.02, False, "",   300),
 )
 _PHASE_KEYS = [p[0] for p in PHASES]
 _PHASE_LABEL = {p[0]: p[1] for p in PHASES}
 _PHASE_WEIGHT = {p[0]: p[2] for p in PHASES}
-_PHASE_HAS_PAGES = {p[0]: p[3] for p in PHASES}
-_PHASE_STALL_LIMIT = {p[0]: p[4] for p in PHASES}
+_PHASE_HAS_COUNT = {p[0]: p[3] for p in PHASES}
+_PHASE_UNIT = {p[0]: p[4] for p in PHASES}
+_PHASE_STALL_LIMIT = {p[0]: p[5] for p in PHASES}
+_PHASE_HAS_PAGES = _PHASE_HAS_COUNT          # 兼容旧名（语义已扩成"有计数"）
 # 每个阶段的**起点刻度**（前面所有阶段的权重之和）—— 用来把"阶段内进度"嵌进总进度
 _PHASE_START = {k: round(sum(p[2] for p in PHASES[:i]), 4)
                 for i, k in enumerate(_PHASE_KEYS)}
@@ -341,9 +349,14 @@ def _phase_overall_pct(phase_key, done, total):
 
 
 def _phase_payload():
-    """下发给前端的阶段表（步骤条按它渲染）。"""
+    """下发给前端的阶段表（步骤条按它渲染）。
+
+    `unit` 是"这个阶段的计数单位"：语音/数字人是"页"，光标定位是"条"
+    （它处理的是**指令**，不是页）。前端据此显示"第 k/N 条"而不是"页"。
+    """
     return [{"key": k, "label": _PHASE_LABEL[k], "weight": _PHASE_WEIGHT[k],
-             "has_pages": _PHASE_HAS_PAGES[k]} for k in _PHASE_KEYS]
+             "has_pages": _PHASE_HAS_COUNT[k], "unit": _PHASE_UNIT[k]}
+            for k in _PHASE_KEYS]
 
 
 def _read_log_text(path):
@@ -402,20 +415,23 @@ def _progress_from_jsonl(job, job_dir):
     if not records:
         return None
 
-    info = {"source": "jsonl", "total_pages": 0, "tts_done": 0, "talking_done": 0,
+    info = {"source": "jsonl", "total_pages": 0, "counts": {},
             "phase_key": None, "phase_started_ts": None, "unknown_phase": None,
             "last_log_at": None, "stalled_seconds": None}
     for rec in records:
+        phase = rec.get("phase")
         total = rec.get("total")
-        if isinstance(total, int):
-            info["total_pages"] = max(info["total_pages"], total)
         done = rec.get("done")
-        if not isinstance(done, int):
-            continue
-        if rec.get("phase") == "tts":
-            info["tts_done"] = max(info["tts_done"], done)
-        elif rec.get("phase") == "talking":
-            info["talking_done"] = max(info["talking_done"], done)
+        # ⚠️ `total_pages` 只能取**按页计数**的阶段（tts/talking）。
+        # 光标阶段报的 total 是"指令条数"（实测 18），单位完全不同 ——
+        # 早期把两者的 total 混在一起来取 max，会得到"18 页"这种荒谬结论，
+        # 而界面上"第 k/18 页"看起来还挺正常，最难发现。
+        if phase in ("tts", "talking") and isinstance(total, int) and total > 0:
+            info["total_pages"] = max(info["total_pages"], total)
+        if isinstance(done, int):
+            prev_done, prev_total = info["counts"].get(phase, (0, 0))
+            info["counts"][phase] = (max(prev_done, done),
+                                     max(prev_total, total if isinstance(total, int) else 0))
 
     # 未知 phase 要**显式**处理。以前是 `_PHASE_LABEL.get(x, "")`，能不能正常
     # 显示全靠上一层"空值不覆盖旧值"的巧合 —— 这里改成：认得就用，认不得就
@@ -508,10 +524,17 @@ def read_progress(job):
     }
 
     found = _progress_from_jsonl(job, job_dir) or _progress_from_log(job, job_dir)
+    info["counts"] = found.get("counts") if found else None
     if found:
         for key in ("tts_done", "talking_done", "total_pages"):
             if found.get(key):
                 info[key] = found[key]
+        # 各阶段的"第 k/N"计数（单位随阶段不同：页 / 条）
+        counts = found.get("counts") or {}
+        if counts.get("tts"):
+            info["tts_done"] = counts["tts"][0]
+        if counts.get("talking"):
+            info["talking_done"] = counts["talking"][0]
         # 流水线报的阶段比 job.phase 细（job.phase 只有 排队中/启动中/已完成），
         # 有就用它推进阶段指针。
         if found.get("phase_key"):
@@ -554,12 +577,22 @@ def read_progress(job):
     info["phase_index"] = _PHASE_KEYS.index(phase_key)
     info["phase_count"] = len(_PHASE_KEYS)
 
-    if _PHASE_HAS_PAGES[phase_key] and not finished:
-        info["page_done"] = (info["talking_done"] if phase_key == "talking"
-                             else info["tts_done"])
-        info["page_total"] = info["total_pages"] or None
+    if _PHASE_HAS_COUNT[phase_key] and not finished:
+        # 计数**按阶段各取各的**：tts/talking 单位是"页"，cursor 是"条"。
+        # 早先只认 tts/talking，于是光标阶段在界面上永远只有"光标定位"四个字 ——
+        # 实测 18 条回退指令跑了 9 分钟，界面完全看不出它在动（使用者报"卡住了"）。
+        done, total = (info.get("counts") or {}).get(phase_key, (0, 0))
+        info["count_done"] = done
+        info["count_total"] = total or None
+        info["count_unit"] = _PHASE_UNIT[phase_key]
+        # 兼容字段：前端旧代码读 page_*；语义同 count_*。
+        info["page_done"] = done
+        info["page_total"] = total or None
 
-    computed = _phase_overall_pct(phase_key, info["page_done"] or 0, info["total_pages"])
+    # 总进度用**当前阶段自己的**计数与总数（页/条各自算，见上面的 counts）
+    computed = _phase_overall_pct(phase_key,
+                                  info.get("count_done") or 0,
+                                  info.get("count_total") or info["total_pages"])
     if status == "done":
         info["overall_pct"] = 100
     elif finished:

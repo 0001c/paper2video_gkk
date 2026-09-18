@@ -481,6 +481,9 @@ def test_pages_and_rerun(app):
     srv = app.app
     job_id = "smoke_pages_" + uuid.uuid4().hex[:6]
     jd = app._job_dir(job_id)
+    # ⚠️ 进函数先拍一张 jobs/ 的快照：清理时只删**本测试新建的目录**（差集）。
+    # 见下面 finally 里的说明 —— 这条快照是防止"删掉使用者正在跑的任务"的关键。
+    jobs_before = set(os.listdir(app.JOBS_ROOT))
     os.makedirs(jd, exist_ok=True)
     # /pages 会先校验任务存在（_load_job），所以 job.json 必须先有
     app._save_job({"id": job_id, "status": "done", "phase": "已完成",
@@ -606,9 +609,16 @@ def test_pages_and_rerun(app):
                         "HTTP %s" % bad.status_code)
     finally:
         shutil.rmtree(jd, ignore_errors=True)
-        for name in os.listdir(app.JOBS_ROOT):        # 清掉续跑产生的任务
-            if name.startswith("job_") or name.startswith("smoke_"):
-                shutil.rmtree(os.path.join(app.JOBS_ROOT, name), ignore_errors=True)
+        # ⚠️⚠️ 这里原先写的是"凡是 `job_` 开头就删" —— 2026-09-19 造成了**真实数据丢失**：
+        # 使用者有一个任务正在跑（`job_0919_004702_866d`，MuseTalk 推理中），
+        # 这条清理把它的整个目录删掉了（job.json / result/ 已生成的 13 张幻灯片与
+        # 13 段音频 / progress.jsonl 全没了），而流水线还在跑 —— 数字人跑完后
+        # 合片必然失败，任务记录也从界面上消失。单人测试环境里 jobs/ 只有测试
+        # 自己的目录，所以这个写法一直"看着没问题"。
+        # 现在的规矩：**共享目录里的清理只能用「进入函数前 vs 现在」的快照差集**，
+        # 绝不能用名字前缀/模式批量删 —— 前缀是别人也可能在用的命名空间。
+        for name in set(os.listdir(app.JOBS_ROOT)) - jobs_before:
+            shutil.rmtree(os.path.join(app.JOBS_ROOT, name), ignore_errors=True)
     return ok
 
 
@@ -994,9 +1004,14 @@ def test_phase_model_and_keys(app):
                if not {"key", "label", "weight", "has_pages"} <= set(p)]
     ok &= check("每个阶段都有 key/label/weight/has_pages", not missing,
                 "缺字段的阶段：%s" % missing if missing else "字段齐全")
-    ok &= check("有逐页进度的阶段恰好是 tts/talking（其余阶段不编造进度）",
-                [p["key"] for p in phases if p["has_pages"]] == ["tts", "talking"],
-                "标记为有页数的：%s" % [p["key"] for p in phases if p["has_pages"]])
+    counts_phases = [p["key"] for p in phases if p["has_pages"]]
+    ok &= check("有计数进度的阶段是 tts/cursor/talking（其余阶段不编造进度）",
+                counts_phases == ["tts", "cursor", "talking"],
+                "标记为有计数的：%s" % counts_phases)
+    ok &= check("每个阶段都带计数单位（语音/数字人=页，光标=条）",
+                {p["key"]: p.get("unit") for p in phases}.get("cursor") == "条"
+                and {p["key"]: p.get("unit") for p in phases}.get("tts") == "页",
+                "单位：%s" % {p["key"]: p.get("unit") for p in phases if p["has_pages"]})
 
     # ── B. 总进度：单调不减 + 不编造进度 ──
     job_id = "smoke_phase_" + uuid.uuid4().hex[:6]
@@ -1068,6 +1083,38 @@ def test_phase_model_and_keys(app):
         ok &= check("反面对照：旧口径在同样数据上确实回跳（证明这条测试有牙齿）",
                     bool(old_back),
                     "旧口径回跳 %d 处，例如 %s" % (len(old_back), old_back[:1]))
+
+        # ── B2. 光标阶段：计数单位是"条"，且**绝不能污染页数** ──
+        # 起因（2026-09-19 实测）：一次真实任务里 18 条指令回退给 GUI-Owl，
+        # 跑了约 9 分钟；而那时 progress.jsonl 只写了一条阶段边界记录，
+        # 界面上只有"光标定位"四个字 —— 使用者报"卡住了"，我们差点也这么判断。
+        write([{"ts": time.time(), "phase": "tts", "stage": 2, "done": 13, "total": 13},
+               {"ts": time.time(), "phase": "cursor", "stage": 2},
+               {"ts": time.time(), "phase": "cursor", "stage": 2, "done": 3, "total": 18},
+               {"ts": time.time(), "phase": "cursor", "stage": 2, "done": 7, "total": 18}])
+        info = app.read_progress(dict(job))
+        ok &= check("光标阶段有计数进度（界面能显示「第 k / N 条」）",
+                    info["count_done"] == 7 and info["count_total"] == 18
+                    and info["count_unit"] == "条",
+                    "第 %s / %s %s" % (info["count_done"], info["count_total"],
+                                       info["count_unit"]))
+        # 这条是最阴的：光标报的 total 是"指令条数"，若和页数混在一起取 max，
+        # 会得到"18 页"这种荒谬结论，而界面显示"第 k/18 页"看起来还很正常。
+        ok &= check("光标的条数**不会**被当成页数（18 条 ≠ 18 页）",
+                    info["total_pages"] == 13,
+                    "total_pages=%s（期望 13，来自 tts）" % info["total_pages"])
+        write([{"ts": time.time() - 400, "phase": "cursor", "stage": 2,
+                "done": 5, "total": 18}])
+        ok &= check("光标阶段静默 400 秒不判卡住（阈值 600 秒）",
+                    app.read_progress(dict(job))["stalled"] is False,
+                    "stalled=%s / 阈值 %s 秒"
+                    % (app.read_progress(dict(job))["stalled"],
+                       app.read_progress(dict(job))["stalled_limit_s"]))
+        write([{"ts": time.time() - 700, "phase": "cursor", "stage": 2,
+                "done": 5, "total": 18}])
+        ok &= check("光标阶段静默 700 秒判卡住",
+                    app.read_progress(dict(job))["stalled"] is True,
+                    "已静默 700 秒 > 阈值 600 秒")
 
         info_done = app.read_progress(dict(job, status="done"))
         ok &= check("任务完成 -> 总进度 100%", info_done["overall_pct"] == 100,
@@ -1281,27 +1328,63 @@ def test_phase_model_and_keys(app):
                     "阶段名：%s" % sorted(set(p for p, _k in captured)))
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+    # ── I. 清理护栏：绝不删"本次测试之前就存在"的任务目录 ──
+    # 2026-09-19 真实事故：一条"凡是 job_ 开头就删"的清理，把使用者**正在运行**的
+    # 任务目录整个删掉了（job.json / result / progress 全丢，任务从界面消失，
+    # 而流水线还在跑）。所以这里对清理函数做**行为断言**，而不是靠"下次小心"。
+    guard_old = os.path.join(ROOT, "jobs", "job_guard_" + uuid.uuid4().hex[:6])
+    guard_new = os.path.join(ROOT, "jobs", "job_guard_" + uuid.uuid4().hex[:6])
+    os.makedirs(guard_old, exist_ok=True)
+    io.open(os.path.join(guard_old, "run.log"), "w", encoding="utf-8").write("old\n")
+    old_time = time.time() - 3600
+    os.utime(guard_old, (old_time, old_time))
+    os.makedirs(guard_new, exist_ok=True)
+    io.open(os.path.join(guard_new, "run.log"), "w", encoding="utf-8").write("new\n")
+    try:
+        removed = _cleanup_orphan_jobs(app, time.time())
+        ok &= check("清理只删本次测试产生的孤儿目录（运行前就存在的一律不碰）",
+                    os.path.isdir(guard_old) and not os.path.isdir(guard_new),
+                    "1 小时前建的那个还在=%s / 刚建的那个已删=%s / 本次清理=%s"
+                    % (os.path.isdir(guard_old), not os.path.isdir(guard_new),
+                       [n for n in removed if "guard" in n]))
+    finally:
+        shutil.rmtree(guard_old, ignore_errors=True)
+        shutil.rmtree(guard_new, ignore_errors=True)
     return ok
 
 
-def _cleanup_orphan_jobs(app):
+def _cleanup_orphan_jobs(app, started_at=None):
     """清掉测试留下的**孤儿任务目录**（有 run.log 但没有 job.json）。
 
     为什么需要：好几个测试用 `python -c pass` 假命令走**真实队列**，
-    任务目录是 worker 建的，而各测试的 finally 只清理自己显式记下的那些 ——
-    实测每跑一次会留下 2 个孤儿目录（界面上看不到，因为它们没有 job.json，
-    但 jobs/ 会越攒越乱）。
-    刻意**打印**清掉了什么：这样"哪个测试漏了清理"依然可见，
-    而不是被一个静默的兜底抹平。真正的任务一定有 job.json，所以这里删不到正货。
+    任务目录是 worker 建的，而各测试的 finally 只清理自己显式记下的那些。
+
+    ⚠️⚠️ 两道护栏，都是被 2026-09-19 的真实事故逼出来的（测试清理把使用者
+    **正在跑的任务目录**整个删了，因为它当时恰好没有 job.json）：
+      1. **只删本次测试期间新建的**（`started_at` 之后改动的）：测试绝不该碰
+         运行前就存在的东西 —— 那是使用者的数据。
+      2. 没有 `job.json` 这一条**不足以**判定"是测试留下的"：真实任务在
+         `_run_job` 结束前也可能短暂没有它（何况它可能已经被别的清理删掉了，
+         于是被当成孤儿再删一次）。
+    真正的任务是使用者可见的数据，宁可留一个测试空壳，也不能冒删错的风险。
     """
+    if started_at is None:
+        started_at = time.time()
     orphan = []
     for name in os.listdir(app.JOBS_ROOT):
         path = os.path.join(app.JOBS_ROOT, name)
         if not os.path.isdir(path) or not name.startswith("job_"):
             continue
-        if not os.path.isfile(os.path.join(path, "job.json")):
-            orphan.append(name)
-            shutil.rmtree(path, ignore_errors=True)
+        if os.path.isfile(os.path.join(path, "job.json")):
+            continue
+        try:
+            if os.path.getmtime(path) < started_at - 5:
+                continue                      # 护栏 1：不是本次测试产生的
+        except OSError:
+            continue
+        orphan.append(name)
+        shutil.rmtree(path, ignore_errors=True)
     return orphan
 
 
@@ -1684,6 +1767,7 @@ def test_voice_and_ref_audio(app):
 
 def main():
     app = load_app()
+    suite_started = time.time()          # 清理护栏：只删本次测试期间新建的目录
     results = [
         test_read_progress(app),
         test_queue_and_http(app),
@@ -1696,7 +1780,7 @@ def main():
         test_phase_model_and_keys(app),
         test_voice_and_ref_audio(app),
     ]
-    orphan = _cleanup_orphan_jobs(app)
+    orphan = _cleanup_orphan_jobs(app, suite_started)
     if orphan:
         print()
         print("   （已清理 %d 个测试孤儿任务目录：%s）" % (len(orphan), ", ".join(orphan)))

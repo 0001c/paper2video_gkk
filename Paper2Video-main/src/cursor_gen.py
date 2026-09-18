@@ -31,9 +31,18 @@ import re
 import json
 import string
 import subprocess
+import time
 from os import path
 
 import pv_env
+
+# 结构化进度（P1）：可选增强，导入失败绝不能拖垮流水线（见 progress_report.py）。
+# 光标阶段**特别需要**它：见下面单卡循环里的说明（18 条回退指令时，
+# 界面原先对整个阶段一无所知）。
+try:
+    import progress_report
+except Exception:                      # pragma: no cover
+    progress_report = None
 
 GUI_OWL_REPO = "mPLUG/GUI-Owl-1.5-4B-Instruct"
 
@@ -726,10 +735,25 @@ def cursor_gen_per_sentence(script_path, slide_img_dir, slide_audio_dir,
         # 单卡：模型常驻，避免每句重载
         print("[cursor_gen] 单卡串行模式，共 {} 条指令".format(len(pending)))
         fallback = []
+        total_pending = len(pending)
         for idx, task in enumerate(pending):
+            item_started = time.time()
             fallback.append(_infer_task(task))
-            if (idx + 1) % 10 == 0:
-                print("[cursor_gen] {}/{}".format(idx + 1, len(pending)))
+            cost = time.time() - item_started
+            # ⚠️ 逐条打印 + 上报，**不能只在每 10 条时打印一次**（2026-09-19 实测）：
+            # 一次真实任务里有 18 条回退指令，日志只留下 "10/18" 一行，
+            # 而其中**某一条花了 6 分半**（其余约 30 秒）—— 于是那 6 分半里
+            # 日志完全不动，界面也只有"光标定位"四个字，
+            # 使用者合理地判断成"卡死了"（我们自己也差点这么判断）。
+            # 逐条打耗时之后，慢的是哪一条、慢了多久，事后一眼可查。
+            print("[cursor_gen] {}/{} 完成，本条 {:.1f} 秒".format(
+                idx + 1, total_pending, cost))
+            if progress_report:
+                try:
+                    progress_report.report("cursor", stage=2, done=idx + 1,
+                                           total=total_pending, page=task[0])
+                except Exception:
+                    pass
     else:
         import multiprocessing as mp
         print("[cursor_gen] 多卡模式 {}，共 {} 条指令".format(devices, len(pending)))

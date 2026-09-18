@@ -239,6 +239,54 @@ html, body {
 .pips .cur  { background: var(--paper-accent); }
 .pips .todo { background: #e6e3de; }
 
+/* ── 阶段步骤条 ──
+   为什么要它：界面上原先只有一个"阶段名"（且长时间停在"启动中"），
+   看不出"在整条链路的哪一步、还剩几步"。三态：已完成 / 进行中 / 未开始。
+   窄屏自动换行，不做横向滚动（避免藏住后面的阶段）。 */
+.steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--paper-rule);
+  border-radius: var(--td-radius-default);
+  background: #fafaf8;
+}
+.step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--paper-ink-soft);
+  white-space: nowrap;
+}
+.step .sdot {
+  width: 7px; height: 7px; border-radius: 50%;
+  display: inline-block; flex: none;
+  background: #e6e3de;
+}
+.step.done { color: var(--paper-ink-soft); }
+.step.done .sdot { background: var(--paper-ok); }
+.step.cur { color: var(--paper-ink); font-weight: 500; }
+.step.cur .sdot {
+  background: var(--paper-accent);
+  box-shadow: 0 0 0 3px rgba(45, 106, 175, 0.14);
+}
+.step.todo { color: var(--paper-ink-faint); }
+
+/* 勾选行（记住本机等）：与 .linkbtn 同一行的内联控件 */
+.checkline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--paper-ink-soft);
+  cursor: pointer;
+  user-select: none;
+}
+.checkline input { accent-color: var(--paper-accent); }
+
 /* ── 日志尾巴：等宽、低对比、可滚动 ── */
 .logtail {
   margin-top: 14px;

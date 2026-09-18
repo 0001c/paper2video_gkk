@@ -228,3 +228,6 @@ web/frontend/*.tsbuildinfo
 
 # 耗时标定用的提取产物（可重跑生成）
 .workbuddy/calib/
+
+# vite 在构建被中断时会留下临时配置（不该提交）
+web/frontend/vite.config.ts.timestamp-*.mjs

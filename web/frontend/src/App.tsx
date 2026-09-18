@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Button, MessagePlugin, Progress, Radio, RadioGroup, Select } from "tdesign-react";
+import { Button, MessagePlugin, Radio, RadioGroup, Select } from "tdesign-react";
+import { clearCredentials, loadCredentials, loadJobId, saveCredentials, saveJobId } from "./storage";
 
 /* ─────────────────────────────────────────────────────────────
-   接口层。两个注意点：
+   接口层。三个注意点：
    1. 所有请求都是同源相对路径 —— 生产环境由 FastAPI 直接服务静态文件，
       开发环境走 vite 的 /api 代理。这样前端不需要知道后端地址。
    2. 本机有 TUN 代理（HTTP_PROXY=127.0.0.1:13960），浏览器对 localhost
       通常会自动绕过，但若出现 502，先怀疑代理（见 README）。
+   3. GET 一律 `cache: "no-store"`。产物与进度是**每秒都在变**的实时数据，
+      浏览器的启发式缓存会让"刚生成的产物"看不见 —— 表现与"要手动刷新页面"
+      完全一样，最难查（后端明明已经返回了新列表）。
    ───────────────────────────────────────────────────────────── */
 const api = {
-  get: (p: string) => fetch(p).then((r) => r.json()),
+  get: (p: string) => fetch(p, { cache: "no-store" }).then((r) => r.json()),
   post: (p: string, body?: unknown) =>
     fetch(p, {
       method: "POST",
@@ -25,12 +29,18 @@ const api = {
 
 type Opt = { value: string; label: string };
 
+/* 阶段表由后端下发（/api/options.phases）—— 步骤条渲染它，
+   总进度也由后端算（progress.overall_pct），前端**不自己拼公式**。
+   两边各存一份"阶段权重"是这类进度条最容易漂的地方。 */
+type Phase = { key: string; label: string; weight: number; has_pages: boolean };
+
 type Options = {
   presets: (Opt & { slide_lang: string; script_lang: string })[];
   slide_langs: Opt[];
   script_langs: Opt[];
   paper_types: Opt[];
   accept_formats: string[];
+  phases: Phase[];
 };
 
 /* 本机配置 + 耗时标定值（来自 /api/system/info）。
@@ -54,19 +64,41 @@ type SysInfo = {
   };
 };
 
+/* 进度对象全部由后端算好（read_progress），前端只负责显示。
+   口径见 web/app.py 的 `_phase_overall_pct`：
+     · overall_pct 是**阶段加权总进度**，单调不减 —— 不再出现"满格后又掉回 7%"；
+     · 没有逐页进度的阶段不编造进度（只走到该阶段起点），
+       "还活着"由 phase_elapsed_s / phase_expected_s 表达。 */
 type Progress = {
+  /* 当前阶段：key 给步骤条用，phase 是中文文案 */
+  phase_key: string;
+  phase: string;
+  phase_index: number;
+  phase_count: number;
+  /* 阶段加权总进度（0~100） */
+  overall_pct: number;
+  /* 只有 has_pages 的阶段才有值，其余为 null */
+  page_done: number | null;
+  page_total: number | null;
+  phase_elapsed_s: number | null;
+  phase_expected_s: number | null;
+  /* 兼容字段（后端仍下发）：旧口径的页数计数 */
   tts_done: number;
   talking_done: number;
   total_pages: number;
-  phase: string;
   tail: string[];
   stalled_seconds: number | null;
+  /* 卡住由**后端按阶段**判定：数字人阶段本来就几分钟没有新记录，
+     用同一个阈值会在整个阶段持续误报「疑似卡住」。 */
+  stalled: boolean;
+  stalled_limit_s: number;
 };
 
 type Job = {
   id: string;
   status: string;
   phase: string;
+  phase_key?: string;
   exit_code?: number;
   elapsed_min?: number;
   progress?: Progress;
@@ -76,30 +108,84 @@ type Job = {
   resumed_from?: string;
 };
 
+/** 实时连接的可用状态。断流必须**看得见** ——
+ *  原先 onerror 里直接 close()，界面静默冻结，使用者只能靠"手动刷新"自救。
+ *  但只有 retrying 才提示：刚切换任务时那一瞬的 connecting 不是故障。 */
+type StreamState = "idle" | "connecting" | "live" | "retrying";
+
 /* SSE 进度流封装成一个 hook。
    为什么单独抽出来：进度是全应用唯一「持续变化」的状态，
-   集中在一处比散在各组件里更好维护（也方便做重连）。 */
+   集中在一处比散在各组件里更好维护。
+
+   ⚠️ 重连是必须的（"产物要手动刷新"的根因之一）：
+   `job.status` 是前端拉取产物/逐页素材的**唯一触发条件**，而 status 只能从
+   这条流里更新。一旦流断了又不重连，status 就永远停在 "running"，
+   那个触发条件再也不会到来 —— 表现为"跑完了但产物区一直不出现"。
+   EventSource 本来自带重连，但原代码在 onerror 里 `close()` 把它关掉了。
+   这里改成指数退避（1s → 2s → 5s，封顶 10s），并把连接状态暴露给界面。 */
 function useJobStream(jobId: string | null) {
   const [job, setJob] = useState<Job | null>(null);
+  const [streamState, setStreamState] = useState<StreamState>("idle");
+  const attemptRef = useRef(0);
+  // 终态之后**不再重连**：服务端推完终态那一帧就会正常关闭流，浏览器把它当 error →
+  // 若继续重连，已完成的任务会被每 5 秒重连一次，在服务端留下一串无意义的请求。
+  const terminalRef = useRef(false);
+
   useEffect(() => {
     if (!jobId) {
       setJob(null);
+      setStreamState("idle");
       return;
     }
-    const es = new EventSource(`/api/jobs/${jobId}/events`);
-    es.onmessage = (ev) => {
-      try {
-        const d = JSON.parse(ev.data);
-        if (d.error) return;
-        setJob((prev) => ({ ...(prev ?? { id: jobId }), ...d }));
-      } catch {
-        /* 单条解析失败不该中断整个流 */
-      }
+    let alive = true;
+    let timer: number | undefined;
+    let es: EventSource | null = null;
+    terminalRef.current = false;
+
+    const open = () => {
+      if (!alive || terminalRef.current) return;
+      es = new EventSource(`/api/jobs/${jobId}/events`);
+      es.onopen = () => {
+        attemptRef.current = 0;
+        setStreamState("live");
+      };
+      es.onmessage = (ev) => {
+        try {
+          const d = JSON.parse(ev.data);
+          if (d.error) return;
+          if (["done", "failed", "canceled"].includes(d.status)) terminalRef.current = true;
+          setJob((prev) => ({ ...(prev ?? { id: jobId }), ...d }));
+        } catch {
+          /* 单条解析失败不该中断整个流 */
+        }
+      };
+      es.onerror = () => {
+        es?.close();
+        es = null;
+        if (!alive) return;
+        if (terminalRef.current) {
+          setStreamState("idle");
+          return;
+        }
+        attemptRef.current += 1;
+        setStreamState("retrying");
+        const backoff = [1000, 2000, 5000][Math.min(2, attemptRef.current - 1)];
+        timer = window.setTimeout(open, backoff);
+      };
     };
-    es.onerror = () => es.close();
-    return () => es.close();
+
+    // 用 connecting 而不是 retrying：刚切换任务的这一瞬不是故障，
+    // 直接报"连接已断开"会制造一次假警报（误报比不报更糟）。
+    setStreamState("connecting");
+    open();
+    return () => {
+      alive = false;
+      if (timer) window.clearTimeout(timer);
+      es?.close();
+    };
   }, [jobId]);
-  return job;
+
+  return { job, streamState };
 }
 
 /* 拖放上传区 */
@@ -168,24 +254,42 @@ export default function App() {
   const [paperType, setPaperType] = useState("auto");
 
   // ③ API key
-  const [apiKey, setApiKey] = useState("");
-  const [apiBase, setApiBase] = useState("");
+  // 初值从浏览器本地存储回填（storage.ts 是唯一入口）：刷新页面后不用重填。
+  // 勾选框允许关掉，关掉会把本地已存的那份一并清掉（见 saveCredentials）。
+  const initialCreds = useMemo(loadCredentials, []);
+  const [apiKey, setApiKey] = useState(initialCreds.apiKey);
+  const [apiBase, setApiBase] = useState(initialCreds.apiBase);
+  const [rememberKey, setRememberKey] = useState(initialCreds.remember);
   const [keyCheck, setKeyCheck] = useState<{ ok: boolean; message: string; kind: string } | null>(null);
   const [checking, setChecking] = useState(false);
 
   // ④ 运行
-  const [jobId, setJobId] = useState<string | null>(null);
+  // jobId 也持久化：刷新页面（或误关标签）后自动回到原来那个任务 ——
+  // 否则每次都要回任务列表重新点一次"查看"，长任务里这很烦。
+  const [jobId, setJobId] = useState<string | null>(loadJobId());
   const [artifacts, setArtifacts] = useState<any[]>([]);
   // P1：任务记录 + 逐页素材
   const [jobs, setJobs] = useState<any[]>([]);
   const [pages, setPages] = useState<any | null>(null);
   const [rerunning, setRerunning] = useState(false);
-  const job = useJobStream(jobId);
+  const { job, streamState } = useJobStream(jobId);
 
   useEffect(() => {
     api.get("/api/options").then(setOpts).catch(() => {});
     api.get("/api/system/info").then(setSys).catch(() => {});
   }, []);
+
+  // 凭据变化就写回本地（含"关掉记住"时清除）。
+  // 放在这里而不是 submit 里：使用者在自检时填了 key 却还没建任务就刷新，
+  // 那份 key 也应该留住。
+  useEffect(() => {
+    saveCredentials({ apiKey, apiBase, remember: rememberKey });
+  }, [apiKey, apiBase, rememberKey]);
+
+  // 选中任务变化就记住（null 表示回到未选中状态）。
+  useEffect(() => {
+    saveJobId(jobId);
+  }, [jobId]);
 
   /* 耗时估算。
      依据是后端下发的标定值（来自本机两次真实运行的 stage 计时），
@@ -298,8 +402,18 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, []);
 
-  // 产物与逐页素材：切换查看对象或状态变化时拉一次。
-  // 为什么不等 done 才拉：跑到一半也想看已经生成到哪一页了。
+  // 产物与逐页素材的刷新。
+  //
+  // ⚠️ 三个触发点，缺一不可（使用者实测反馈："产物生成出来后不会直接显示，
+  //    需要手动刷新页面才会显示"）：
+  //      ① 换查看对象时立刻拉；
+  //      ② 状态/阶段**每变一次**都拉 —— 阶段变化是"又出了新东西"的最好信号；
+  //      ③ 运行期间**定时轮询**。这是关键：原先只依赖 `job.status` 这一个
+  //         触发条件，而 status 只能从 SSE 流里更新 —— 流一断（或那一刻恰好
+  //         没收到），这个条件就再也不会到来，产物区永久冻结。
+  //         单点是脆弱设计，轮询是它的兜底；跑完自动停，开销可忽略。
+  const runningNow = !!job && ["running", "queued"].includes(job.status);
+  const phaseKeyNow = job?.progress?.phase_key || "";
   useEffect(() => {
     if (!jobId) {
       setArtifacts([]);
@@ -307,22 +421,33 @@ export default function App() {
       return;
     }
     let alive = true;
-    api.get(`/api/jobs/${jobId}/artifacts`)
-      .then((d) => alive && setArtifacts(d.artifacts || []))
-      .catch(() => {});
-    api.get(`/api/jobs/${jobId}/pages`)
-      .then((d) => alive && setPages(d))
-      .catch(() => alive && setPages(null));
+    const load = () => {
+      api.get(`/api/jobs/${jobId}/artifacts`)
+        .then((d) => alive && setArtifacts(d.artifacts || []))
+        .catch(() => {});
+      api.get(`/api/jobs/${jobId}/pages`)
+        .then((d) => alive && setPages(d))
+        .catch(() => alive && setPages(null));
+    };
+    load();
+    let timer: number | undefined;
+    if (runningNow) timer = window.setInterval(load, 5000);
     return () => {
       alive = false;
+      if (timer) window.clearInterval(timer);
     };
-  }, [jobId, job?.status]);
+  }, [jobId, job?.status, phaseKeyNow, runningNow]);
 
   // 续跑：默认只重跑 stage 2/3 且复用已有讲稿。
   // 讲稿生成是整条链路里唯一付费的一步（占约 76% token），复用即零 API 费用。
+  // 凭据要一起带上：服务端把 key 挂在**任务**上（不落盘），重启服务后
+  // 内存里那份就没了；而前端本地存着，随手带上最省事。
   const doRerun = useCallback(async (id: string) => {
     setRerunning(true);
-    const { status, data } = await api.post(`/api/jobs/${id}/rerun`, {});
+    const { status, data } = await api.post(`/api/jobs/${id}/rerun`, {
+      api_key: apiKey || undefined,
+      api_base: apiBase || undefined,
+    });
     setRerunning(false);
     if (status !== 200) {
       MessagePlugin.error(data.detail || "续跑失败");
@@ -332,7 +457,7 @@ export default function App() {
     setArtifacts([]);
     setPages(null);
     MessagePlugin.success("已入队：只重跑 stage 2/3，复用已有讲稿（本次不产生 API 费用）");
-  }, []);
+  }, [apiKey, apiBase]);
 
   // 产物链接：逐段转义，但要保留路径分隔符（数字人产物是多层目录）
   const fileUrl = useCallback(
@@ -353,11 +478,30 @@ export default function App() {
     MessagePlugin.info("已请求取消");
   }, [jobId]);
 
+  // ── 进度：**全部由后端算**（overall_pct），前端不再自己拼 done/total ──
+  // 旧公式 `talking_done || tts_done` 造成两个可见的错：幻灯片/讲稿阶段永远是 0%，
+  // 数字人开工时从 100% 掉回 7%。现在用阶段加权（口径见 app.py 的 _phase_overall_pct）。
   const p = job?.progress;
-  const total = p?.total_pages || 0;
-  const done = p?.talking_done || p?.tts_done || 0;
-  const pct = total ? Math.min(100, Math.round((done / total) * 100)) : 0;
-  const stalled = (p?.stalled_seconds ?? 0) > 180;
+  const pct = job?.status === "done" ? 100 : p?.overall_pct ?? 0;
+  const phases: Phase[] = opts?.phases ?? [];
+  const curIdx = p?.phase_index ?? -1;
+  const stalled = !!p?.stalled;
+  const pageTotal = p?.page_total ?? 0;
+  const pageDone = p?.page_done ?? 0;
+
+  // "已用 / 约"：没有逐页进度的阶段**不编造进度**，改用时间说明"它还活着"。
+  const fmtMin = (s: number | null | undefined) =>
+    s == null ? "" : s >= 90 ? `${(s / 60).toFixed(1)} 分钟` : `${Math.round(s)} 秒`;
+  const phaseHint = useMemo(() => {
+    if (!p) return "";
+    const parts: string[] = [];
+    if (p.phase_elapsed_s != null) parts.push(`已用 ${fmtMin(p.phase_elapsed_s)}`);
+    if (p.phase_expected_s != null) parts.push(`约 ${fmtMin(p.phase_expected_s)}（粗估）`);
+    if (pageTotal > 0 && phases.find((x) => x.key === p.phase_key)?.has_pages) {
+      parts.push(`第 ${pageDone} / ${pageTotal} 页`);
+    }
+    return parts.join(" · ");
+  }, [p, pageTotal, pageDone, phases]);
 
   const running = job && ["running", "queued"].includes(job.status);
 
@@ -581,7 +725,9 @@ export default function App() {
         <div className="section-head">
           <span className="section-num">3</span>
           <h2 className="section-title">接口凭据</h2>
-          <span className="section-note">仅存内存，不落盘</span>
+          <span className="section-note">
+            {rememberKey ? "保存在本机浏览器" : "仅本次会话（刷新即丢）"}
+          </span>
         </div>
         <div className="grid grid-2">
           <div className="field">
@@ -595,9 +741,34 @@ export default function App() {
         </div>
         <div className="actions">
           <Button variant="outline" loading={checking} onClick={verifyKey}>连接自检</Button>
-          <span style={{ fontSize: 12, color: "var(--paper-ink-faint)" }}>
-            提交前建议先自检 —— 余额不足时网关返回空响应，症状与网络抖动完全一样
-          </span>
+          <label className="checkline">
+            <input
+              type="checkbox"
+              checked={rememberKey}
+              onChange={(e) => setRememberKey(e.target.checked)}
+            />
+            记住本机（存在浏览器 localStorage，刷新后不用重填）
+          </label>
+          <button
+            type="button"
+            className="linkbtn"
+            onClick={() => {
+              setApiKey("");
+              setApiBase("");
+              clearCredentials();
+              setKeyCheck(null);
+              MessagePlugin.info("已清除本机保存的凭据");
+            }}
+          >
+            清除本地凭据
+          </button>
+        </div>
+        <div className="hint">
+          提交前建议先自检 —— 余额不足时网关返回空响应，症状与网络抖动完全一样。
+          <br />
+          凭据只存<b>本机浏览器</b>与服务的进程内存，不写入任何文件、也不会写进任务记录；
+          服务端按任务隔离，多人共用同一服务时各自用自己的 key。
+          （localStorage 是同源可见的，本机/内网使用足够；将来开放公网访问需改为服务端会话。）
         </div>
         {keyCheck && (
           <div className={"notice " + (keyCheck.ok ? "ok" : "err")}>
@@ -632,63 +803,109 @@ export default function App() {
         </div>
 
         {job && (
-          <>
-            <div style={{ marginTop: 18 }}>
-              <div className="statusline">
-                <span className={"dot " + (job.status === "done" ? "ok" : job.status === "failed" ? "err" : "run")} />
-                <span>{job.phase || job.status}</span>
-                <span className="tail">
-                  {total ? `${done} / ${total} 页` : ""}
-                  {job.elapsed_min ? `　${job.elapsed_min} min` : ""}
-                  {job.exit_code !== undefined && job.exit_code !== 0 ? `　退出码 ${job.exit_code}` : ""}
+          <div style={{ marginTop: 18 }}>
+            <div className="statusline">
+              <span className={"dot " + (job.status === "done" ? "ok" : job.status === "failed" ? "err" : "run")} />
+              <span>{job.phase || job.status}</span>
+              <span className="tail">
+                {`总进度 ${pct}%`}
+                {phaseHint ? `　${phaseHint}` : ""}
+                {job.elapsed_min ? `　已跑 ${job.elapsed_min} min` : ""}
+                {job.exit_code !== undefined && job.exit_code !== 0 ? `　退出码 ${job.exit_code}` : ""}
+              </span>
+            </div>
+
+            <div className="bar">
+              <i style={{ width: `${pct}%` }} />
+            </div>
+
+            {/* 阶段步骤条：替代原先"只显示一个阶段名"的写法（那会让人以为卡住了）。
+                三态一眼可见：已完成 / 进行中 / 未开始。 */}
+            {phases.length > 0 && (
+              <div className="steps">
+                {phases.map((ph, i) => {
+                  const state =
+                    job.status === "done" || i < curIdx ? "done" : i === curIdx ? "cur" : "todo";
+                  return (
+                    <span
+                      key={ph.key}
+                      className={"step " + state}
+                      title={`该阶段占预计总耗时的 ${Math.round(ph.weight * 100)}%`}
+                    >
+                      <span className="sdot" />
+                      {ph.label}
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* 逐页格子只在"有页数概念"的阶段显示。
+                原先它一直挂着，幻灯片/讲稿/合片阶段是一排永远不动的空点。 */}
+            {pageTotal > 0 && (
+              <div className="pips">
+                {Array.from({ length: pageTotal }).map((_, i) => (
+                  <span key={i} className={i < pageDone ? "done" : i === pageDone ? "cur" : "todo"} />
+                ))}
+              </div>
+            )}
+
+            {/* 断流必须看得见：原先 onerror 直接 close()，界面静默冻结，
+                使用者只能自己想到"刷新页面"（实测就是这么反馈的）。 */}
+            {streamState === "retrying" && running && (
+              <div className="notice warn" style={{ marginTop: 12 }}>
+                <span>
+                  <b>实时连接已断开，正在自动重连</b>　进度暂不会自动刷新；
+                  产物列表仍在每 5 秒轮询一次，已完成的部分不会漏掉。
                 </span>
               </div>
+            )}
 
-              <div className="bar">
-                <i style={{ width: `${pct}%` }} />
+            {stalled && running && (
+              <div className="notice warn" style={{ marginTop: 12 }}>
+                <span>
+                  <b>疑似卡住</b>　当前阶段已有 {Math.round((p?.stalled_seconds ?? 0) / 60)} 分钟无进度更新
+                  （该阶段的判定阈值是 {Math.max(1, Math.round((p?.stalled_limit_s ?? 0) / 60))} 分钟）。
+                  本机单卡执行时单页可能要数十秒；若持续不更新可取消后重跑。
+                </span>
               </div>
+            )}
 
-              {total > 0 && (
-                <div className="pips">
-                  {Array.from({ length: total }).map((_, i) => (
-                    <span key={i} className={i < done ? "done" : i === done ? "cur" : "todo"} />
-                  ))}
-                </div>
-              )}
-
-              {stalled && running && (
-                <div className="notice warn" style={{ marginTop: 12 }}>
-                  <span>
-                    <b>疑似卡住</b>　日志已有 {Math.round((p?.stalled_seconds ?? 0) / 60)} 分钟无更新。
-                    本机单卡执行时单页可能要数十秒；若持续不更新可取消后重跑。
-                  </span>
-                </div>
-              )}
-
-              {p?.tail?.length ? <div className="logtail">{p.tail.join("\n")}</div> : null}
-            </div>
-          </>
+            {p?.tail?.length ? <div className="logtail">{p.tail.join("\n")}</div> : null}
+          </div>
         )}
 
-        {artifacts.length > 0 && (
+        {/* 产物区**运行中也渲染**。原先外层是 `artifacts.length > 0 &&`，
+            于是整块在运行期间不存在，"跑完才冒出来"看起来像丢了产物。 */}
+        {job && (
           <div style={{ marginTop: 20 }}>
             <div className="statusline" style={{ marginBottom: 4 }}>
-              <span className={"dot " + (job?.status === "done" ? "ok" : "err")} />
+              <span className={"dot " + (artifacts.length ? (job.status === "done" ? "ok" : "run") : "wait")} />
               <span>产物</span>
-              {job?.resumed_from && (
+              <span className="tail">
+                {artifacts.length ? `${artifacts.length} 项` : "尚未生成"}
+                {running && artifacts.length ? "　（每 5 秒刷新）" : ""}
+              </span>
+              {job.resumed_from && (
                 <span className="section-note" style={{ marginLeft: 8 }}>
                   续跑自 {job.resumed_from} · 与原任务共享同一份产物目录（重跑会覆盖它）
                 </span>
               )}
             </div>
-            <div className="artifacts">
-              {artifacts.map((a) => (
-                <a key={a.name} href={`/api/jobs/${jobId}/files/${encodeURIComponent(a.name)}`} target="_blank" rel="noreferrer">
-                  <span>{a.name}</span>
-                  <span className="sz">{a.size_mb} MB</span>
-                </a>
-              ))}
-            </div>
+            {artifacts.length > 0 ? (
+              <div className="artifacts">
+                {artifacts.map((a) => (
+                  <a key={a.name} href={`/api/jobs/${jobId}/files/${encodeURIComponent(a.name)}`} target="_blank" rel="noreferrer">
+                    <span>{a.name}</span>
+                    <span className="sz">{a.size_mb} MB</span>
+                  </a>
+                ))}
+              </div>
+            ) : (
+              <div className="hint">
+                产物会在各阶段结束后陆续出现在这里（运行中也能看到已生成的部分）。
+              </div>
+            )}
             {artifacts.some((a) => a.name === "3_merage.mp4") && (
               <video controls src={`/api/jobs/${jobId}/files/3_merage.mp4`} />
             )}

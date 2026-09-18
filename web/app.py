@@ -17,6 +17,7 @@
     python web/app.py            # 默认 127.0.0.1:8848
 """
 import asyncio
+import inspect
 import io
 import json
 import os
@@ -51,11 +52,28 @@ os.makedirs(JOBS_ROOT, exist_ok=True)
 app = FastAPI(title="Paper2Video Web", version="0.1.0")
 
 # ──────────────────────────────────────────────────────────────
-# 会话级 API key（内存，不落盘）
+# 接口凭据：**按任务**存进程内存，不落盘
 # ──────────────────────────────────────────────────────────────
-# 为什么不落盘：这个是本地/内网服务，key 写进文件就多一份泄漏面。
-# 需要持久化的场景由使用者自己在仓库根的 .env 里配（pv_env 会读）。
-_SESSION_KEYS = {"api_key": "", "api_base": ""}
+# 为什么不落盘：本地/内网服务，key 写进文件就多一份泄漏面。
+# 需要长期持久化的场景由使用者自己在仓库根的 .env 里配（pv_env 会读）。
+#
+# ⚠️ 为什么是 dict[job_id] 而不是"一份会话 key"（2026-09-18 修）：
+#   原先 `_SESSION_KEYS` 是**模块级单例**，`/api/key/verify` 与建任务都往里写，
+#   行为等价于"**最后输入的人覆盖所有人**"。单人本机完全无感，但迁到学校服务器
+#   多人使用时，A 的 key 会被 B 的任务拿去用（B 甚至不知道自己花了 A 的钱）；
+#   而一旦把 key 存进浏览器本地，这个覆盖**更难被发现**（每个人的界面都显示着
+#   自己填的 key，看起来一切正常，实际执行用的是别人的）。
+#   改成按 job_id 挂：任务之间互不可见，新建任务的 key 不会影响已在跑的任务。
+_JOB_KEYS = {}
+
+
+def _remember_keys(job_id, payload):
+    """记下这个任务自己的凭据（缺项不覆盖已有值）。"""
+    entry = _JOB_KEYS.setdefault(job_id, {})
+    for field in ("api_key", "api_base"):
+        value = (payload or {}).get(field)
+        if value:
+            entry[field] = str(value).strip()
 
 
 def _mask(value):
@@ -198,16 +216,98 @@ def _total_pages(result_dir):
     return 0
 
 
-# ---- P1：结构化进度 → 界面文案 ----
-# progress.jsonl 里的 phase 取值由流水线侧约定，见 src/progress_report.py
-_PHASE_LABEL = {
-    "slides": "生成幻灯片",
-    "script": "生成讲稿",
-    "tts": "合成语音",
-    "cursor": "光标定位",
-    "talking": "生成数字人",
-    "merge": "合成视频",
-}
+# ──────────────────────────────────────────────────────────────
+# 阶段模型 —— 阶段名 / 权重 / 有无逐页进度的**唯一来源**
+#
+# 为什么要有这张表（两个前端问题的共同根因）：
+#   ① 界面上原先只有一个"阶段名"，而 `job.phase` 全流程只写 3 次
+#      （排队中 → 启动中 → 已完成），过程阶段只能靠 progress.jsonl；
+#      而前置结构化那一步不写进度 ⇒ 那 1~2 分钟必然显示"启动中"。
+#   ② 进度条原先用「页数占比」当**总**进度：一个条要表达 6 个阶段，
+#      在没有页数的阶段（幻灯片/讲稿/光标/合片）它只能停在上一个值上。
+#      实测序列：stage1 0% → TTS 0→100% → 光标停在 100% → 数字人**回跳到 7%**
+#      → 100% → 合片 100%。数字人那段更隐蔽：`talking_gen` 的批量路径跑完
+#      N 页才逐页补报，14 条记录的时间戳**全是同一秒**（22:58:21），
+#      所以真正在跑的 5~10 分钟里条一直满格。
+#
+# 把阶段、权重、有无页数集中在这里，好处是三件事只维护一处：
+#   · 后端算**总进度**（前端只显示，不自己拼公式）；
+#   · 前端按 key 渲染**步骤条**（已完成/进行中/未开始）；
+#   · `/api/options` 下发给前端，避免前后端两处维护同一张表。
+#
+# 权重取自**实测耗时占比**（见本文件顶部 CALIBRATION 的两组真实计时）：
+#   gkk_en 15 页：TTS 348.8 + 数字人 327.7 + 光标 2.6 + 合片 77.5 + 讲稿 111.3 = 868 s
+#   gkk_zh 11 页：TTS 479.9 + 数字人 363.6 + 光标 17.2 + 合片 73.0            = 934 s
+# 再补上 web 流程独有、命令行没有的两步：正文提取（本地，秒级）与
+# LLM 结构化（PDF/Word 输入，实测 1~3 分钟）。
+# 权重只是"进度条刻度"，不参与任何计算，换机器可重新标定。
+PHASES = (
+    # key,       中文名,        权重,  有逐页进度, 无更新多久算卡住（秒）
+    ("extract",  "分析论文",     0.02, False, 180),
+    ("struct",   "结构化正文",   0.10, False, 300),
+    ("slides",   "生成幻灯片",   0.09, False, 300),
+    ("script",   "生成讲稿",     0.06, False, 300),
+    ("tts",      "合成语音",     0.30, True,  180),
+    ("cursor",   "光标定位",     0.03, False, 300),
+    ("talking",  "生成数字人",   0.32, True,  420),
+    ("merge",    "合成视频",     0.06, False, 300),
+    ("finish",   "收尾",         0.02, False, 300),
+)
+_PHASE_KEYS = [p[0] for p in PHASES]
+_PHASE_LABEL = {p[0]: p[1] for p in PHASES}
+_PHASE_WEIGHT = {p[0]: p[2] for p in PHASES}
+_PHASE_HAS_PAGES = {p[0]: p[3] for p in PHASES}
+_PHASE_STALL_LIMIT = {p[0]: p[4] for p in PHASES}
+# 每个阶段的**起点刻度**（前面所有阶段的权重之和）—— 用来把"阶段内进度"嵌进总进度
+_PHASE_START = {k: round(sum(p[2] for p in PHASES[:i]), 4)
+                for i, k in enumerate(_PHASE_KEYS)}
+
+# 阶段预计耗时（秒）—— **粗估**，只用来在界面上写"约 X 分钟"。
+# 有页数的阶段从 CALIBRATION 的每页总耗时**按实测占比拆**（不另立一套数字，
+# 否则两处标定会漂）：gkk_en 实测 868 s = TTS 40% + 数字人 38% + 光标/合片 9% + 讲稿 13%。
+_PHASE_FIXED_S = {"extract": 20, "struct": 120, "slides": 60,
+                  "cursor": 20, "merge": 80, "finish": 20}
+_PHASE_PAGE_SHARE = {"tts": 0.40, "talking": 0.38}
+
+
+def _phase_expected_s(phase_key, total_pages, script_lang):
+    """某阶段的预计耗时（粗估）。取不到就返回 None，界面不显示。"""
+    if phase_key in _PHASE_PAGE_SHARE:
+        per_slide = CALIBRATION.get(
+            "zh_per_slide_s" if script_lang == "zh" else "en_per_slide_s")
+        if not (per_slide and total_pages):
+            return None
+        return int(per_slide * _PHASE_PAGE_SHARE[phase_key] * total_pages)
+    if phase_key == "script":
+        return CALIBRATION.get("script_api_s")
+    return _PHASE_FIXED_S.get(phase_key)
+
+
+def _phase_overall_pct(phase_key, done, total):
+    """把「当前阶段 + 阶段内页数」换算成**总进度百分比**。
+
+    口径（刻意保守，宁可不动也不假装在走）：
+      · 已完成阶段的权重全额计入；
+      · 有逐页进度的阶段，按 done/total 线性计入自己的权重；
+      · **没有逐页进度的阶段只计到它的起点** —— 不编造进度。
+        这类阶段的"还活着"由界面上的「进行中 · 已用 X 分钟」表达。
+
+    这样得到的总进度**单调不减**，也就消除了原先那次 100%→7% 的回跳。
+    """
+    if phase_key not in _PHASE_WEIGHT:
+        return 0
+    base = _PHASE_START[phase_key]
+    weight = _PHASE_WEIGHT[phase_key]
+    frac = 0.0
+    if _PHASE_HAS_PAGES[phase_key] and total:
+        frac = min(1.0, max(0.0, float(done) / float(total)))
+    return min(100, int(round((base + weight * frac) * 100)))
+
+
+def _phase_payload():
+    """下发给前端的阶段表（步骤条按它渲染）。"""
+    return [{"key": k, "label": _PHASE_LABEL[k], "weight": _PHASE_WEIGHT[k],
+             "has_pages": _PHASE_HAS_PAGES[k]} for k in _PHASE_KEYS]
 
 
 def _read_log_text(path):
@@ -267,7 +367,8 @@ def _progress_from_jsonl(job, job_dir):
         return None
 
     info = {"source": "jsonl", "total_pages": 0, "tts_done": 0, "talking_done": 0,
-            "phase": "", "last_log_at": None, "stalled_seconds": None}
+            "phase_key": None, "phase_started_ts": None, "unknown_phase": None,
+            "last_log_at": None, "stalled_seconds": None}
     for rec in records:
         total = rec.get("total")
         if isinstance(total, int):
@@ -280,7 +381,19 @@ def _progress_from_jsonl(job, job_dir):
         elif rec.get("phase") == "talking":
             info["talking_done"] = max(info["talking_done"], done)
 
-    info["phase"] = _PHASE_LABEL.get(records[-1].get("phase"), "")
+    # 未知 phase 要**显式**处理。以前是 `_PHASE_LABEL.get(x, "")`，能不能正常
+    # 显示全靠上一层"空值不覆盖旧值"的巧合 —— 这里改成：认得就用，认不得就
+    # 记下名字（供排查"流水线加了阶段、前端没跟上"），阶段仍保留 job 里那个。
+    raw = records[-1].get("phase")
+    if raw in _PHASE_WEIGHT:
+        info["phase_key"] = raw
+        for rec in records:                    # 当前阶段的**第一条**记录 = 阶段开始
+            if rec.get("phase") == raw:
+                info["phase_started_ts"] = rec.get("ts")
+                break
+    else:
+        info["unknown_phase"] = raw
+
     ts = records[-1].get("ts")
     if isinstance(ts, (int, float)):
         # 用最后一条**记录**的时间戳判断"还在不在动"，比日志 mtime 更贴切：
@@ -304,41 +417,58 @@ def _progress_from_log(job, job_dir):
     info = {"source": "log",
             "tts_done": len(re.findall(r"第 \d+ 页合成完成", text)),
             "talking_done": len(re.findall(r"第 \d+ 页完成", text)),
-            "total_pages": 0, "last_log_at": None, "stalled_seconds": None}
+            "total_pages": 0, "last_log_at": None, "stalled_seconds": None,
+            "phase_key": None, "phase_started_ts": None, "pipeline_done": False}
 
     mtime = os.path.getmtime(log_path)
     info["last_log_at"] = time.strftime("%H:%M:%S", time.localtime(mtime))
     info["stalled_seconds"] = int(max(0, time.time() - mtime))
 
+    # 兜底路径只判到"哪一大阶段"，够用了 —— 它存在的意义是老任务目录
+    # （没有 progress.jsonl）在界面上不至于一片空白。
+    # `pipeline_done` 是**兜底专用**的信号：日志已说整条链路跑完，但任务状态
+    # 可能还没落盘（父进程收尾的那一小段窗口）。它只影响"显示文案"，
+    # 不影响终态判定 —— 终态一律以 status 为准。
     if "数字人与幻灯片合成完成" in text or "subtitle_render] 完成" in text:
-        info["phase"] = "已完成"
+        info["phase_key"] = "finish"
+        info["pipeline_done"] = True
     elif info["talking_done"]:
-        info["phase"] = "生成数字人"
+        info["phase_key"] = "talking"
     elif info["tts_done"]:
-        info["phase"] = "合成语音"
+        info["phase_key"] = "tts"
     elif "start stage" in text:
-        info["phase"] = "生成幻灯片与讲稿"
-    else:
-        info["phase"] = ""
+        info["phase_key"] = "slides"
     return info
 
 
 def read_progress(job):
     """把进度换算成前端要的形状（可直接推给前端）。
 
-    两个来源，**优先结构化**：
-      1. `progress.jsonl` —— P1，流水线主动写，机器可读
-      2. `run.log` + 正则   —— P0 的兜底，零改造但脆
+    三个来源，**优先结构化**：
+      1. `progress.jsonl`   —— 流水线主动写，机器可读（首选）
+      2. `run.log` + 正则   —— 零改造但脆的兜底（老任务目录）
+      3. `job.phase_key`    —— **阶段边界**：结构化、启动等不经过流水线的步骤靠它
     终态（完成/失败/已取消）一律以**任务状态**为准，不从日志文本猜。
+
+    两个字段专供总进度条，前端**不要自己算**：
+      · `overall_pct` —— 阶段加权总进度（单调不减，口径见 `_phase_overall_pct`）
+      · `phase_key` / `phase_index` —— 步骤条按 `/api/options` 的 `phases` 渲染
     """
     job_dir = _job_dir(job["id"])
+    status = job.get("status")
+    finished = status in ("done", "failed", "canceled")
+
     info = {
         "stage": job.get("stage", 0),
-        "phase": job.get("phase", "等待中"),
+        "phase_key": job.get("phase_key") or ("finish" if finished else "queued"),
+        "phase": job.get("phase", "排队中"),
         "tts_done": 0, "talking_done": 0, "total_pages": 0,
         "last_log_at": None, "stalled_seconds": None,
         "tail": _read_tail(job_dir),
         "source": "none",
+        "page_done": None, "page_total": None,
+        "phase_elapsed_s": None, "phase_expected_s": None,
+        "unknown_phase": None,
     }
 
     found = _progress_from_jsonl(job, job_dir) or _progress_from_log(job, job_dir)
@@ -346,23 +476,74 @@ def read_progress(job):
         for key in ("tts_done", "talking_done", "total_pages"):
             if found.get(key):
                 info[key] = found[key]
-        if found.get("phase"):
-            info["phase"] = found["phase"]
+        # 流水线报的阶段比 job.phase 细（job.phase 只有 排队中/启动中/已完成），
+        # 有就用它推进阶段指针。
+        if found.get("phase_key"):
+            info["phase_key"] = found["phase_key"]
+            info["phase"] = _PHASE_LABEL[found["phase_key"]]
+        if found.get("unknown_phase"):
+            info["unknown_phase"] = found["unknown_phase"]
+        # 兜底路径看到"整条链路跑完"：只改显示文案。任务状态还是 running 时
+        # （父进程收尾的窗口期）界面不该停在"生成数字人"。
+        if found.get("pipeline_done") and not finished:
+            info["phase"] = "已完成"
         info["source"] = found.get("source", info["source"])
         if found.get("last_log_at"):
             info["last_log_at"] = found["last_log_at"]
         if found.get("stalled_seconds") is not None:
             info["stalled_seconds"] = found["stalled_seconds"]
+        if found.get("phase_started_ts"):
+            info["phase_elapsed_s"] = int(max(0, time.time() - found["phase_started_ts"]))
 
     # 总页数兜底：两个来源都没给出时，从渲染出的 PDF / 幻灯片图数推断。
     # 注意用**产物目录**（续跑时产物在原任务那里，拼 job_dir 会数出 0 页）。
     if not info["total_pages"]:
         info["total_pages"] = _total_pages(_result_dir(job))
 
-    status = job.get("status")
     if status in ("done", "failed", "canceled"):
         info["phase"] = {"done": "已完成", "failed": "失败",
                          "canceled": "已取消"}[status]
+
+    # ── 步骤条 + 总进度（前端的唯一数据源）──
+    phase_key = info["phase_key"]
+    if phase_key not in _PHASE_WEIGHT:
+        # job 里可能写着 "queued"/"startup" 这类非阶段值：归一到起点，
+        # 界面文案仍用 job.phase（"排队中"），步骤条高亮第一步。
+        phase_key = _PHASE_KEYS[0]
+        info["phase_key"] = phase_key
+    info["phase_index"] = _PHASE_KEYS.index(phase_key)
+    info["phase_count"] = len(_PHASE_KEYS)
+
+    if _PHASE_HAS_PAGES[phase_key] and not finished:
+        info["page_done"] = (info["talking_done"] if phase_key == "talking"
+                             else info["tts_done"])
+        info["page_total"] = info["total_pages"] or None
+
+    computed = _phase_overall_pct(phase_key, info["page_done"] or 0, info["total_pages"])
+    if status == "done":
+        info["overall_pct"] = 100
+    elif finished:
+        # 失败/取消：**保留已走到的位置**（比清零有用 —— 一眼看出挂在哪个阶段），
+        # 但封顶 99%，避免"进度 100%"与"任务失败"同时出现这种自相矛盾的画面。
+        info["overall_pct"] = min(99, computed)
+    else:
+        info["overall_pct"] = computed
+
+    config = job.get("config") or {}
+    info["phase_expected_s"] = _phase_expected_s(
+        phase_key, info["total_pages"], config.get("script_lang", "en"))
+
+    # 卡住判据**按阶段给上限**：数字人阶段本来就是"几分钟没有新记录"，
+    # 用同一个阈值会在整个数字人阶段持续误报「疑似卡住」。
+    limit = _PHASE_STALL_LIMIT.get(phase_key, 300)
+    info["stalled_limit_s"] = limit
+    info["stalled"] = bool(not finished
+                           and info.get("stalled_seconds") is not None
+                           and info["stalled_seconds"] > limit)
+
+    # 兼容字段：旧前端/旧测试读的是 tts_done/talking_done，保留不动。
+    info["total"] = info["total_pages"]
+    info["done"] = info["page_done"] or 0
     return info
 
 
@@ -583,10 +764,14 @@ async def _prepare_latex(job, job_dir, log, env):
             source, "--out", job_dir]
     _log_line(log, "[struct] 正在把 {} 转成 LaTeX 工程（一次 API 调用，约 1~2 分钟）".format(
         os.path.basename(source)))
+    # 阶段要显式推进两次：提取正文是本地的（秒级），结构化才要 API 调用。
+    # 不写这两行的话，这 1~2 分钟界面只能显示"启动中"。
+    await _set_phase(job["id"], "extract")
     proc = await asyncio.create_subprocess_exec(
         *argv, cwd=REPO_ROOT, stdout=log, stderr=asyncio.subprocess.STDOUT, env=env)
     _CURRENT["proc"] = proc
     _CURRENT["job_id"] = job["id"]
+    await _set_phase(job["id"], "struct")
     try:
         code = await proc.wait()
     finally:
@@ -600,15 +785,33 @@ async def _prepare_latex(job, job_dir, log, env):
     return True
 
 
+async def _set_phase(job_id, phase_key):
+    """推进任务阶段（同时写机器可读的 phase_key 与中文文案）。
+
+    为什么需要这个入口：`job.phase` 原先全流程只在 3 处被写
+    （排队中 → 启动中 → 已完成），中间过程阶段**完全依赖 progress.jsonl**；
+    而前置的结构化不经过流水线、不写进度文件 ⇒ 那 1~2 分钟界面只能显示
+    "启动中"（使用者实测反馈："启动后一直显示启动中，很迷惑"）。
+    """
+    if phase_key not in _PHASE_WEIGHT:
+        return None
+    return await _update_job(job_id, phase_key=phase_key,
+                             phase=_PHASE_LABEL[phase_key])
+
+
 async def _run_job(job):
     """在子进程里跑流水线，日志落盘供进度解析。"""
     job_id = job["id"]
     job_dir = _job_dir(job_id)
     log_path = os.path.join(job_dir, "run.log")
     argv = _build_argv(job)
+    keys = _JOB_KEYS.get(job_id) or {}
 
     job["status"] = "running"
     job["phase"] = "启动中"
+    # 起始阶段：PDF/Word 要先把正文转 LaTeX（结构化），.tex 输入直接进 stage 1。
+    # 这两条路径的"等待形态"完全不同，界面上必须能区分开。
+    job["phase_key"] = "extract" if job.get("needs_struct") else "slides"
     job["argv"] = argv
     _save_job(job)
 
@@ -624,17 +827,27 @@ async def _run_job(job):
     # 只设 PYTHONIOENCODING（**不设 PYTHONUTF8**），把影响限制在标准流上，
     # 不去改变子进程里 open() 的默认编码。
     env["PYTHONIOENCODING"] = "utf-8"
-    if _SESSION_KEYS["api_key"]:
-        env["OPENAI_API_KEY"] = _SESSION_KEYS["api_key"]
-        env["OPENAI_COMPATIBLE_MODEL_API_KEY"] = _SESSION_KEYS["api_key"]
-    if _SESSION_KEYS["api_base"]:
-        env["OPENAI_API_BASE"] = _SESSION_KEYS["api_base"]
-        env["OPENAI_BASE_URL"] = _SESSION_KEYS["api_base"]
-        env["OPENAI_COMPATIBLE_MODEL_API_BASE"] = _SESSION_KEYS["api_base"]
+    # 凭据来自**这个任务自己**那份（_JOB_KEYS[job_id]），不是全局会话 ——
+    # 多人共用同一服务时不会互相覆盖。
+    if keys.get("api_key"):
+        env["OPENAI_API_KEY"] = keys["api_key"]
+        env["OPENAI_COMPATIBLE_MODEL_API_KEY"] = keys["api_key"]
+    if keys.get("api_base"):
+        env["OPENAI_API_BASE"] = keys["api_base"]
+        env["OPENAI_BASE_URL"] = keys["api_base"]
+        env["OPENAI_COMPATIBLE_MODEL_API_BASE"] = keys["api_base"]
 
     started = time.time()
     with io.open(log_path, "w", encoding="utf-8", errors="replace") as log:
         log.write("### 命令 {}\n".format(" ".join(argv)))
+        # 凭据来源必须写进日志：**回落路径要可见**，否则"没配 key 的机器上静默
+        # 用错凭据"这种问题在开发机（.env 里有 key）永远暴露不出来。
+        if keys.get("api_key"):
+            _log_line(log, "[keys] 使用本任务随请求提供的 API key（{}）".format(
+                _mask(keys["api_key"])))
+        else:
+            _log_line(log, "[keys] ⚠️ 本任务没有随请求提供 API key，"
+                           "将使用进程环境里的 OPENAI_API_KEY（来源可能是仓库根的 .env）")
         log.flush()
 
         # 前置：PDF / Word 输入先转成 LaTeX 工程（见 _prepare_latex 的说明）
@@ -672,6 +885,10 @@ async def _run_job(job):
         else:
             final["status"] = "done" if code == 0 else "failed"
             final["phase"] = "已完成" if code == 0 else "失败"
+            # 成功才把阶段推到 finish；**失败时保留最后那个阶段** ——
+            # 步骤条上就能直接看出"挂在哪一步"，比只写一个"失败"有用得多。
+            if code == 0:
+                final["phase_key"] = "finish"
         _save_job(final)
 
 
@@ -719,6 +936,9 @@ async def api_options():
         "script_langs": [{"value": k, "label": v["desc"]} for k, v in lc.SCRIPT_LANGS.items()],
         "paper_types": paper_types,
         "accept_formats": [".tex", ".zip", ".docx", ".doc", ".pdf"],
+        # 阶段表由后端下发（前端不硬编码）：步骤条与总进度共用同一份定义，
+        # 将来加阶段只改 app.py 一处，前端自动跟上。
+        "phases": _phase_payload(),
         # 明确告知前端：这个开关不存在，不要试图暴露
         "hidden_flags": {"if_tree_search": "写死 False（默认值 True 会 NameError）"},
     }
@@ -735,8 +955,8 @@ async def api_key_verify(payload: dict):
     import pv_env  # noqa: F401
     from openai import OpenAI
 
-    api_key = (payload.get("api_key") or _SESSION_KEYS["api_key"]).strip()
-    api_base = (payload.get("api_base") or _SESSION_KEYS["api_base"]).strip()
+    api_key = (payload.get("api_key") or "").strip()
+    api_base = (payload.get("api_base") or "").strip()
     if not api_key:
         return {"ok": False, "kind": "missing", "message": "未填写 API Key"}
 
@@ -747,16 +967,13 @@ async def api_key_verify(payload: dict):
             messages=[{"role": "user", "content": "ping"}],
             max_tokens=8, temperature=0)
         usage = getattr(resp, "usage", None)
-        # 校验通过就记进进程内存 —— 这样真正开跑时 _run_job 才能把它注入子进程。
-        # ⚠️ 原先只校验不保存，于是注入那段代码**永远拿不到使用者填的 key**，
-        #    实际用的是 .env 里那把：本地因为 .env 有 key 所以"看着能跑"，
-        #    换到没有 .env 的服务器就会静默失败。
-        # 注意这是**进程级**的：多人共用同一服务时会互相覆盖，
-        # 学校服务器阶段需要把凭据挂到任务上做隔离（方案文档已列）。
-        _SESSION_KEYS["api_key"] = api_key
-        _SESSION_KEYS["api_base"] = api_base
+        # ⚠️ 自检**不再往服务端存 key**（原先这里写 _SESSION_KEYS）。
+        # 自检用的是本次请求带来的凭据，真正的注入发生在建任务时 ——
+        # 那时才把 key 挂到**那个 job_id** 上（见 _remember_keys / _run_job）。
+        # 这样"自检别人的 key"不会污染任何任务的执行凭据。
         return {"ok": True, "kind": "ok",
                 "message": "连接正常",
+                "masked": _mask(api_key),
                 "usage": {"total_tokens": getattr(usage, "total_tokens", None)}}
     except Exception as exc:
         text = "{}".format(exc)
@@ -901,11 +1118,8 @@ async def api_create_job(payload: dict):
         raise HTTPException(status_code=400, detail="先上传论文（缺少有效的 ingest_id）")
 
     # 创建任务时也接受凭据（使用者可能没点"自检"就直接开跑）。
-    # 只放进程内存，不落盘。
-    if payload.get("api_key"):
-        _SESSION_KEYS["api_key"] = str(payload["api_key"]).strip()
-    if payload.get("api_base"):
-        _SESSION_KEYS["api_base"] = str(payload["api_base"]).strip()
+    # 凭据挂到**本次任务的 id** 上（见下面 _remember_keys），不是全局会话 ——
+    # 所以"谁的任务用谁的 key"。仍然只放进程内存，不落盘。
 
     # 人像与音色也是上传来的；没人像就直接拒绝（数字人环节必然失败）
     portrait = payload.get("portrait_path")
@@ -913,6 +1127,7 @@ async def api_create_job(payload: dict):
         raise HTTPException(status_code=400, detail="缺少人像图")
 
     job_id = "job_" + time.strftime("%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:4]
+    _remember_keys(job_id, payload)          # 凭据跟着任务走，不是全局一份
     job_dir = _job_dir(job_id)
     os.makedirs(job_dir, exist_ok=True)
     shutil.copytree(os.path.join(work, "ingest"), os.path.join(job_dir, "ingest"),
@@ -926,6 +1141,8 @@ async def api_create_job(payload: dict):
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "status": "queued",
         "phase": "排队中",
+        # 机器可读的阶段（中文 phase 只用于显示）—— 步骤条与总进度靠它
+        "phase_key": "queued",
         "queue_ahead": _QUEUE.qsize(),
         "config": payload.get("config", {}),
         "ref_img": portrait,
@@ -976,6 +1193,11 @@ async def api_rerun_job(job_id: str, payload: dict):
     })
 
     new_id = "job_" + time.strftime("%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:4]
+    # 续跑的凭据：优先用请求里带的（前端有本地保存），否则沿用原任务那份。
+    # 两者都没有时**不猜** —— _run_job 会明确记一行日志说明回落到了环境变量。
+    _remember_keys(new_id, payload)
+    if not _JOB_KEYS.get(new_id):
+        _remember_keys(new_id, _JOB_KEYS.get(job_id) or {})
     new_dir = _job_dir(new_id)
     os.makedirs(new_dir, exist_ok=True)
     src_ingest = os.path.join(_job_dir(job_id), "ingest")
@@ -988,6 +1210,7 @@ async def api_rerun_job(job_id: str, payload: dict):
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "status": "queued",
         "phase": "排队中",
+        "phase_key": "queued",
         "queue_ahead": _QUEUE.qsize(),
         "config": config,
         "ref_img": portrait,
@@ -1016,17 +1239,35 @@ async def api_get_job(job_id: str):
     return job
 
 
-@app.get("/api/jobs/{job_id}/events")
-async def api_job_events(job_id: str, request: Request):
-    """SSE 进度流。
+def _sse_frames(job_id, is_disconnected, keepalive):
+    """SSE 的帧序列（与 HTTP 传输解耦）。
 
-    长任务（15~25 分钟）必须用流式推送；页面刷新后重连也能接着看，
-    状态一律以后端为准，不依赖前端内存。
+    为什么单独抽成生成器：`TestClient` 对流式响应是**缓冲**的（要等响应结束才返回），
+    用它测"空闲时发心跳"只能靠"让测试挂住 + 超时断言"，既慢又不可靠 —— 实测把整个
+    测试套件卡死在这里。拆出来之后，测试可以直接 `__anext__()` 取前几帧，
+    测的是**真实的帧内容**，不依赖传输层实现。
+
+    `is_disconnected` 是一个同步可调用对象（HTTP 请求传 `request.is_disconnected`）。
     """
     async def gen():
+        async def client_gone():
+            """判断客户端是否已断开 —— 同时支持 async 与同步两种入参。
+
+            ⚠️ 必须显式判断可等待性：HTTP 请求传进来的 `request.is_disconnected`
+            是 **async** 方法，直接 `if is_disconnected():` 拿到的是一个
+            **永远为真的 coroutine 对象** ⇒ 帧序列在第一帧之前就 break，
+            接口返回 200 却一个事件都没有（现有冒烟测试抓到了这个：
+            "SSE 收到事件 — 0 个"）。而测试里传的是同步 lambda，也不能写死 await。
+            """
+            value = is_disconnected()
+            if inspect.isawaitable(value):
+                value = await value
+            return bool(value)
+
         last = None
+        last_sent = time.time()
         while True:
-            if await request.is_disconnected():
+            if await client_gone():
                 break
             try:
                 job = _load_job(job_id)
@@ -1037,6 +1278,7 @@ async def api_job_events(job_id: str, request: Request):
             payload = {
                 "status": job.get("status"),
                 "phase": job.get("phase"),
+                "phase_key": job.get("phase_key"),
                 "progress": read_progress(job),
                 "exit_code": job.get("exit_code"),
                 "elapsed_min": job.get("elapsed_min"),
@@ -1048,13 +1290,40 @@ async def api_job_events(job_id: str, request: Request):
             if body != last:                       # 只在变化时推，减少噪音
                 yield "data: {}\n\n".format(body)
                 last = body
+                last_sent = time.time()
+            elif time.time() - last_sent >= keepalive:
+                # 注释帧：`:` 开头，客户端（EventSource）不会当消息处理，仅用于保活
+                yield ": keep-alive\n\n"
+                last_sent = time.time()
             if job.get("status") in ("done", "failed", "canceled"):
                 break
             await asyncio.sleep(2)
 
-    return StreamingResponse(gen(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache",
-                                      "X-Accel-Buffering": "no"})
+    return gen()
+
+
+@app.get("/api/jobs/{job_id}/events")
+async def api_job_events(job_id: str, request: Request):
+    """SSE 进度流。
+
+    长任务（15~25 分钟）必须用流式推送；页面刷新后重连也能接着看，
+    状态一律以后端为准，不依赖前端内存。
+
+    两个坑（都踩过）：
+      · **心跳必须有**。一个 14 页的任务，`progress.jsonl` 只在每页结束时写，
+        中间可能几十秒没有任何变化；若某段时间连 tail 都没变（例如数字人批量
+        阶段原来根本不写进度），这条连接就会长时间空闲，被中间层按空闲超时掐掉。
+        心跳用 SSE 注释帧（": keep-alive"），客户端**不会**当消息处理，
+        但能让连接保持活跃。
+      · 断开时**前端要能重连**。原先前端在 onerror 里直接 close()，等于关掉了
+        EventSource 自带的重连；一旦断流，前端里那个唯一的"status 变化"触发点
+        就再也不来，产物区跟着冻结（使用者反馈"要手动刷新页面"）。
+    """
+    keepalive = float(os.environ.get("PAPER2VIDEO_SSE_KEEPALIVE") or 15)
+    return StreamingResponse(
+        _sse_frames(job_id, request.is_disconnected, keepalive),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.post("/api/jobs/{job_id}/cancel")

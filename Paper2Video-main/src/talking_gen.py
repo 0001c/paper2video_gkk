@@ -68,6 +68,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from os import path
 
@@ -464,6 +465,45 @@ def _check_upstream_even_dim_patch(paths):
     print("[talking_gen] " + bar)
 
 
+def _monitor_batch_progress(expected, started, stop_event, interval=5.0):
+    """批量推理期间**旁路**上报逐页进度（后台线程）。
+
+    为什么需要它（2026-09-18 实测）：批量路径是"一个进程跑完 N 页"，而逐页取回
+    产物与 `report()` 都发生在这个进程**结束之后**，于是 14 条进度记录的时间戳
+    **全是同一秒**（22:58:21，相差 1~2 毫秒）。后果三层，都极具误导性：
+
+      1. 进度条在数字人真正在跑的 5~10 分钟里**停在上一阶段的值**（实测停在 100%）；
+      2. 阶段名停在"光标定位"，使用者以为卡住了；
+      3. `stalled_seconds` 一路涨到 600+ 秒 → 界面弹「疑似卡住」**误报**。
+         （误报比不报更糟：会让人不再信任整个进度显示。）
+
+    数据来源刻意选"预期产物是否已出现"——路径由 `musetalk_batch_output()` 算出，
+    与真正的落盘点**同源**，而且**完全不需要改 MuseTalk 上游代码**。
+
+    新鲜度判据与第 4 步的校验保持一致（`mtime + 1.0 >= started`）：
+    MuseTalk 会把产物写在固定的 avatar 目录下，上一次运行的旧文件不能算数。
+    """
+    total = len(expected)
+    reported = 0
+    while not stop_event.wait(interval):
+        fresh = 0
+        for _idx, out in expected:
+            try:
+                if path.getmtime(out) + 1.0 >= started:
+                    fresh += 1
+            except OSError:
+                continue                       # 还没出现（正常情况）
+        if fresh > reported:
+            reported = fresh
+            print("[talking_gen] 数字人生成中：{}/{}（批量进程仍在跑）".format(reported, total))
+            if progress_report:
+                try:
+                    progress_report.report("talking", stage=3, done=reported,
+                                           total=total, source="monitor")
+                except Exception:
+                    pass
+
+
 def _run_musetalk_batch(tasks, profile, env_path):
     """用**一个** MuseTalk 进程跑完多页（批量入口 ``scripts.realtime_inference``）。
 
@@ -534,9 +574,28 @@ def _run_musetalk_batch(tasks, profile, env_path):
         len(config), len(tasks), yaml_path))
 
     # ── 3) 一个进程跑完 ──
+    # 批量推理期间要**旁路**上报进度，否则界面在数字人真正在跑的那 5~10 分钟里
+    # 完全没有数据（见 _monitor_batch_progress 的说明）。
+    expected = [(idx, musetalk_batch_output(paths.repo_dir, profile, *where[idx]))
+                for idx, _d, _v, _i in staged]
     started = time.time()
     cmd = build_musetalk_batch_command(profile, paths, yaml_path)
-    rc = _run(cmd, paths.repo_dir, env, profile)
+    if progress_report:
+        # 先报一条 done=0：让阶段立刻切到"生成数字人"、并重置"卡住"计时器
+        # （否则要等第一页产物落盘，界面会一直显示上一阶段）。
+        progress_report.report("talking", stage=3, done=0,
+                               total=len(expected), source="batch-start")
+    stop_monitor = threading.Event()
+    monitor = threading.Thread(
+        target=_monitor_batch_progress,
+        args=(expected, started, stop_monitor),
+        name="pv-talking-progress", daemon=True)
+    monitor.start()
+    try:
+        rc = _run(cmd, paths.repo_dir, env, profile)
+    finally:
+        stop_monitor.set()
+        monitor.join(timeout=5)
 
     # ── 4) 逐页取回产物（同单页路径：查存在 + 查新鲜度） ──
     results = []

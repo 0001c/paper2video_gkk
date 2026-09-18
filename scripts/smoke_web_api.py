@@ -944,6 +944,338 @@ def test_rerun_shares_artifacts(app):
     return ok
 
 
+
+# ──────────────────────────────────────────────────────────────
+# ⑨ 阶段模型 / 总进度 / 凭据隔离 / SSE 保活（2026-09-18）
+#
+# 这一组针对使用者反馈的五个问题里的四个，重点是把**口径**钉死：
+#   · 总进度必须单调不减（旧公式实测有 100% -> 7% 的回跳）；
+#   · 没有逐页进度的阶段**不许编造进度**；
+#   · 卡住判据按阶段给阈值（数字人阶段本来就几分钟没有新记录）；
+#   · 凭据按任务隔离（原先进程级一份："最后输入的人覆盖所有人"）。
+# 并且带**反面对照**：旧口径在同样的数据上确实会出错 —— 否则这类测试
+# 改前改后都通过，等于没测。
+# ──────────────────────────────────────────────────────────────
+def _old_pct_formula(tts_done, talking_done, total):
+    """**修复前**的口径（App.tsx 原公式 `talking_done || tts_done`），仅用于对照。"""
+    done = talking_done or tts_done
+    return min(100, round(done / float(total) * 100)) if total else 0
+
+
+def test_phase_model_and_keys(app):
+    print()
+    print("=" * 66)
+    print("[9] 阶段模型与总进度 —— 单一来源 / 单调性 / 凭据按任务隔离")
+    print("=" * 66)
+    ok = True
+    import ast
+    import threading
+    from fastapi.testclient import TestClient
+
+    # ── A. 阶段表由后端下发（前端不再硬编码）──
+    with TestClient(app.app) as client:
+        opts = client.get("/api/options").json()
+    phases = opts.get("phases") or []
+    keys = [p.get("key") for p in phases]
+    ok &= check("/api/options 下发阶段表", len(phases) >= 6,
+                "%d 个阶段：%s" % (len(phases), " → ".join(str(k) for k in keys)))
+    weight_sum = sum(p.get("weight", 0) for p in phases)
+    ok &= check("阶段权重合计为 1.0（“满格”的定义）", abs(weight_sum - 1.0) < 1e-6,
+                "合计 %.4f" % weight_sum)
+    missing = [p.get("key") for p in phases
+               if not {"key", "label", "weight", "has_pages"} <= set(p)]
+    ok &= check("每个阶段都有 key/label/weight/has_pages", not missing,
+                "缺字段的阶段：%s" % missing if missing else "字段齐全")
+    ok &= check("有逐页进度的阶段恰好是 tts/talking（其余阶段不编造进度）",
+                [p["key"] for p in phases if p["has_pages"]] == ["tts", "talking"],
+                "标记为有页数的：%s" % [p["key"] for p in phases if p["has_pages"]])
+
+    # ── B. 总进度：单调不减 + 不编造进度 ──
+    job_id = "smoke_phase_" + uuid.uuid4().hex[:6]
+    jd = app._job_dir(job_id)
+    try:
+        os.makedirs(os.path.join(jd, "result"), exist_ok=True)
+        jsonl = os.path.join(jd, "progress.jsonl")
+        job = {"id": job_id, "status": "running", "phase": "启动中",
+               "phase_key": "extract", "config": {"script_lang": "zh"}}
+        PAGE = 14
+        recs = []
+        samples = []                     # [(标签, 新口径, 旧口径)]
+
+        def write(records):
+            with io.open(jsonl, "w", encoding="utf-8") as fh:
+                for rec in records:
+                    fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+        def snap(label):
+            info = app.read_progress(dict(job))
+            samples.append((label, info["overall_pct"],
+                            _old_pct_formula(info["tts_done"], info["talking_done"],
+                                             info["total_pages"] or PAGE)))
+
+        for phase in ("struct", "slides", "script"):
+            recs.append({"ts": time.time(), "phase": phase, "stage": 1})
+            write(recs)
+            snap(phase)
+        for i in range(1, PAGE + 1):
+            recs.append({"ts": time.time(), "phase": "tts", "stage": 2, "done": i,
+                         "total": PAGE, "page": i - 1})
+            write(recs)
+            snap("tts(%d)" % i)
+        recs.append({"ts": time.time(), "phase": "cursor", "stage": 2})
+        write(recs)
+        snap("cursor")
+        for i in range(0, PAGE + 1):
+            recs.append({"ts": time.time(), "phase": "talking", "stage": 3, "done": i,
+                         "total": PAGE, "page": max(0, i - 1)})
+            write(recs)
+            snap("talking(%d)" % i)
+        recs.append({"ts": time.time(), "phase": "merge", "stage": 3})
+        write(recs)
+        snap("merge")
+
+        by_label = {label: pct for label, pct, _o in samples}
+        back = [(samples[i - 1][0], samples[i - 1][1], samples[i][0], samples[i][1])
+                for i in range(1, len(samples)) if samples[i][1] < samples[i - 1][1]]
+        ok &= check("总进度单调不减（不存在任何回跳）", not back,
+                    "全序列 %s" % [p for _l, p, _o in samples] if not back else "%s" % back)
+        ok &= check("幻灯片/讲稿阶段不再是 0%（旧口径因为没有页数只能显示 0）",
+                    by_label.get("slides", 0) >= 12,
+                    "slides=%s%%（起点刻度 %s%%）"
+                    % (by_label.get("slides"), int(app._PHASE_START["slides"] * 100)))
+        ok &= check("光标定位阶段**不假装在走**（与语音结束同一刻度）",
+                    by_label.get("cursor") == by_label.get("tts(%d)" % PAGE),
+                    "cursor=%s%% / tts 结束=%s%%"
+                    % (by_label.get("cursor"), by_label.get("tts(%d)" % PAGE)))
+        ok &= check("进入数字人阶段落在它的起点刻度（60%）",
+                    by_label.get("talking(0)") == int(app._PHASE_START["talking"] * 100),
+                    "talking(0)=%s%%" % by_label.get("talking(0)"))
+        ok &= check("数字人阶段按页推进到该阶段终点（92%）",
+                    by_label.get("talking(%d)" % PAGE) ==
+                    int((app._PHASE_START["talking"] + app._PHASE_WEIGHT["talking"]) * 100),
+                    "talking(%d)=%s%%" % (PAGE, by_label.get("talking(%d)" % PAGE)))
+
+        old_back = [(samples[i - 1][0], samples[i - 1][2], samples[i][0], samples[i][2])
+                    for i in range(1, len(samples)) if samples[i][2] < samples[i - 1][2]]
+        ok &= check("反面对照：旧口径在同样数据上确实回跳（证明这条测试有牙齿）",
+                    bool(old_back),
+                    "旧口径回跳 %d 处，例如 %s" % (len(old_back), old_back[:1]))
+
+        info_done = app.read_progress(dict(job, status="done"))
+        ok &= check("任务完成 -> 总进度 100%", info_done["overall_pct"] == 100,
+                    "overall_pct=%s" % info_done["overall_pct"])
+        info_fail = app.read_progress(dict(job, status="failed"))
+        ok &= check("任务失败 -> 保留已走位置且封顶 99%（不与“完成”混淆）",
+                    0 < info_fail["overall_pct"] <= 99,
+                    "failed 时 overall_pct=%s" % info_fail["overall_pct"])
+
+        # ── C. 认不得的阶段名 ──
+        write([{"ts": time.time(), "phase": "brand_new_phase", "stage": 9}])
+        info = app.read_progress(dict(job, phase_key="talking", phase="生成数字人"))
+        ok &= check("认不得的阶段名不会把阶段清空（保留任务里记着的那一步）",
+                    info["phase_key"] == "talking" and info["phase"] == "生成数字人",
+                    "phase_key=%s / phase=%s" % (info["phase_key"], info["phase"]))
+        ok &= check("认不得的阶段名会被记下来（便于发现流水线加了阶段、前端没跟上）",
+                    info["unknown_phase"] == "brand_new_phase",
+                    "unknown_phase=%r" % info["unknown_phase"])
+
+        # ── D. 卡住判据按阶段给阈值 ──
+        write([{"ts": time.time() - 300, "phase": "talking", "stage": 3,
+                "done": 3, "total": PAGE}])
+        info = app.read_progress(job)
+        ok &= check("数字人阶段静默 300 秒不判卡住（该阶段阈值 420 秒）",
+                    info["stalled"] is False and info["stalled_limit_s"] == 420,
+                    "stalled=%s / 阈值 %s 秒 / 已静默 %s 秒"
+                    % (info["stalled"], info["stalled_limit_s"], info["stalled_seconds"]))
+        write([{"ts": time.time() - 400, "phase": "slides", "stage": 1}])
+        info = app.read_progress(job)
+        ok &= check("幻灯片阶段静默 400 秒判卡住（阈值 300 秒）",
+                    info["stalled"] is True and info["stalled_limit_s"] == 300,
+                    "stalled=%s / 阈值 %s 秒" % (info["stalled"], info["stalled_limit_s"]))
+        ok &= check("已完成的任务永远不判卡住",
+                    app.read_progress(dict(job, status="done"))["stalled"] is False,
+                    "done 任务 stalled=%s"
+                    % app.read_progress(dict(job, status="done"))["stalled"])
+    finally:
+        shutil.rmtree(jd, ignore_errors=True)
+
+    # ── E. 凭据按任务隔离 ──
+    app._JOB_KEYS.clear()
+    app._remember_keys("smokeA", {"api_key": "key-AAAA-1234",
+                                  "api_base": "https://a.invalid/v1"})
+    app._remember_keys("smokeB", {"api_key": "key-BBBB-5678"})
+    ok &= check("凭据按任务存：后建的任务不会覆盖先建的",
+                app._JOB_KEYS["smokeA"]["api_key"] == "key-AAAA-1234"
+                and app._JOB_KEYS["smokeB"]["api_key"] == "key-BBBB-5678",
+                "A=%s / B=%s" % (app._mask(app._JOB_KEYS["smokeA"]["api_key"]),
+                                 app._mask(app._JOB_KEYS["smokeB"]["api_key"])))
+    app._remember_keys("smokeB", {"api_base": "https://b.invalid/v1"})
+    ok &= check("只补自己缺的那一项，不动已有项",
+                app._JOB_KEYS["smokeA"].get("api_base") == "https://a.invalid/v1"
+                and app._JOB_KEYS["smokeB"]["api_base"] == "https://b.invalid/v1",
+                "A 的 base 仍是 a.invalid")
+    ok &= check("进程里不存在全局凭据容器（防止改回“最后输入的人覆盖所有人”）",
+                not hasattr(app, "_SESSION_KEYS"),
+                "app 模块上有 _SESSION_KEYS 属性" if hasattr(app, "_SESSION_KEYS")
+                else "已移除")
+    app_src = io.open(os.path.join(ROOT, "web", "app.py"), encoding="utf-8").read()
+    ok &= check("凭据来源会写进任务日志（回落路径必须可见）",
+                "[keys] ⚠️ 本任务没有随请求提供 API key" in app_src,
+                "日志文案在源码中，回落时使用者能看到")
+    app._JOB_KEYS.clear()
+
+    # ── F. SSE 保活心跳 ──
+    # ⚠️ 用**生成器直驱**而不是 TestClient 流式请求：TestClient 对流式响应是缓冲的
+    # （要等响应结束才返回），用它断言"空闲时发心跳"只能靠"挂住 + 超时"，
+    # 实测把整个套件卡死在这里。直驱 `_sse_frames()` 拿到的是同一批帧，
+    # 但依赖的只是生成器逻辑，不含传输层实现。
+    sse_id = "smoke_sse_" + uuid.uuid4().hex[:6]
+    sse_dir = app._job_dir(sse_id)
+    try:
+        os.makedirs(os.path.join(sse_dir, "result"), exist_ok=True)
+        app._save_job({"id": sse_id, "created_at": "smoke", "status": "running",
+                       "phase": "生成数字人", "phase_key": "talking",
+                       "config": {"script_lang": "zh"}})
+
+        async def drive_frames():
+            frames = []
+            gen = app._sse_frames(sse_id, lambda: False, 0.0)   # keepalive=0 → 第二帧必为心跳
+            for _ in range(2):
+                frames.append(await asyncio.wait_for(gen.__anext__(), timeout=15))
+            await gen.aclose()
+            return frames
+
+        frames = asyncio.run(drive_frames())
+        first, second = frames[0], frames[1]
+        ok &= check("第一帧是数据帧，且带 status/phase/progress",
+                    first.startswith("data: ") and "overall_pct" in first
+                    and '"status": "running"' in first,
+                    "%d 字节，开头 %r" % (len(first), first[:60]))
+        ok &= check("空闲时发心跳注释帧（长任务不被中间层按空闲超时掐断）",
+                    second.startswith(": "),
+                    "第二帧 %r（期望以 ': ' 开头的注释帧）" % second[:40])
+        ok &= check("心跳帧不含 data:（客户端不会把它当消息处理）",
+                    "data:" not in second, "第二帧内容 %r" % second[:40])
+
+        # 两种入参形态都要支持：HTTP 请求传进来的 `request.is_disconnected` 是 async 方法，
+        # 测试传的是同步 lambda。**不做显式判断**的话 `if is_disconnected():` 拿到的是
+        # 一个"永远为真"的 coroutine 对象 ⇒ 帧序列在第一帧之前就 break，
+        # 接口返回 200 却一个事件都没有（这一条正是被本套件原有断言抓出来的）。
+        async def probe_disconnect():
+            async def async_no():
+                return False
+
+            async def async_yes():
+                return True
+
+            yielded_async = False
+            gen_async = app._sse_frames(sse_id, async_no, 0.0)
+            yielded_async = bool(await gen_async.__anext__())
+            await gen_async.aclose()
+
+            stopped_async = False
+            gen_stop_a = app._sse_frames(sse_id, async_yes, 0.0)
+            try:
+                await gen_stop_a.__anext__()
+            except StopAsyncIteration:
+                stopped_async = True
+
+            stopped_sync = False
+            gen_stop_s = app._sse_frames(sse_id, lambda: True, 0.0)
+            try:
+                await gen_stop_s.__anext__()
+            except StopAsyncIteration:
+                stopped_sync = True
+            return yielded_async, stopped_async, stopped_sync
+
+        yielded, stopped_a, stopped_s = asyncio.run(probe_disconnect())
+        ok &= check("is_disconnected 支持 async（HTTP 传入的真实形态）与同步两种入参",
+                    yielded and stopped_a and stopped_s,
+                    "async 未断时产出帧=%s / async 已断时停止=%s / 同步已断时停止=%s"
+                    % (yielded, stopped_a, stopped_s))
+    finally:
+        shutil.rmtree(sse_dir, ignore_errors=True)
+
+    # ── G. 前端的三个兜底（删掉都不会立刻报错，只会让问题复活）──
+    fe = os.path.join(ROOT, "web", "frontend", "src")
+    tsx = io.open(os.path.join(fe, "App.tsx"), encoding="utf-8").read()
+    ok &= check("产物/逐页在运行期间轮询（单一触发点 + 断流 = 永久冻结）",
+                "setInterval(load, 5000)" in tsx and "runningNow" in tsx,
+                "轮询与运行态判据都在 App.tsx 里")
+    ok &= check("SSE 断流后自动重连（原先 onerror 里直接 close）",
+                "setTimeout(open," in tsx and "streamState" in tsx,
+                "重连与连接状态都在 App.tsx 里")
+    ok &= check("产物区在运行中也渲染（原先整块被 artifacts.length > 0 挡住）",
+                "尚未生成" in tsx and "每 5 秒刷新" in tsx,
+                "占位文案在 App.tsx 里")
+    storage_path = os.path.join(fe, "storage.ts")
+    ok &= check("本地存储收在唯一入口 storage.ts 并被引用",
+                os.path.isfile(storage_path) and 'from "./storage"' in tsx,
+                "storage.ts 存在：%s" % os.path.isfile(storage_path))
+    if os.path.isfile(storage_path):
+        st = io.open(storage_path, encoding="utf-8").read()
+        tries = st.count("try {")
+        # 判据是"每一处 localStorage 访问都在 try 里"：隐私模式/企业策略下
+        # localStorage 会直接抛异常，那不该把整个界面带走。
+        ok &= check("storage 的 localStorage 读写都包在 try 里（隐私模式下不该崩界面）",
+                    tries >= 2 and st.count("catch") == tries
+                    and "localStorage.getItem" in st and "localStorage.setItem" in st,
+                    "try/catch 各 %d 处；getItem / setItem 都在封装函数内" % tries)
+
+    # ── H. 数字人批量阶段：旁路取数（本轮进度条问题的核心）──
+    tg_path = os.path.join(ROOT, "Paper2Video-main", "src", "talking_gen.py")
+    tg_src = io.open(tg_path, encoding="utf-8").read()
+    ok &= check("批量路径确实起了进度监控线程（否则那 5~10 分钟界面零更新）",
+                "_monitor_batch_progress" in tg_src and "stop_monitor.set()" in tg_src,
+                "监控线程与收尾都在 talking_gen.py 里")
+    node = next((n for n in ast.parse(tg_src).body
+                 if isinstance(n, ast.FunctionDef) and n.name == "_monitor_batch_progress"),
+                None)
+    captured = []
+
+    class FakeProgress:
+        @staticmethod
+        def report(phase, **kw):
+            captured.append((phase, kw))
+
+    ns = {"path": os.path, "progress_report": FakeProgress,
+          "print": lambda *a, **k: None}
+    if node is not None:
+        exec(compile(ast.Module(body=[node], type_ignores=[]), "<monitor>", "exec"), ns)
+    work = os.path.join(ROOT, "jobs", "smoke_monitor_" + uuid.uuid4().hex[:6])
+    try:
+        os.makedirs(work, exist_ok=True)
+        now = time.time()
+        fresh_a = os.path.join(work, "page_000.mp4")
+        io.open(fresh_a, "wb").write(b"x")
+        stale = os.path.join(work, "page_001.mp4")
+        io.open(stale, "wb").write(b"x")
+        os.utime(stale, (now - 3600, now - 3600))     # 上一次运行留下的旧产物
+        fresh_b = os.path.join(work, "page_002.mp4")  # 故意稍后才出现
+        stop = threading.Event()
+        thread = threading.Thread(
+            target=ns["_monitor_batch_progress"],
+            args=([(0, fresh_a), (1, stale), (2, fresh_b)], now, stop),
+            kwargs={"interval": 0.05})
+        thread.start()
+        time.sleep(0.3)
+        io.open(fresh_b, "wb").write(b"x")             # 模拟第二页产物落盘
+        time.sleep(0.35)
+        stop.set()
+        thread.join(2)
+        dones = [kw.get("done") for _p, kw in captured]
+        ok &= check("监控只数“本次运行新出现”的产物（旧文件不算）",
+                    bool(dones) and max(dones) == 2,
+                    "上报 done=%s（期望到 2；把旧文件算进去会是 3）" % dones)
+        ok &= check("上报页数单调不减", dones == sorted(dones), "done=%s" % dones)
+        ok &= check("上报的阶段名恒为 talking",
+                    all(p == "talking" for p, _k in captured),
+                    "阶段名：%s" % sorted(set(p for p, _k in captured)))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    return ok
+
+
 def main():
     app = load_app()
     results = [
@@ -955,6 +1287,7 @@ def main():
         test_portrait_upload(app),
         test_log_encoding_and_model_registry(app),
         test_rerun_shares_artifacts(app),
+        test_phase_model_and_keys(app),
     ]
     print()
     print("=" * 66)

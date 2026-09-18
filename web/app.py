@@ -85,6 +85,27 @@ def _save_job(job):
         json.dump(job, handle, ensure_ascii=False, indent=2)
 
 
+# 任务记录有两个并发写入者：队列 worker（任务结束时按退出码写
+# done/failed + exit_code + elapsed_min）与 HTTP 取消接口。
+# 两边若是各自"先 load、再改、再 save"，中间只要有一个 await
+# （取消接口里就有 proc.wait()），后写的那份就会用**旧快照**
+# 把对方刚写的内容整个覆盖 —— 旧快照里根本没有对方新增的字段。
+# 实测后果有两种，取决于时序：
+#   · 取消接口后写 → exit_code / elapsed_min 凭空消失
+#   · worker 后写   → "已取消"被改写成"失败"
+# 所以统一走这个"读-改-写"的原子入口，且**只更新明确要改的字段**。
+_JOB_LOCK = asyncio.Lock()
+
+
+async def _update_job(job_id, **fields):
+    """原子地读-改-写任务记录。返回更新后的记录。"""
+    async with _JOB_LOCK:
+        job = _load_job(job_id)
+        job.update(fields)
+        _save_job(job)
+        return job
+
+
 def _list_jobs():
     jobs = []
     for name in os.listdir(JOBS_ROOT):
@@ -340,7 +361,8 @@ def _build_argv(job):
 
 async def _run_job(job):
     """在子进程里跑流水线，日志落盘供进度解析。"""
-    job_dir = _job_dir(job["id"])
+    job_id = job["id"]
+    job_dir = _job_dir(job_id)
     log_path = os.path.join(job_dir, "run.log")
     argv = _build_argv(job)
 
@@ -367,15 +389,25 @@ async def _run_job(job):
             *argv, cwd=P2V_SRC, stdout=log, stderr=asyncio.subprocess.STDOUT,
             env=env)
         _CURRENT["proc"] = proc
+        _CURRENT["job_id"] = job_id          # 供 /api/system/gpu 报告"正在跑哪个任务"
         code = await proc.wait()
         _CURRENT["proc"] = None
+        _CURRENT["job_id"] = None
 
-    job = _load_job(job["id"])
-    job["exit_code"] = code
-    job["elapsed_min"] = round((time.time() - started) / 60, 1)
-    job["status"] = "done" if code == 0 else "failed"
-    job["phase"] = "已完成" if code == 0 else "失败"
-    _save_job(job)
+    # ⚠️ 必须走 _update_job：它会先重新读盘再改，避免用旧快照覆盖
+    #    取消接口刚写下的 status=canceled（实测踩过，见 _JOB_LOCK 处的注释）。
+    async with _JOB_LOCK:
+        final = _load_job(job_id)
+        final["exit_code"] = code
+        final["elapsed_min"] = round((time.time() - started) / 60, 1)
+        if final.get("status") == "canceled":
+            # 取消是使用者的明确意图，不该被退出码改写；
+            # 但退出码与耗时仍要记下来 —— 排查时有用，且能证明收尾确实执行过。
+            final["phase"] = "已取消"
+        else:
+            final["status"] = "done" if code == 0 else "failed"
+            final["phase"] = "已完成" if code == 0 else "失败"
+        _save_job(final)
 
 
 async def _worker_loop():
@@ -388,10 +420,8 @@ async def _worker_loop():
             await _run_job(job)
         except Exception as exc:                      # 崩溃不能带走整个 worker
             try:
-                job = _load_job(job_id)
-                job["status"] = "failed"
-                job["error"] = "{}: {}".format(type(exc).__name__, exc)
-                _save_job(job)
+                await _update_job(job_id, status="failed",
+                                  error="{}: {}".format(type(exc).__name__, exc))
             except Exception:
                 pass
         finally:
@@ -615,9 +645,10 @@ async def api_cancel_job(job_id: str):
             await proc.wait()
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
-    job["status"] = "canceled"
-    job["phase"] = "已取消"
-    _save_job(job)
+    # 只改这两个字段。**不要**拿刚 load 的整份 job 去 save ——
+    # 那份快照是在 kill 之前读的，而 _run_job 的收尾逻辑会在进程退出后
+    # 写入 exit_code / elapsed_min；整份覆盖会把它们抹掉（实测踩过）。
+    await _update_job(job_id, status="canceled", phase="已取消")
     return {"ok": True}
 
 

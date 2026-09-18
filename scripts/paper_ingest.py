@@ -254,6 +254,55 @@ def extract_docx(path):
 # ──────────────────────────────────────────────────────────────
 # DOC（OLE2 老格式）：无 Office 依赖的粗提取
 # ──────────────────────────────────────────────────────────────
+# 从 .doc 的二进制流里捞正文用的字符集。
+#
+# ⚠️ 这里踩过两次，方向相反的坑，都记在这：
+#
+# ① 白名单**漏标点** → 句子被无声截断。
+#    实测 `尼诺·法兰克` 的 `·`（U+00B7）漏在白名单外，
+#    「摘要: 黑色电影自1946年被法国影评人尼诺」就断在那里，
+#    而且没有任何报错 —— 只有拿同一篇论文的 PDF 版交叉比对才看得出来。
+#
+# ② 于是改成「放开可打印范围」→ 更糟。
+#    `[\u0020-\uffff]` 会把 WordDocument 流里的二进制结构数据
+#    也解码成"看起来像中文"的垃圾段（实测出现
+#    「菢䛰拋♓叮첱썧쀪⡴…」这种），句子数从 84 虚增到 267，
+#    章节命中从 5/5 掉到 2/5 —— 垃圾把正文淹没了。
+#
+# 结论：**要扩充白名单，而不是取消白名单**。放宽到"常见汉字 + 常见标点"，
+# 既能接住 `·`「」“”…，又挡得住二进制垃圾。
+_DOC_TEXT_RUN = re.compile(
+    "["
+    "\u4e00-\u9fff"      # CJK 统一表意文字（正文主体）
+    "\u3000-\u303f"      # CJK 标点：、。《》「」【】
+    "\uff00-\uffef"      # 全角：，。！？：；（）等
+    "\u2010-\u2027"      # 连字符/破折号/引号/省略号：—‘’“”…
+    "\u00b7\u00a0"       # 间隔号 · 、不换行空格
+    "A-Za-z0-9"
+    "\\s,.;:!?'\"()\\[\\]%\\-/&+=@#$*<>{}|~"
+    "]{8,}")
+
+
+def _garbage_ratio(text):
+    """段内汉字有多大比例落在 GB2312 之外 —— 用来识别二进制解码残留。
+
+    为什么需要：「中文字数 >= 4」挡不住这些残留（它们确实是汉字码位，
+    例如「襜鉾髭谝究牨猨砨」），所以必须换判据。
+    实测残留段的 GB2312 外字符占比 50%~100%，而真实正文一律 0%、表单字段也是 0%
+    （表单字段虽不是论文正文，但确实是有效文本，不该在此处误杀）。
+    """
+    cjk = [ch for ch in text if "\u4e00" <= ch <= "\u9fff"]
+    if not cjk:
+        return 0.0
+    outside = 0
+    for ch in cjk:
+        try:
+            ch.encode("gb2312")
+        except UnicodeEncodeError:
+            outside += 1
+    return outside / len(cjk)
+
+
 def extract_doc(path):
     """从 OLE2 的 WordDocument 流粗提正文。
 
@@ -273,12 +322,13 @@ def extract_doc(path):
     raw = ole.openstream("WordDocument").read()
     ole.close()
 
-    # 正文段落：连续的可读字符（中文/全角标点/英文/数字/常见符号）
+    # 正文段落：连续的可读字符。过滤掉二进制垃圾（要求段内有足够的中文或字母）
     text16 = raw.decode("utf-16-le", errors="ignore")
-    pattern = re.compile(r"[\u4e00-\u9fff\u3000-\u303f\uff00-\uffefA-Za-z0-9"
-                         r"\s,.;:!?'\"()\[\]%\-–—、，。；：！？“”‘’（）《》【】]{8,}")
-    runs = [s.strip() for s in pattern.findall(text16)]
-    runs = [s for s in runs if len(re.findall(r"[\u4e00-\u9fff]", s)) >= 4]
+    runs = [s.strip() for s in _DOC_TEXT_RUN.findall(text16)]
+    runs = [s for s in runs
+            if (len(re.findall(r"[\u4e00-\u9fff]", s)) >= 4
+                or len(re.findall(r"[A-Za-z]", s)) >= 8)
+            and _garbage_ratio(s) < 0.5]     # 剔除二进制解码残留
 
     meta = {
         "format": "doc",

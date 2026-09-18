@@ -43,6 +43,10 @@ if not os.path.isfile(VENV_PY):                       # Linux 上路径不同
 sys.path.insert(0, SCRIPTS)
 sys.path.insert(0, P2V_SRC)
 
+# 结构化进度的读写约定与流水线共用同一个模块（progress_report），
+# 避免两边对字段名/取值的理解跑偏。放 import 在这里是因为它依赖上面的 sys.path。
+import progress_report                                    # noqa: E402
+
 os.makedirs(JOBS_ROOT, exist_ok=True)
 app = FastAPI(title="Paper2Video Web", version="0.1.0")
 
@@ -150,34 +154,94 @@ def _total_pages(job_dir):
     return 0
 
 
-def read_progress(job):
-    """把日志换算成结构化进度。返回 dict，可直接推给前端。"""
-    log_path = os.path.join(_job_dir(job["id"]), "run.log")
-    info = {
-        "stage": job.get("stage", 0),
-        "phase": job.get("phase", "等待中"),
-        "tts_done": 0, "talking_done": 0, "total_pages": 0,
-        "last_log_at": None, "stalled_seconds": None,
-        "tail": [],
-    }
-    if not os.path.isfile(log_path):
-        return info
+# ---- P1：结构化进度 → 界面文案 ----
+# progress.jsonl 里的 phase 取值由流水线侧约定，见 src/progress_report.py
+_PHASE_LABEL = {
+    "slides": "生成幻灯片",
+    "script": "生成讲稿",
+    "tts": "合成语音",
+    "cursor": "光标定位",
+    "talking": "生成数字人",
+    "merge": "合成视频",
+}
 
-    info["total_pages"] = _total_pages(_job_dir(job["id"]))
+
+def _read_tail(job_dir, count=6):
+    """日志尾巴。
+
+    无论用哪个进度来源都会读它 —— 它承载的是排查信息（报错、警告、
+    护栏触发记录），不只是进度数字。
+    """
+    log_path = os.path.join(job_dir, "run.log")
+    if not os.path.isfile(log_path):
+        return []
     try:
         text = io.open(log_path, encoding="utf-8", errors="replace").read()
     except Exception:
-        return info
+        return []
+    return [ln.strip() for ln in text.splitlines() if ln.strip()][-count:]
 
-    info["tts_done"] = len(re.findall(r"第 \d+ 页合成完成", text))
-    info["talking_done"] = len(re.findall(r"第 \d+ 页完成", text))
-    info["tail"] = [ln.strip() for ln in text.splitlines() if ln.strip()][-6:]
+
+def _progress_from_jsonl(job, job_dir):
+    """从流水线主动写的 progress.jsonl 读进度。文件不存在时返回 None。
+
+    P1 起这是**首选来源**：它是机器可读的，不像日志文本那样"改一句 print 就失效"。
+    同时它自带 total（总页数），不再依赖去数 slides_rendered.pdf 的页数。
+    """
+    path = os.path.join(job_dir, "progress.jsonl")
+    if not os.path.isfile(path):
+        return None
+    records = progress_report.read_all(path)
+    if not records:
+        return None
+
+    info = {"source": "jsonl", "total_pages": 0, "tts_done": 0, "talking_done": 0,
+            "phase": "", "last_log_at": None, "stalled_seconds": None}
+    for rec in records:
+        total = rec.get("total")
+        if isinstance(total, int):
+            info["total_pages"] = max(info["total_pages"], total)
+        done = rec.get("done")
+        if not isinstance(done, int):
+            continue
+        if rec.get("phase") == "tts":
+            info["tts_done"] = max(info["tts_done"], done)
+        elif rec.get("phase") == "talking":
+            info["talking_done"] = max(info["talking_done"], done)
+
+    info["phase"] = _PHASE_LABEL.get(records[-1].get("phase"), "")
+    ts = records[-1].get("ts")
+    if isinstance(ts, (int, float)):
+        # 用最后一条**记录**的时间戳判断"还在不在动"，比日志 mtime 更贴切：
+        # 日志里混着各子进程的输出，而进度是流水线自己写的。
+        info["stalled_seconds"] = int(max(0, time.time() - ts))
+        info["last_log_at"] = time.strftime("%H:%M:%S", time.localtime(ts))
+    return info
+
+
+def _progress_from_log(job, job_dir):
+    """兜底：tail 日志 + 正则匹配页数。
+
+    这条路径零改造就能用，但**改一句 print 就会失效**（P1 之前是唯一来源，
+    现在降级为兜底：老任务目录里没有 progress.jsonl 时靠它）。
+    """
+    log_path = os.path.join(job_dir, "run.log")
+    if not os.path.isfile(log_path):
+        return None
+    try:
+        text = io.open(log_path, encoding="utf-8", errors="replace").read()
+    except Exception:
+        return None
+
+    info = {"source": "log",
+            "tts_done": len(re.findall(r"第 \d+ 页合成完成", text)),
+            "talking_done": len(re.findall(r"第 \d+ 页完成", text)),
+            "total_pages": 0, "last_log_at": None, "stalled_seconds": None}
 
     mtime = os.path.getmtime(log_path)
     info["last_log_at"] = time.strftime("%H:%M:%S", time.localtime(mtime))
-    info["stalled_seconds"] = int(time.time() - mtime)
+    info["stalled_seconds"] = int(max(0, time.time() - mtime))
 
-    # 阶段推断
     if "数字人与幻灯片合成完成" in text or "subtitle_render] 完成" in text:
         info["phase"] = "已完成"
     elif info["talking_done"]:
@@ -186,6 +250,50 @@ def read_progress(job):
         info["phase"] = "合成语音"
     elif "start stage" in text:
         info["phase"] = "生成幻灯片与讲稿"
+    else:
+        info["phase"] = ""
+    return info
+
+
+def read_progress(job):
+    """把进度换算成前端要的形状（可直接推给前端）。
+
+    两个来源，**优先结构化**：
+      1. `progress.jsonl` —— P1，流水线主动写，机器可读
+      2. `run.log` + 正则   —— P0 的兜底，零改造但脆
+    终态（完成/失败/已取消）一律以**任务状态**为准，不从日志文本猜。
+    """
+    job_dir = _job_dir(job["id"])
+    info = {
+        "stage": job.get("stage", 0),
+        "phase": job.get("phase", "等待中"),
+        "tts_done": 0, "talking_done": 0, "total_pages": 0,
+        "last_log_at": None, "stalled_seconds": None,
+        "tail": _read_tail(job_dir),
+        "source": "none",
+    }
+
+    found = _progress_from_jsonl(job, job_dir) or _progress_from_log(job, job_dir)
+    if found:
+        for key in ("tts_done", "talking_done", "total_pages"):
+            if found.get(key):
+                info[key] = found[key]
+        if found.get("phase"):
+            info["phase"] = found["phase"]
+        info["source"] = found.get("source", info["source"])
+        if found.get("last_log_at"):
+            info["last_log_at"] = found["last_log_at"]
+        if found.get("stalled_seconds") is not None:
+            info["stalled_seconds"] = found["stalled_seconds"]
+
+    # 总页数兜底：两个来源都没给出时，从渲染出的 PDF / 幻灯片图数推断
+    if not info["total_pages"]:
+        info["total_pages"] = _total_pages(job_dir)
+
+    status = job.get("status")
+    if status in ("done", "failed", "canceled"):
+        info["phase"] = {"done": "已完成", "failed": "失败",
+                         "canceled": "已取消"}[status]
     return info
 
 
@@ -344,7 +452,9 @@ def _build_argv(job):
     argv = [
         VENV_PY, "-u", "pipeline.py",
         "--stage", json.dumps(cfg.get("stages", ["1", "2", "3"])),
-        "--result_dir", os.path.join(_job_dir(job["id"]), "result"),
+        # result_dir 允许被显式指定：续跑时**直接复用原任务的 result 目录**，
+        # 这样 stage 1 已生成的幻灯片与讲稿就地重用，不需要复制几 GB 的产物。
+        "--result_dir", cfg.get("result_dir") or os.path.join(_job_dir(job["id"]), "result"),
         "--paper_latex_root", job["paper_latex_root"],
         "--ref_img", job["ref_img"],
         "--slide_lang", cfg["slide_lang"],
@@ -357,6 +467,68 @@ def _build_argv(job):
     if cfg.get("reuse_script"):
         argv += ["--reuse_script", "True"]
     return argv
+
+
+def _log_line(log, message):
+    """同时写 stdout 与 run.log。
+
+    ⚠️ 为什么必须显式写 run.log：`_run_job` 里只有**子进程**的 stdout 被重定向到
+    run.log，**父进程的 print 不会进去**。而 run.log 正是界面「日志尾巴」与
+    「失败原因」的数据源 —— 只 print 的话，失败原因在界面上会凭空消失，
+    使用者只看到"任务失败"却不知道原因（实测踩过：前置步骤失败时就是这样）。
+    """
+    print(message)
+    try:
+        log.write(message + "\n")
+        log.flush()
+    except Exception:
+        pass
+
+
+async def _prepare_latex(job, job_dir, log, env):
+    """PDF / Word 输入的前置步骤：先把正文转成 LaTeX 工程（含 main.tex）。
+
+    **为什么必须有它**：流水线的入口是「含 main.tex 的目录」
+    （``--paper_latex_root``），而使用者的输入是 PDF / Word —— 这是整条链路上
+    原本缺失的一环，不补上的话 stage 1 会因为找不到 main.tex 而直接失败。
+
+    这一步要一次 LLM 调用（实测约 1 万 token），是**唯一无法本地完成**的一步；
+    正文提取（paper_ingest）本身是纯本地的，包在 paper_struct 内部。
+    已存在 main.tex 时直接跳过，便于重跑与续跑。
+
+    返回 True 表示可以继续跑流水线。
+    """
+    latex_root = job.get("paper_latex_root") or os.path.join(job_dir, "latex_proj")
+    main_tex = os.path.join(latex_root, "main.tex")
+    if os.path.isfile(main_tex):
+        _log_line(log, "[struct] main.tex 已存在，跳过结构化 -> {}".format(main_tex))
+        return True
+
+    source = job.get("source_path")
+    if not source or not os.path.isfile(source):
+        _log_line(log, "[struct] 需要结构化，但源文件不可用：{}".format(source))
+        _log_line(log, "[struct] （续跑旧任务时若素材已被清理，请重新上传论文）")
+        return False
+
+    argv = [VENV_PY, "-u", os.path.join(SCRIPTS, "paper_struct.py"),
+            source, "--out", job_dir]
+    _log_line(log, "[struct] 正在把 {} 转成 LaTeX 工程（一次 API 调用，约 1~2 分钟）".format(
+        os.path.basename(source)))
+    proc = await asyncio.create_subprocess_exec(
+        *argv, cwd=REPO_ROOT, stdout=log, stderr=asyncio.subprocess.STDOUT, env=env)
+    _CURRENT["proc"] = proc
+    _CURRENT["job_id"] = job["id"]
+    try:
+        code = await proc.wait()
+    finally:
+        _CURRENT["proc"] = None
+        _CURRENT["job_id"] = None
+
+    if code != 0 or not os.path.isfile(main_tex):
+        _log_line(log, "[struct] 结构化失败（退出码 {}），main.tex 未生成".format(code))
+        return False
+    _log_line(log, "[struct] OK -> {}".format(main_tex))
+    return True
 
 
 async def _run_job(job):
@@ -372,6 +544,9 @@ async def _run_job(job):
     _save_job(job)
 
     env = dict(os.environ)
+    # P1：告诉流水线把结构化进度写到哪里。未设置该环境变量时，
+    # 流水线**不生成任何额外文件**（命令行直接跑 pipeline.py 行为完全不变）。
+    env["PAPER2VIDEO_PROGRESS_FILE"] = os.path.join(job_dir, "progress.jsonl")
     if _SESSION_KEYS["api_key"]:
         env["OPENAI_API_KEY"] = _SESSION_KEYS["api_key"]
         env["OPENAI_COMPATIBLE_MODEL_API_KEY"] = _SESSION_KEYS["api_key"]
@@ -384,15 +559,28 @@ async def _run_job(job):
     with io.open(log_path, "w", encoding="utf-8", errors="replace") as log:
         log.write("### 命令 {}\n".format(" ".join(argv)))
         log.flush()
-        # 直接传 argv 列表，不经 shell —— 中文路径与转义问题都由此规避
-        proc = await asyncio.create_subprocess_exec(
-            *argv, cwd=P2V_SRC, stdout=log, stderr=asyncio.subprocess.STDOUT,
-            env=env)
-        _CURRENT["proc"] = proc
-        _CURRENT["job_id"] = job_id          # 供 /api/system/gpu 报告"正在跑哪个任务"
-        code = await proc.wait()
-        _CURRENT["proc"] = None
-        _CURRENT["job_id"] = None
+
+        # 前置：PDF / Word 输入先转成 LaTeX 工程（见 _prepare_latex 的说明）
+        prepared = True
+        if job.get("needs_struct"):
+            prepared = await _prepare_latex(job, job_dir, log, env)
+
+        if not prepared:
+            # 前置步骤失败：不跑流水线，但仍走下面的收尾写入，
+            # 让任务落到 failed 且带上 exit_code（否则状态会一直停在 running）。
+            code = 1
+        else:
+            # 直接传 argv 列表，不经 shell —— 中文路径与转义问题都由此规避
+            proc = await asyncio.create_subprocess_exec(
+                *argv, cwd=P2V_SRC, stdout=log, stderr=asyncio.subprocess.STDOUT,
+                env=env)
+            _CURRENT["proc"] = proc
+            _CURRENT["job_id"] = job_id      # 供 /api/system/gpu 报告"正在跑哪个任务"
+            try:
+                code = await proc.wait()
+            finally:
+                _CURRENT["proc"] = None
+                _CURRENT["job_id"] = None
 
     # ⚠️ 必须走 _update_job：它会先重新读盘再改，避免用旧快照覆盖
     #    取消接口刚写下的 status=canceled（实测踩过，见 _JOB_LOCK 处的注释）。
@@ -577,11 +765,75 @@ async def api_create_job(payload: dict):
         "ref_img": portrait,
         "paper_latex_root": payload.get("paper_latex_root") or os.path.join(job_dir, "latex_proj"),
         "needs_struct": needs_llm,
+        # 原始上传文件的路径。needs_struct 时前置步骤要用它做结构化；
+        # 放在这里而不是去 jobs/<ingest_id>/input 里找，是因为 ingest 目录
+        # 将来可能被清理，而任务自己记着更可靠。
+        "source_path": payload.get("source_path"),
     }
     _save_job(job)
     await _QUEUE.put(job_id)
     return {"ok": True, "job_id": job_id, "queue_ahead": _QUEUE.qsize(),
             "queued": True}
+
+
+@app.post("/api/jobs/{job_id}/rerun")
+async def api_rerun_job(job_id: str, payload: dict):
+    """从已有任务续跑（默认只重跑 stage 2/3，并复用已有讲稿）。
+
+    为什么这是**省钱主力**：讲稿生成是整条链路里唯一必须联网付费的一步，
+    而它占约 76% 的 token（要把全部幻灯片图喂给 VLM）。只重跑 stage 2/3 且
+    `--reuse_script` 复用已有讲稿 ⇒ 这次调用**不产生 API 费用**
+    （实测：gkk_zh 的补跑就是 0 费用）。
+
+    实现上**不复制产物**：新任务直接指向原任务的 result 目录，
+    于是 stage 1 已生成的幻灯片与讲稿就地重用（动辄几百 MB~GB，复制没必要）。
+    """
+    src_job = _load_job(job_id)
+    src_result = os.path.join(_job_dir(job_id), "result")
+    if not os.path.isdir(src_result):
+        raise HTTPException(status_code=400,
+                            detail="原任务没有 result 目录，无法续跑（可能从未开始）")
+
+    portrait = payload.get("portrait_path") or src_job.get("ref_img")
+    if not portrait or not os.path.isfile(portrait):
+        raise HTTPException(
+            status_code=400,
+            detail="续跑需要人像图，但原任务的人像已不在（素材可能被清理），请重新上传")
+
+    config = dict(src_job.get("config") or {})
+    config.update({
+        "stages": payload.get("stages") or ["2", "3"],
+        "reuse_script": payload.get("reuse_script", True),
+        "result_dir": src_result,
+    })
+
+    new_id = "job_" + time.strftime("%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:4]
+    new_dir = _job_dir(new_id)
+    os.makedirs(new_dir, exist_ok=True)
+    src_ingest = os.path.join(_job_dir(job_id), "ingest")
+    if os.path.isdir(src_ingest):                 # ingest 很小（正文），复制一份
+        shutil.copytree(src_ingest, os.path.join(new_dir, "ingest"),
+                        dirs_exist_ok=True)
+
+    job = {
+        "id": new_id,
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "status": "queued",
+        "phase": "排队中",
+        "queue_ahead": _QUEUE.qsize(),
+        "config": config,
+        "ref_img": portrait,
+        "paper_latex_root": src_job.get("paper_latex_root"),
+        # 续跑时 LaTeX 工程一定已经存在（stage 1 跑过），不要再触发一次结构化
+        "needs_struct": False,
+        "source_path": src_job.get("source_path"),
+        "resumed_from": job_id,
+    }
+    _save_job(job)
+    await _QUEUE.put(new_id)
+    return {"ok": True, "job_id": new_id, "resumed_from": job_id,
+            "stages": config["stages"], "reuse_script": config["reuse_script"],
+            "queue_ahead": _QUEUE.qsize()}
 
 
 @app.get("/api/jobs")
@@ -667,6 +919,97 @@ async def api_artifacts(job_id: str):
                     "kind": "video" if name.endswith(".mp4") else "file",
                 })
     return {"job": job_id, "artifacts": items}
+
+
+@app.get("/api/jobs/{job_id}/pages")
+async def api_job_pages(job_id: str):
+    """逐页素材浏览：把同一页的幻灯片图 / 音频 / 数字人视频 / 讲稿索引到一起。
+
+    为什么必须在服务端拼：这些产物的命名规则**彼此不一致** ——
+    幻灯片是 `slide_imgs/1.png`（从 1 开始）、音频是 `audio/0.wav`（从 0 开始）、
+    数字人还多一层「参考图主文件名」的目录。前端不该知道这些细节，
+    否则上游一改命名就会**静默取不到**（界面上只是空着，看不出是 bug）。
+
+    这里只做**索引**，文件本身仍走 /files/ 端点（FileResponse 自带 Range，
+    视频才能拖进度条、图片才能按需加载）。
+    """
+    _load_job(job_id)                                   # 任务不存在则 404
+    base = os.path.join(_job_dir(job_id), "result")
+
+    def _listing(sub, exts):
+        directory = os.path.join(base, sub)
+        if not os.path.isdir(directory):
+            return {}
+        found = {}
+        for name in os.listdir(directory):
+            stem, ext = os.path.splitext(name)
+            if ext.lower() in exts and stem.isdigit():
+                found[int(stem)] = "{}/{}".format(sub, name)
+        return found
+
+    slides = _listing("slide_imgs", {".png", ".jpg", ".jpeg"})
+    audios = _listing("audio", {".wav", ".mp3"})
+
+    # 数字人：talking_<backend>/<音频序号>/<参考图主文件名>/merge_video.mp4
+    # （merge_talking.py 写死了这个层级，所以这里也按它找；顺带兼容直接放在页目录下）
+    talking = {}
+    if os.path.isdir(base):
+        for name in sorted(os.listdir(base)):
+            if not name.startswith("talking_"):
+                continue
+            top = os.path.join(base, name)
+            if not os.path.isdir(top):
+                continue
+            for page in os.listdir(top):
+                if not page.isdigit():
+                    continue
+                page_dir = os.path.join(top, page)
+                rel = None
+                for sub in sorted(os.listdir(page_dir)):
+                    candidate = os.path.join(page_dir, sub, "merge_video.mp4")
+                    if os.path.isfile(candidate):
+                        rel = "{}/{}/{}/merge_video.mp4".format(name, page, sub)
+                        break
+                if rel is None and os.path.isfile(
+                        os.path.join(page_dir, "merge_video.mp4")):
+                    rel = "{}/{}/merge_video.mp4".format(name, page)
+                if rel:
+                    talking[int(page)] = rel
+
+    # 讲稿：subtitle_w_cursor.txt 以 ### 分页，页内每行是「句子 | 光标短语」
+    script = {}
+    script_path = os.path.join(base, "subtitle_w_cursor.txt")
+    if os.path.isfile(script_path):
+        try:
+            raw = io.open(script_path, encoding="utf-8", errors="replace").read()
+            chunks = [c for c in raw.split("###") if c.strip()]
+            for idx, chunk in enumerate(chunks):
+                # 即使该页没有解析出行也要占位，否则后面几页的讲稿会整体错位一页
+                script[idx] = [ln.split("|", 1)[0].strip()
+                               for ln in chunk.splitlines() if "|" in ln]
+        except Exception:
+            pass
+
+    total = max([len(slides)] + [k + 1 for k in audios] + [0])
+    pages = []
+    for i in range(total):
+        pages.append({
+            "page": i + 1,                  # 界面统一从 1 开始
+            "slide": slides.get(i + 1),
+            "audio": audios.get(i),
+            "talking": talking.get(i),
+            "script": script.get(i, []),
+        })
+    return {
+        "job": job_id,
+        "total": total,
+        "slides_pdf": "slides_rendered.pdf" if os.path.isfile(
+            os.path.join(base, "slides_rendered.pdf")) else None,
+        "script_txt": "subtitle_w_cursor.txt" if os.path.isfile(script_path) else None,
+        "cursor_json": "cursor.json" if os.path.isfile(
+            os.path.join(base, "cursor.json")) else None,
+        "pages": pages,
+    }
 
 
 @app.get("/api/jobs/{job_id}/files/{rel_path:path}")

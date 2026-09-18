@@ -26,6 +26,14 @@ from os import path
 
 import pv_env
 
+# 结构化进度（P1）：给 Web 端一份机器可读的进度，免得它去正则匹配日志文本。
+# 默认不生效（未设置 PAPER2VIDEO_PROGRESS_FILE 时 report() 直接 return），
+# 且这里再兜一层 —— 进度上报是可选增强，导入失败绝不能拖垮流水线。
+try:
+    import progress_report
+except Exception:                      # pragma: no cover
+    progress_report = None
+
 # ── HuggingFace repo id（实际路径由 pv_env.model_path 解析）──
 TTS_REPO = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
 ASR_REPO = "Qwen/Qwen3-ASR-0.6B"
@@ -358,6 +366,11 @@ def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=
         print("[speech_gen] 参考音频未给文本，先用 Qwen3-ASR 转写一次")
         ref_text = transcribe_with_qwen3asr(ref_audio, lang=language)
 
+    # 结构化进度的计数：用「已完成页数」而不是循环下标 ——
+    # 上面有「无文本页 skip」的分支，用下标会让 done 虚高。
+    _progress_total = len(parsed_speech)
+    _progress_done = 0
+
     for slide_idx in range(len(parsed_speech)):
         speech_with_cursor = parsed_speech[slide_idx]
         subtitle = ""
@@ -381,3 +394,7 @@ def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=
             raise ValueError("未知 model_type: {}（可选 qwen3tts / f5）".format(model_type))
 
         print("[speech_gen] 第 {} 页合成完成 -> {}".format(slide_idx, speech_result_path))
+        _progress_done += 1
+        if progress_report:
+            progress_report.report("tts", stage=2, done=_progress_done,
+                                   total=_progress_total, page=slide_idx)

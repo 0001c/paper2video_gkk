@@ -13,6 +13,7 @@
 用法：
     python scripts/smoke_web_api.py
 """
+import asyncio
 import importlib.util
 import io
 import json
@@ -42,6 +43,9 @@ def load_app():
     mod = importlib.util.module_from_spec(spec)
     sys.modules["p2v_web_app"] = mod
     spec.loader.exec_module(mod)
+    # 存下原始实现：后续测试会替换 _build_argv 以避免真跑流水线，
+    # 而"续跑生成了什么命令行"这类断言必须用原始实现 —— 否则会拿到上一个测试留下的假函数。
+    mod._ORIG_BUILD_ARGV = mod._build_argv
     return mod
 
 
@@ -119,17 +123,30 @@ def test_read_progress(app):
 # ② 队列 / SSE / 取消 / 产物：把流水线换成假命令
 # ──────────────────────────────────────────────────────────────
 FAKE_PIPELINE = '''
-import sys, time
+import json, os, sys, time
+_p = os.environ.get("PAPER2VIDEO_PROGRESS_FILE")
+def r(phase, **kw):
+    if not _p:
+        return
+    rec = dict(ts=time.time(), phase=phase)
+    rec.update(kw)
+    with open(_p, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(rec, ensure_ascii=False) + "\\n")
 def p(s):
     print(s); sys.stdout.flush()
 p("### fake pipeline (smoke test)")
+r("slides", stage=1)
 p("start stage 1")
+r("script", stage=2)
 for i in range({pages}):
     p("[speech_gen] 第 {{}} 页合成完成".format(i))
+    r("tts", stage=2, done=i + 1, total={pages}, page=i)
     time.sleep({sleep})
 for i in range({pages}):
     p("[talking_gen] 第 {{}} 页完成".format(i))
+    r("talking", stage=3, done=i + 1, total={pages}, page=i)
     time.sleep({sleep})
+r("merge", stage=3)
 p("数字人与幻灯片合成完成")
 '''
 
@@ -154,12 +171,15 @@ def test_queue_and_http(app):
 
     app._build_argv = fake_build_argv          # 进程内替换，仅本次测试有效
 
-    # 造一个合法的 ingest 目录与人像文件
+    # 造一个合法的 ingest 目录与人像文件。
+    # ⚠️ 刻意用「已经是 LaTeX 工程」的形态（**不放** paper_text.md）：
+    # 这样 needs_struct=False，本测试就只专注队列/SSE/取消/产物，
+    # 不会牵入「PDF/Word 先转 LaTeX」那一步（那一步由 [5] 单独测）。
     ingest_id = "smoke_ing_" + uuid.uuid4().hex[:6]
     ing_dir = os.path.join(app.JOBS_ROOT, ingest_id)
     os.makedirs(os.path.join(ing_dir, "ingest"), exist_ok=True)
-    io.open(os.path.join(ing_dir, "ingest", "paper_text.md"), "w",
-            encoding="utf-8").write("# 冒烟测试\n正文\n")
+    io.open(os.path.join(ing_dir, "ingest", "main.tex"), "w",
+            encoding="utf-8").write("% smoke\n")
     portrait = os.path.join(ing_dir, "portrait.png")
     io.open(portrait, "wb").write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
 
@@ -215,6 +235,15 @@ def test_queue_and_http(app):
                         "tts %d / talk %d / 期望 %d" % (
                             j["progress"]["tts_done"],
                             j["progress"]["talking_done"], state["pages"]))
+            # P1 的关键闭环：后端必须把 PAPER2VIDEO_PROGRESS_FILE 透传给子进程，
+            # 否则流水线不会写结构化进度，又退回脆弱的日志解析。
+            ok &= check("进度来源是结构化 jsonl（环境变量已透传）",
+                        j["progress"].get("source") == "jsonl",
+                        "source=%r" % j["progress"].get("source"))
+            ok &= check("结构化进度自带 total（不再依赖数 PDF 页数）",
+                        j["progress"]["total_pages"] == state["pages"],
+                        "total=%s / 期望 %s" % (j["progress"]["total_pages"],
+                                                state["pages"]))
             ok &= check("/api/system/gpu 的 running_job 在空闲时为 null",
                         client.get("/api/system/gpu").json()["running_job"] is None)
 
@@ -303,9 +332,313 @@ def test_queue_and_http(app):
     return ok
 
 
+# ──────────────────────────────────────────────────────────────
+# ③ 结构化进度（P1）：优先级、容错、阶段文案
+# ──────────────────────────────────────────────────────────────
+def test_progress_sources(app):
+    print()
+    print("=" * 66)
+    print("[3] 结构化进度 progress.jsonl —— 优先级 / 容错 / 阶段文案")
+    print("=" * 66)
+    ok = True
+
+    run = os.path.join(ROOT, "result", "gkk_en")
+    log = os.path.join(ROOT, ".workbuddy", "logs", "gkk_en.log")
+    if not (os.path.isdir(run) and os.path.isfile(log)):
+        print("   （跳过：缺少 gkk_en 的历史日志或产物）")
+        return True
+
+    job_id = "smoke_prio_" + uuid.uuid4().hex[:6]
+    jd = app._job_dir(job_id)
+    try:
+        os.makedirs(os.path.join(jd, "result"), exist_ok=True)
+        # 日志来源刻意用**真实**的 gkk_en 日志：它会解析出 15 页、阶段"已完成"。
+        # 这样"jsonl 优先"才有可对照的差异 —— 若读了日志就会是 15。
+        shutil.copyfile(log, os.path.join(jd, "run.log"))
+        pdf = os.path.join(run, "slides_rendered.pdf")
+        if os.path.isfile(pdf):
+            shutil.copyfile(pdf, os.path.join(jd, "result", "slides_rendered.pdf"))
+
+        jsonl = os.path.join(jd, "progress.jsonl")
+        job = {"id": job_id, "stage": 2, "phase": "运行中", "status": "running"}
+
+        def write_jsonl(*records):
+            with io.open(jsonl, "w", encoding="utf-8") as fh:
+                for rec in records:
+                    fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+        # ① 只有日志
+        info = app.read_progress(job)
+        log_tts = info["tts_done"]
+        ok &= check("只有日志时 source=log", info["source"] == "log",
+                    "source=%s / tts=%s" % (info["source"], log_tts))
+
+        # ② 放一份"只到第 6 页"的 jsonl → 必须优先于日志（日志是 15 页）
+        write_jsonl(
+            {"ts": time.time(), "phase": "slides", "stage": 1},
+            {"ts": time.time(), "phase": "script", "stage": 2},
+            *[{"ts": time.time(), "phase": "tts", "stage": 2, "done": i,
+               "total": 15, "page": i - 1} for i in range(1, 7)])
+        info = app.read_progress(job)
+        ok &= check("有 jsonl 时 source=jsonl（优先于日志）",
+                    info["source"] == "jsonl", "source=%s" % info["source"])
+        ok &= check("进度确实取自 jsonl 而非日志",
+                    info["tts_done"] == 6 and log_tts == 15,
+                    "jsonl 给 6 / 日志是 %s（读错来源就会是后者）" % log_tts)
+        ok &= check("阶段文案 tts -> 合成语音", info["phase"] == "合成语音",
+                    "实际 %r" % info["phase"])
+        ok &= check("total 取自 jsonl", info["total_pages"] == 15,
+                    "total=%s" % info["total_pages"])
+
+        # ③ 只有阶段记录（还没出页数）→ 不应崩，total 回落到 PDF 页数
+        write_jsonl({"ts": time.time(), "phase": "script", "stage": 2})
+        info = app.read_progress(job)
+        ok &= check("只有阶段记录时 phase=生成讲稿", info["phase"] == "生成讲稿",
+                    "实际 %r" % info["phase"])
+        ok &= check("jsonl 未给 total 时回落到 PDF 页数",
+                    info["total_pages"] == 15, "total=%s（期望 15，来自 PDF）"
+                    % info["total_pages"])
+
+        # ④ jsonl 损坏 → 回落日志，而不是报错
+        io.open(jsonl, "w", encoding="utf-8").write("这不是 JSON\n{\"phase\": \n")
+        info = app.read_progress(job)
+        ok &= check("jsonl 损坏时回落日志（不报错）",
+                    info["source"] == "log" and info["tts_done"] == 15,
+                    "source=%s / tts=%s" % (info["source"], info["tts_done"]))
+
+        # ⑤ 六个 phase 的界面文案
+        want = {"slides": "生成幻灯片", "script": "生成讲稿", "tts": "合成语音",
+                "cursor": "光标定位", "talking": "生成数字人", "merge": "合成视频"}
+        bad = []
+        for phase, label in want.items():
+            write_jsonl({"ts": time.time(), "phase": phase})
+            got = app.read_progress(job)["phase"]
+            if got != label:
+                bad.append("%s -> %r（期望 %r）" % (phase, got, label))
+        ok &= check("六个 phase 的界面文案都对", not bad, "；".join(bad) or "全部匹配")
+
+        # ⑥ 终态以任务状态为准，不从日志/阶段记录猜
+        write_jsonl({"ts": time.time(), "phase": "talking"})
+        bad2 = []
+        for status, label in (("done", "已完成"), ("failed", "失败"),
+                              ("canceled", "已取消")):
+            got = app.read_progress(dict(job, status=status))["phase"]
+            if got != label:
+                bad2.append("%s -> %r（期望 %r）" % (status, got, label))
+        ok &= check("终态以任务状态为准（完成/失败/已取消）", not bad2,
+                    "；".join(bad2) or "三种状态都对")
+    finally:
+        shutil.rmtree(jd, ignore_errors=True)
+    return ok
+
+
+# ──────────────────────────────────────────────────────────────
+# ④ 逐页素材索引 与 续跑（P1）
+# ──────────────────────────────────────────────────────────────
+def test_pages_and_rerun(app):
+    print()
+    print("=" * 66)
+    print("[4] 逐页素材索引 / 续跑 —— 重点验命名错位（1-based 幻灯片 vs 0-based 音频）")
+    print("=" * 66)
+    ok = True
+
+    from fastapi.testclient import TestClient
+
+    srv = app.app
+    job_id = "smoke_pages_" + uuid.uuid4().hex[:6]
+    jd = app._job_dir(job_id)
+    os.makedirs(jd, exist_ok=True)
+    # /pages 会先校验任务存在（_load_job），所以 job.json 必须先有
+    app._save_job({"id": job_id, "status": "done", "phase": "已完成",
+                   "created_at": "2026-09-18 10:00:00", "config": {}})
+    base = os.path.join(jd, "result")
+
+    def touch(rel, data=b"x"):
+        fp = os.path.join(base, rel)
+        os.makedirs(os.path.dirname(fp), exist_ok=True)
+        with open(fp, "wb") as fh:
+            fh.write(data)
+        return fp
+
+    pages = 3
+    try:
+        # 造一份符合真实命名规则的产物：幻灯片从 1 起、音频从 0 起、
+        # 数字人还多一层参考图目录（这正是最容易错位的地方）
+        for i in range(1, pages + 1):
+            touch("slide_imgs/%d.png" % i, b"\x89PNG\r\n\x1a\n")
+        for i in range(pages):
+            touch("audio/%d.wav" % i, b"RIFF")
+            touch("talking_musetalk/%d/portrait/merge_video.mp4" % i, b"\x00" * 64)
+        touch("cursor.json", b"{}")
+        io.open(os.path.join(base, "subtitle_w_cursor.txt"), "w",
+                encoding="utf-8").write(
+            "###\np1 line1 | cursor1\np1 line2 | cursor2\n"
+            "###\np2 line1 | cursor3\n"
+            "###\np3 line1 | cursor4\n")
+
+        # 让 worker 拾起任务时立刻结束（本测试不跑真实流水线）
+        app._build_argv = lambda job: [sys.executable, "-u", "-c", "pass"]
+
+        with TestClient(srv) as client:
+            r = client.get("/api/jobs/%s/pages" % job_id)
+            ok &= check("GET /pages 返回 200", r.status_code == 200,
+                        "HTTP %s" % r.status_code)
+            data = r.json()
+            ok &= check("总页数正确", data["total"] == pages,
+                        "total=%s / 期望 %s" % (data["total"], pages))
+            ok &= check("识别到讲稿 / 光标 / 幻灯片 PDF 三份附加产物",
+                        data["script_txt"] == "subtitle_w_cursor.txt"
+                        and data["cursor_json"] == "cursor.json",
+                        "script=%r cursor=%r" % (data["script_txt"],
+                                                 data["cursor_json"]))
+
+            p1 = data["pages"][0]
+            ok &= check("第 1 页：幻灯片取 1.png（1-based）",
+                        p1["slide"] == "slide_imgs/1.png", "实际 %r" % p1["slide"])
+            ok &= check("第 1 页：音频取 0.wav（0-based，与幻灯片差 1）",
+                        p1["audio"] == "audio/0.wav", "实际 %r" % p1["audio"])
+            ok &= check("第 1 页：数字人路径含参考图那一层目录",
+                        p1["talking"] == "talking_musetalk/0/portrait/merge_video.mp4",
+                        "实际 %r" % p1["talking"])
+            ok &= check("第 1 页：讲稿解析出 2 句且已去掉光标短语",
+                        p1["script"] == ["p1 line1", "p1 line2"],
+                        "实际 %r" % p1["script"])
+
+            p3 = data["pages"][2]
+            ok &= check("第 3 页：幻灯片/音频/讲稿都没错位",
+                        p3["slide"] == "slide_imgs/3.png"
+                        and p3["audio"] == "audio/2.wav"
+                        and p3["script"] == ["p3 line1"],
+                        "slide=%r audio=%r script=%r" % (p3["slide"], p3["audio"],
+                                                         p3["script"]))
+
+            missing = client.get("/api/jobs/not_a_job/pages")
+            ok &= check("不存在的任务返回 404", missing.status_code == 404,
+                        "HTTP %s" % missing.status_code)
+
+            # ── 续跑 ──
+            # 造一个"已完成"的源任务（含人像），验证续跑的字段与参数
+            portrait = os.path.join(jd, "portrait.png")
+            with open(portrait, "wb") as fh:
+                fh.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+            src_job = {
+                "id": job_id, "status": "done", "phase": "已完成",
+                "created_at": "2026-09-18 10:00:00",
+                "config": {"stages": ["1", "2", "3"], "slide_lang": "en",
+                           "script_lang": "zh", "paper_type": "auto"},
+                "ref_img": portrait,
+                "paper_latex_root": os.path.join(jd, "latex_proj"),
+                "needs_struct": True,
+                "source_path": None,
+            }
+            app._save_job(src_job)
+
+            rr = client.post("/api/jobs/%s/rerun" % job_id, json={})
+            ok &= check("POST /rerun 返回 200", rr.status_code == 200,
+                        "HTTP %s %s" % (rr.status_code, rr.text[:80]))
+            out = rr.json()
+            new_id = out.get("job_id")
+            ok &= check("续跑默认只跑 stage 2/3", out.get("stages") == ["2", "3"],
+                        "stages=%s" % out.get("stages"))
+            ok &= check("续跑默认复用讲稿（省钱关键）",
+                        out.get("reuse_script") is True,
+                        "reuse_script=%s" % out.get("reuse_script"))
+            ok &= check("记录了 resumed_from", out.get("resumed_from") == job_id,
+                        "resumed_from=%r" % out.get("resumed_from"))
+
+            if new_id:
+                nj = app._load_job(new_id)
+                ok &= check("新任务复用原 result 目录（不复制产物）",
+                            nj["config"].get("result_dir") == base,
+                            "result_dir=%r" % nj["config"].get("result_dir"))
+                ok &= check("续跑不再触发结构化（避免重复付费）",
+                            nj.get("needs_struct") is False,
+                            "needs_struct=%r" % nj.get("needs_struct"))
+                argv = app._ORIG_BUILD_ARGV(nj)   # 用原始实现（见 load_app 的说明）
+                ok &= check("argv 里的 --result_dir 指向原产物",
+                            base in argv, "--result_dir=%r" % (
+                                argv[argv.index("--result_dir") + 1]
+                                if "--result_dir" in argv else None))
+                ok &= check("argv 带上 --reuse_script True",
+                            "--reuse_script" in argv
+                            and argv[argv.index("--reuse_script") + 1] == "True",
+                            "argv 尾部=%s" % argv[-2:])
+                ok &= check("argv 里 --if_tree_search 恒为 False",
+                            argv[argv.index("--if_tree_search") + 1] == "False",
+                            "（默认值 True 会 NameError，必须写死）")
+
+            bad = client.post("/api/jobs/not_a_job/rerun", json={})
+            ok &= check("对不存在的任务续跑返回 404", bad.status_code == 404,
+                        "HTTP %s" % bad.status_code)
+    finally:
+        shutil.rmtree(jd, ignore_errors=True)
+        for name in os.listdir(app.JOBS_ROOT):        # 清掉续跑产生的任务
+            if name.startswith("job_") or name.startswith("smoke_"):
+                shutil.rmtree(os.path.join(app.JOBS_ROOT, name), ignore_errors=True)
+    return ok
+
+
+# ──────────────────────────────────────────────────────────────
+# ⑤ PDF/Word 输入的前置步骤（原本缺失的一环）
+# ──────────────────────────────────────────────────────────────
+def test_struct_prepare(app):
+    """流水线入口要「含 main.tex 的目录」，而使用者给的是 PDF/Word。
+
+    这一步不补，stage 1 会因为找不到 main.tex 而失败 —— 所以它的
+    失败路径必须**干净**（明确报原因、任务落到 failed），
+    而不是让任务一直挂在 running 上。
+    这里直接单测 `_prepare_latex`：不触发任何 API 调用。
+    """
+    print()
+    print("=" * 66)
+    print("[5] PDF/Word → LaTeX 工程的前置步骤（不调 API）")
+    print("=" * 66)
+    ok = True
+    job_id = "smoke_struct_" + uuid.uuid4().hex[:6]
+    jd = app._job_dir(job_id)
+    try:
+        os.makedirs(jd, exist_ok=True)
+        buffer = io.StringIO()
+
+        # A) 既没有 main.tex、也没有可用的源文件 → 必须返回 False 并说清原因
+        job = {"id": job_id, "paper_latex_root": os.path.join(jd, "latex_proj"),
+               "source_path": None}
+        got = asyncio.run(app._prepare_latex(job, jd, buffer, dict(os.environ)))
+        ok &= check("缺源文件时返回 False（不再继续跑流水线）", got is False,
+                    "返回 %r" % got)
+        text = buffer.getvalue()
+        ok &= check("日志说明原因", "源文件不可用" in text,
+                    "日志片段=%r" % (text.strip().splitlines()[:1] or [""]))
+        ok &= check("日志给出补救办法（提示重新上传）", "重新上传" in text,
+                    "日志片段=%r" % (text.strip().splitlines()[-1:] or [""]))
+
+        # B) main.tex 已存在 → 跳过结构化（重跑 / 续跑不重复付费）
+        latex_root = os.path.join(jd, "latex_proj")
+        os.makedirs(latex_root, exist_ok=True)
+        io.open(os.path.join(latex_root, "main.tex"), "w",
+                encoding="utf-8").write("% existing\n")
+        buffer.seek(0)
+        buffer.truncate()
+        job = {"id": job_id, "paper_latex_root": latex_root, "source_path": None}
+        got = asyncio.run(app._prepare_latex(job, jd, buffer, dict(os.environ)))
+        ok &= check("已有 main.tex 时返回 True 并跳过", got is True, "返回 %r" % got)
+        ok &= check("日志说明是复用而非重新生成",
+                    "跳过结构化" in buffer.getvalue(),
+                    "日志=%r" % buffer.getvalue().strip()[:70])
+    finally:
+        shutil.rmtree(jd, ignore_errors=True)
+    return ok
+
+
 def main():
     app = load_app()
-    results = [test_read_progress(app), test_queue_and_http(app)]
+    results = [
+        test_read_progress(app),
+        test_queue_and_http(app),
+        test_progress_sources(app),
+        test_pages_and_rerun(app),
+        test_struct_prepare(app),
+    ]
     print()
     print("=" * 66)
     if FAILURES:

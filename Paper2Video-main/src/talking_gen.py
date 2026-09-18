@@ -74,6 +74,12 @@ from os import path
 import yaml
 
 import pv_env
+
+# 结构化进度（P1）：可选增强，导入失败绝不能拖垮流水线（见 progress_report.py）
+try:
+    import progress_report
+except Exception:                      # pragma: no cover
+    progress_report = None
 from talking_config import (
     TalkingPaths,
     build_avatar_command,
@@ -492,6 +498,9 @@ def _run_musetalk_batch(tasks, profile, env_path):
 
     # ── 4) 逐页取回产物（同单页路径：查存在 + 查新鲜度） ──
     results = []
+    # 结构化进展：批量路径一次跑多页，这里按页回报（与下面的 print 同步）
+    _progress_total = len(staged)
+    _progress_done = 0
     for idx, target_dir, target_video, _img in staged:
         avatar_id, key = where[idx]
         produced = musetalk_batch_output(paths.repo_dir, profile, avatar_id, key)
@@ -510,6 +519,10 @@ def _run_musetalk_batch(tasks, profile, env_path):
         os.makedirs(target_dir, exist_ok=True)
         shutil.move(produced, target_video)
         print("[talking_gen] 第 {} 页完成 -> {}".format(idx, target_video))
+        _progress_done += 1
+        if progress_report:
+            progress_report.report("talking", stage=3, done=_progress_done,
+                                   total=_progress_total, page=idx)
         results.append((idx, True, target_video))
 
     # ── 5) 清理上游留下的 avatar scratch 目录（best-effort） ──
@@ -620,8 +633,13 @@ def talking_gen_per_slide(model_type, input_list, save_dir, gpu_list, env_path,
         results = _run_musetalk_batch(tasks, resolved, env_path)
     else:
         results = []
-        for task in tasks:
+        # 逐页路径：这里才知道总页数（tasks 已滤掉"已存在"的页）
+        _progress_total = len(tasks)
+        for _progress_done, task in enumerate(tasks, 1):
             results.append(run_avatar_inference(task))
+            if progress_report:
+                progress_report.report("talking", stage=3, done=_progress_done,
+                                       total=_progress_total, page=task[0])
 
     failures = [r for r in results if not r[1]]
     if failures:

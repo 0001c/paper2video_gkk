@@ -20,6 +20,13 @@ from os import path
 # pv_env 必须最先导入：它负责加载 .env、把缓存指向 E 盘、并把工具目录前置到 PATH
 import pv_env
 import language_config
+
+# 结构化进度（P1）：给 Web 端阶段边界（讲稿生成这类长等待也需要有阶段可显示）。
+# 默认不生效；导入失败也不能拖垮流水线。
+try:
+    import progress_report
+except Exception:                      # pragma: no cover
+    progress_report = None
 from pdf_render import render_pdf_to_images
 
 from speech_gen import tts_per_slide
@@ -173,6 +180,8 @@ if __name__ == '__main__':
     start_time = time.time() # start time
     if "1" in stage or  "0" in stage:
         prompt_path = lang["slide_prompt"]
+        if progress_report:
+            progress_report.report("slides", stage=1)
         # ⚠️ 上游这里的 if/else 有一条**永远会崩的分支**：else 里调用的
         # ``latex_code_gen`` 来自 ``slide_code_gen``，而那一行 import 在本文件
         # 第 31 行是**注释掉的**（上游只用 latex_code_gen_upgrade 这一条线）。
@@ -233,6 +242,10 @@ if __name__ == '__main__':
                 print("[Stage 2] --reuse_script：已有讲稿不合格（{}），改为重新生成"
                       .format(_why))
         if not reused:
+            # 讲稿生成要读全部幻灯片图，是整条链路里最慢的一次 API 调用（约 1~2 分钟）。
+            # 先报一条阶段进度，界面才不会在这一段里"看着像没开始"。
+            if progress_report:
+                progress_report.report("script", stage=2)
             subtitle, usage_subtitle = subtitle_cursor_gen(
                 slide_image_dir, prompt_path, agent_config_v)
             # 显式 utf-8：读回处固定用 utf-8，写入端不该依赖环境默认编码
@@ -258,6 +271,8 @@ if __name__ == '__main__':
         
         ## Step 3-2: Cursor Generation
         os.environ["PYTHONHASHSEED"] = "random"        
+        if progress_report:
+            progress_report.report("cursor", stage=2)
         cursor_token = cursor_gen_per_sentence(script_path=subtitle_cursor_save_path, slide_img_dir=slide_image_dir, 
                                 slide_audio_dir=speech_save_dir, cursor_save_path=cursor_save_path, gpu_list=args.gpu_list,
                                 language=lang["align_language"], slide_pdf_path=slide_pdf_path)
@@ -303,6 +318,8 @@ if __name__ == '__main__':
             num_video=num_slide, ref_img=ref_stem, width=width, height=height)
         # render cursor
         cursor_size = size//6
+        if progress_report:
+            progress_report.report("merge", stage=3)
         tmp_merage_2 = path.join(args.result_dir, "2_merage.mp4")
         render_video_with_cursor_from_json(video_path=tmp_merage_1, out_video_path=tmp_merage_2, 
                                         json_path=cursor_save_path, cursor_img_path=cursor_img_path, 

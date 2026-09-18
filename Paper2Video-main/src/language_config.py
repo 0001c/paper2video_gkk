@@ -75,6 +75,26 @@ SLIDE_LANGS = {
 }
 
 
+def _cjk_subtitle_font():
+    """中文字幕字体：按平台给默认值，**不要硬编码 Windows 专有字体**。
+
+    为什么必须这样写（2026-09-18 确认迁移需求后加）：
+    本项目在使用者本机（Windows）开发，演示通过后**会搬到学校 Linux 服务器**。
+    原先这里写死 ``"Microsoft YaHei"``，在 Linux 上字体不存在，libass 会回退到
+    ``subtitle_render.DEFAULT_FONT`` —— 而那里的 Linux 分支是 ``DejaVu Sans``，
+    **完全不含汉字**，结果就是中文字幕变成方框或直接丢失。
+
+    最阴的一点是：**这个故障在开发机（Windows）上永远不会出现**，
+    而且英文讲稿不受影响（DejaVu 覆盖拉丁字母），所以很容易在演示当天才暴露。
+
+    服务器上请确保装了中文字体（Debian/Ubuntu: ``fonts-noto-cjk``），
+    或用 ``PAPER2VIDEO_CJK_FONT`` 指定实际可用的字体名。
+    """
+    if os.name == "nt":
+        return "Microsoft YaHei"
+    return os.environ.get("PAPER2VIDEO_CJK_FONT", "Noto Sans CJK SC")
+
+
 # ──────────────────────────────────────────────────────────────
 # 讲稿 / TTS / 对齐 / 字幕 语言
 # ──────────────────────────────────────────────────────────────
@@ -99,7 +119,7 @@ SCRIPT_LANGS = {
         # 与英文模式**音色一致**。同名的 .txt 是它的参考文本 ——
         # 有它就不必让 ASR 去转写（ASR 对这段 24k 单声道实测会转错）。
         "ref_audio": path.join(PKG_ROOT, "assets", "demo", "zeyu_zh.wav"),
-        "subtitle_font": "Microsoft YaHei",
+        "subtitle_font": _cjk_subtitle_font(),   # 见该函数的说明：不能写死 Windows 字体
         "chars_per_slide": (80, 110),   # 见模块 docstring 的推导
     },
 }

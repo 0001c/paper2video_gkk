@@ -535,8 +535,59 @@ if os.path.isdir(_STATIC):
     app.mount("/", StaticFiles(directory=_STATIC, html=True), name="static")
 
 
-def _port_owner(port):
-    """查占用某端口的进程（给报错用）。psutil 缺失时返回 None，不影响主流程。"""
+# 平台判定放在模块级，方便在测试里替换以验证另一平台的分支。
+_IS_WINDOWS = os.name == "nt"
+
+
+def _probe_options():
+    """探测端口时该设的 socket 选项。**平台相关，且两个平台的要求正好相反。**
+
+    这里踩过一个坑，值得写清楚：
+
+    - **Windows**：`SO_REUSEADDR` 的语义与 POSIX **相反** —— 它不是"允许复用 TIME_WAIT
+      地址"，而是允许 bind 到一个**已被别的进程占用**的端口（相当于抢占）。
+      拿它做探测的结果是**永远报"空闲"**，预检形同虚设（实测：端口明明被占，
+      预检却放行，一路走到 uvicorn 才抛 WinError 10048）。
+      所以 Windows 上**必须不设**该选项；再加 `SO_EXCLUSIVEADDRUSE` 明确声明独占，
+      只要端口还有别人占着，bind 就失败。
+
+    - **POSIX**：`SO_REUSEADDR` 才是正规用法（允许复用 TIME_WAIT 的地址），
+      而且**服务端本身就会用它**（asyncio 的 `create_server` 在 POSIX 上
+      `reuse_address` 默认为真）。若探测时不设，**刚关掉服务就重启**会把残留的
+      TIME_WAIT 误判成"被占用"，把一个本来能正常启动的端口判成不可用 ——
+      也就是把 Windows 的 bug 换成 Linux 的 bug。
+    """
+    import socket
+    opts = []
+    if _IS_WINDOWS:
+        exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+        if exclusive is not None:
+            opts.append((socket.SOL_SOCKET, exclusive, 1))
+    else:
+        opts.append((socket.SOL_SOCKET, socket.SO_REUSEADDR, 1))
+    return opts
+
+
+def _try_bind(host, port):
+    """按**与平台匹配的语义**试绑一次，成功返回 True。
+
+    判据就是"本服务能不能起来"，不试图去猜别的进程的状态 ——
+    猜端口占用很容易产生假阳性（例如别的进程占的是 0.0.0.0 而我们绑 127.0.0.1，
+    或者只剩 TIME_WAIT），而假阳性会把一个能用的端口拦下来。
+    """
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        for level, name, value in _probe_options():
+            sock.setsockopt(level, name, value)
+        try:
+            sock.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def _listener_pid(port):
+    """LISTEN 在该端口上的进程 pid（仅用于把报错写得具体）；查不到返回 None。"""
     try:
         import psutil
     except ImportError:
@@ -544,45 +595,37 @@ def _port_owner(port):
     try:
         for conn in psutil.net_connections(kind="inet"):
             if conn.laddr and conn.laddr.port == port and conn.status == psutil.CONN_LISTEN:
-                try:
-                    proc = psutil.Process(conn.pid)
-                    return "{} (pid={}, 已运行 {:.0f} 分钟)".format(
-                        proc.name(), conn.pid, (time.time() - proc.create_time()) / 60)
-                except Exception:
-                    return "pid={}".format(conn.pid)
+                return conn.pid
     except Exception:
         return None
     return None
 
 
+def _port_owner(port):
+    """占用者的可读描述（进程名 / pid / 已运行时长）。拿不到就返回 None。"""
+    pid = _listener_pid(port)
+    if pid is None:
+        return None
+    try:
+        import psutil
+        proc = psutil.Process(pid)
+        return "{} (pid={}, 已运行 {:.0f} 分钟)".format(
+            proc.name(), pid, (time.time() - proc.create_time()) / 60)
+    except Exception:
+        return "pid={}".format(pid)
+
+
 def _find_free_port(host, start, tries=20):
-    import socket
     for offset in range(tries):
         candidate = start + offset
-        # ⚠️ 这里**绝对不能**设 SO_REUSEADDR：Windows 的语义与 Linux 相反，
-        # 它允许 bind 到已被占用的端口（相当于"抢占"），于是每个端口都"看起来空闲"。
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            try:
-                sock.bind((host, candidate))
-            except OSError:
-                continue
-        return candidate
+        if _try_bind(host, candidate):
+            return candidate
     return None
 
 
 def _port_in_use(host, port):
-    """端口是否已被占用。
-
-    ⚠️ 不给探测 socket 设 SO_REUSEADDR —— Windows 上该选项允许 bind 到
-    已被占用的端口，会让预检**永远返回"空闲"**，形同虚设（实测踩过）。
-    """
-    import socket
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        try:
-            probe.bind((host, port))
-        except OSError:
-            return True
-    return False
+    """本服务能否在这个端口上启动（True = 起不来）。"""
+    return not _try_bind(host, port)
 
 
 def main():

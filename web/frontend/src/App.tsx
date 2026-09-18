@@ -172,6 +172,10 @@ export default function App() {
   // ④ 运行
   const [jobId, setJobId] = useState<string | null>(null);
   const [artifacts, setArtifacts] = useState<any[]>([]);
+  // P1：任务记录 + 逐页素材
+  const [jobs, setJobs] = useState<any[]>([]);
+  const [pages, setPages] = useState<any | null>(null);
+  const [rerunning, setRerunning] = useState(false);
   const job = useJobStream(jobId);
 
   useEffect(() => {
@@ -253,6 +257,9 @@ export default function App() {
       ingest_id: ingest.ingest_id,
       portrait_path: portraitPath,
       paper_latex_root: ingest.latex_root || undefined,
+      // 原始文件路径必须带上：PDF / Word 输入时后端要靠它先转成 LaTeX 工程
+      // （流水线入口要「含 main.tex 的目录」）。只有 .tex 输入才不需要。
+      source_path: ingest.source_path || undefined,
       config: {
         stages: ["1", "2", "3"],
         slide_lang: slideLang,
@@ -266,10 +273,64 @@ export default function App() {
     setArtifacts([]);
   }, [ingest, portraitFile, apiKey, slideLang, scriptLang, paperType]);
 
+  // 任务列表：每 5 秒刷新。本地工具，这点开销可以忽略，
+  // 换来的是"后端重启前留下的任务也能看到最新状态"。
   useEffect(() => {
-    if (!jobId || !job || !["done", "failed"].includes(job.status)) return;
-    api.get(`/api/jobs/${jobId}/artifacts`).then((d) => setArtifacts(d.artifacts || []));
+    const load = () =>
+      api.get("/api/jobs").then((d) => setJobs(d.jobs || [])).catch(() => {});
+    load();
+    const timer = window.setInterval(load, 5000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  // 产物与逐页素材：切换查看对象或状态变化时拉一次。
+  // 为什么不等 done 才拉：跑到一半也想看已经生成到哪一页了。
+  useEffect(() => {
+    if (!jobId) {
+      setArtifacts([]);
+      setPages(null);
+      return;
+    }
+    let alive = true;
+    api.get(`/api/jobs/${jobId}/artifacts`)
+      .then((d) => alive && setArtifacts(d.artifacts || []))
+      .catch(() => {});
+    api.get(`/api/jobs/${jobId}/pages`)
+      .then((d) => alive && setPages(d))
+      .catch(() => alive && setPages(null));
+    return () => {
+      alive = false;
+    };
   }, [jobId, job?.status]);
+
+  // 续跑：默认只重跑 stage 2/3 且复用已有讲稿。
+  // 讲稿生成是整条链路里唯一付费的一步（占约 76% token），复用即零 API 费用。
+  const doRerun = useCallback(async (id: string) => {
+    setRerunning(true);
+    const { status, data } = await api.post(`/api/jobs/${id}/rerun`, {});
+    setRerunning(false);
+    if (status !== 200) {
+      MessagePlugin.error(data.detail || "续跑失败");
+      return;
+    }
+    setJobId(data.job_id);
+    setArtifacts([]);
+    setPages(null);
+    MessagePlugin.success("已入队：只重跑 stage 2/3，复用已有讲稿（本次不产生 API 费用）");
+  }, []);
+
+  // 产物链接：逐段转义，但要保留路径分隔符（数字人产物是多层目录）
+  const fileUrl = useCallback(
+    (rel: string) =>
+      `/api/jobs/${jobId}/files/` + rel.split("/").map(encodeURIComponent).join("/"),
+    [jobId],
+  );
+
+  // 状态点颜色：把后端的 status 映射到已有的 dot 样式
+  const dotOf = (status: string) =>
+    ({ done: "ok", running: "run", queued: "wait", canceled: "wait" } as Record<string, string>)[
+      status
+    ] || "err";
 
   const cancel = useCallback(async () => {
     if (!jobId) return;
@@ -582,6 +643,115 @@ export default function App() {
             {artifacts.some((a) => a.name === "3_merage.mp4") && (
               <video controls src={`/api/jobs/${jobId}/files/3_merage.mp4`} />
             )}
+          </div>
+        )}
+
+        {/* P1 逐页素材浏览：服务端已把命名规则不一致的产物索引到一起
+            （幻灯片 1.png 起、音频 0.wav 起、数字人还多一层参考图目录）。 */}
+        {pages?.total > 0 && (
+          <div style={{ marginTop: 22 }}>
+            <div className="statusline" style={{ marginBottom: 6 }}>
+              <span className="dot ok" />
+              <span>逐页素材</span>
+              <span className="tail">共 {pages.total} 页 · 点图看大图</span>
+            </div>
+            {pages.slides_pdf || pages.script_txt || pages.cursor_json ? (
+              <div className="filerefs">
+                {pages.slides_pdf && (
+                  <a href={fileUrl(pages.slides_pdf)} target="_blank" rel="noreferrer">
+                    幻灯片总览 PDF
+                  </a>
+                )}
+                {pages.script_txt && (
+                  <a href={fileUrl(pages.script_txt)} target="_blank" rel="noreferrer">
+                    讲稿（含光标短语）
+                  </a>
+                )}
+                {pages.cursor_json && (
+                  <a href={fileUrl(pages.cursor_json)} target="_blank" rel="noreferrer">
+                    光标 JSON
+                  </a>
+                )}
+              </div>
+            ) : null}
+            <div className="pagegrid">
+              {pages.pages.map((p: any) => (
+                <div className="pagecell" key={p.page}>
+                  {p.slide ? (
+                    <a href={fileUrl(p.slide)} target="_blank" rel="noreferrer">
+                      <img src={fileUrl(p.slide)} alt={`第 ${p.page} 页幻灯片`} loading="lazy" />
+                    </a>
+                  ) : (
+                    <div className="ph">无图</div>
+                  )}
+                  <div className="pmeta">
+                    <span>第 {p.page} 页</span>
+                    {p.talking ? (
+                      <a href={fileUrl(p.talking)} target="_blank" rel="noreferrer">
+                        数字人
+                      </a>
+                    ) : null}
+                    {p.audio ? (
+                      <a href={fileUrl(p.audio)} target="_blank" rel="noreferrer">
+                        音频
+                      </a>
+                    ) : null}
+                  </div>
+                  {p.script?.length ? (
+                    <div className="pscript">
+                      {p.script[0]}
+                      {p.script.length > 1 ? ` …（共 ${p.script.length} 句）` : ""}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* ⑤ 任务记录（P1）：续跑是省钱主力，界面上不做就浪费了 */}
+      <section className="section">
+        <div className="section-head">
+          <span className="section-num">5</span>
+          <h2 className="section-title">任务记录</h2>
+          <span className="section-note">续跑只重跑 stage 2/3，复用已有讲稿</span>
+        </div>
+        {jobs.length === 0 ? (
+          <div className="hint">还没有任务。</div>
+        ) : (
+          <div className="jobtable">
+            {jobs.map((j) => (
+              <div className={"jobrow" + (j.id === jobId ? " active" : "")} key={j.id}>
+                <span className={"dot " + dotOf(j.status)} />
+                <span className="jid">{j.id}</span>
+                <span className="jphase">
+                  {j.phase}
+                  {j.elapsed_min ? ` · ${j.elapsed_min} min` : ""}
+                </span>
+                <span className="jcfg">
+                  {j.config?.slide_lang}/{j.config?.script_lang}
+                  {j.config?.stages ? ` · stage ${j.config.stages.join("")}` : ""}
+                  {j.config?.reuse_script ? " · 复用讲稿" : ""}
+                  {j.resumed_from ? " · 续跑" : ""}
+                </span>
+                <span className="jactions">
+                  <button type="button" className="linkbtn" onClick={() => setJobId(j.id)}>
+                    查看
+                  </button>
+                  {["done", "failed", "canceled"].includes(j.status) && (
+                    <button
+                      type="button"
+                      className="linkbtn"
+                      disabled={rerunning}
+                      onClick={() => doRerun(j.id)}
+                    >
+                      续跑 2/3
+                    </button>
+                  )}
+                </span>
+              </div>
+            ))}
           </div>
         )}
       </section>

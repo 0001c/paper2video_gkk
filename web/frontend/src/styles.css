@@ -403,9 +403,112 @@ video { width: 100%; border-radius: var(--td-radius-default); background: #000; 
   font-size: 11px;
 }
 
+/* ── P1：逐页素材浏览 ── */
+.filerefs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+.filerefs a {
+  color: var(--paper-accent);
+  text-decoration: none;
+  border-bottom: 1px solid var(--paper-rule-strong);
+}
+.filerefs a:hover { border-bottom-color: var(--paper-accent); }
+
+.pagegrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 14px 12px;
+}
+.pagecell { display: flex; flex-direction: column; gap: 5px; }
+.pagecell img {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: contain;
+  background: #f4f2ee;
+  border: 1px solid var(--paper-rule);
+  border-radius: var(--td-radius-default);
+  display: block;
+}
+.pagecell .ph {
+  aspect-ratio: 4 / 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f4f2ee;
+  border: 1px dashed var(--paper-rule-strong);
+  border-radius: var(--td-radius-default);
+  color: var(--paper-ink-faint);
+  font-size: 11px;
+}
+.pagecell .pmeta {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 11px;
+  color: var(--paper-ink-faint);
+}
+.pagecell .pmeta a { color: var(--paper-accent); text-decoration: none; }
+.pagecell .pmeta a:hover { text-decoration: underline; }
+.pagecell .pscript {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--paper-ink-soft);
+  /* 每页只露两行讲稿：够用来核对"这页讲的是不是这页"，又不至于把格子撑乱 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ── P1：任务记录 ── */
+.jobtable { display: flex; flex-direction: column; }
+.jobrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 4px;
+  border-bottom: 1px solid var(--paper-rule);
+  font-size: 12px;
+}
+.jobrow.active { background: #f7f9fb; }
+.jobrow .jid { font-family: var(--font-mono); font-size: 11.5px; }
+.jobrow .jphase { color: var(--paper-ink-soft); }
+.jobrow .jcfg {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--paper-ink-faint);
+}
+.jobrow .jactions { margin-left: auto; display: flex; gap: 12px; }
+
+/* 文字按钮：比 TDesign 的按钮更轻，适合表格里的行内操作 */
+.linkbtn {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--paper-accent);
+  cursor: pointer;
+  border-bottom: 1px solid var(--paper-rule-strong);
+}
+.linkbtn:hover:not(:disabled) { border-bottom-color: var(--paper-accent); }
+.linkbtn:disabled {
+  color: var(--paper-ink-faint);
+  cursor: default;
+  border-bottom-color: transparent;
+}
+.hint { font-size: 12.5px; color: var(--paper-ink-faint); }
+
 /* 小屏放宽版心 */
 @media (max-width: 640px) {
   .sheet { padding: 0 16px 64px; }
   .masthead h1 { font-size: 21px; }
   .hwbar { font-size: 11px; gap: 4px 14px; }
+  .pagegrid { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); }
+  .jobrow { flex-wrap: wrap; }
+  .jobrow .jactions { margin-left: 0; width: 100%; }
 }

@@ -110,6 +110,10 @@ UnicodeEncodeError，且崩点在流水线**最末端**。已在 `pv_env.py` 模
 - **`src/progress_report.py`**：流水线写 `progress.jsonl`（一行一 JSON）。
   **默认不生效**（未设 `PAPER2VIDEO_PROGRESS_FILE` 就不生成文件）、绝不抛异常、只追加。
   后端 `read_progress` **优先读它、回落日志**，终态以任务状态为准。
+- **产物目录读写在 `_result_dir(job)`**（唯一入口）：续跑不复制产物，
+  新任务的 `config.result_dir` 指向原任务的目录。**读取侧（产物列表/逐页索引/
+  文件服务/总页数）必须走它**，直接拼 `<job_dir>/result` 会让续跑任务看到空产物，
+  且"续跑的续跑"会被 400 拒掉。
 - **`POST /api/jobs/{id}/rerun`**：只重跑 stage 2/3 + `--reuse_script` ⇒ **零 API 费用**。
   **不复制产物**：新任务指向原 `result` 目录（`_build_argv` 支持 `result_dir` 覆盖）。
 - **`GET /api/jobs/{id}/pages`**：服务端拼逐页索引（幻灯片 1-based / 音频 0-based /

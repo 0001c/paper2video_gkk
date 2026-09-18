@@ -71,6 +71,9 @@ type Job = {
   elapsed_min?: number;
   progress?: Progress;
   queue_ahead?: number;
+  /* 续跑出来的任务：值是原任务 id。产物与原任务**共享**
+     （后端不复制 result 目录，只在 config.result_dir 里指过去）。 */
+  resumed_from?: string;
 };
 
 /* SSE 进度流封装成一个 hook。
@@ -672,6 +675,11 @@ export default function App() {
             <div className="statusline" style={{ marginBottom: 4 }}>
               <span className={"dot " + (job?.status === "done" ? "ok" : "err")} />
               <span>产物</span>
+              {job?.resumed_from && (
+                <span className="section-note" style={{ marginLeft: 8 }}>
+                  续跑自 {job.resumed_from} · 与原任务共享同一份产物目录（重跑会覆盖它）
+                </span>
+              )}
             </div>
             <div className="artifacts">
               {artifacts.map((a) => (

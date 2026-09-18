@@ -817,6 +817,133 @@ def test_log_encoding_and_model_registry(app):
     return ok
 
 
+def test_rerun_shares_artifacts(app):
+    """续跑的任务必须能"看到自己的产物"。
+
+    续跑**不复制产物**（slides/audio 动辄几百 MB），新任务只在 config.result_dir 里
+    指向原任务的 result 目录。写入侧一直是对的，但读取侧原先各拼各的
+    `<job_dir>/result`，于是**续跑出来的任务产物列表是空的** ——
+    使用者得回头点原任务才能看（实测反馈）。
+
+    这里把四条件都钉住：产物列表 / 逐页索引 / 文件服务 / 总页数兜底。
+    """
+    print()
+    print("=" * 66)
+    print("[8] 续跑共享产物 —— 新任务应能直接看到原任务的产物")
+    print("=" * 66)
+    ok = True
+
+    from fastapi.testclient import TestClient
+
+    pages = 3
+    orig_id = "smoke_re_orig_" + uuid.uuid4().hex[:6]
+    jd = app._job_dir(orig_id)
+    base = os.path.join(jd, "result")
+
+    def touch(rel, data=b"x" * 32):
+        fp = os.path.join(base, rel)
+        os.makedirs(os.path.dirname(fp), exist_ok=True)
+        with open(fp, "wb") as fh:
+            fh.write(data)
+        return fp
+
+    portrait = os.path.join(app.JOBS_ROOT, "smoke_re_portrait.png")
+    created = [jd]
+    try:
+        os.makedirs(base, exist_ok=True)
+        for i in range(1, pages + 1):
+            touch("slide_imgs/%d.png" % i, b"\x89PNG\r\n\x1a\n")
+        for i in range(pages):
+            touch("audio/%d.wav" % i, b"RIFF")
+        video = touch("3_merage.mp4", b"\x00" * 4096)
+        # 真造一份 %d 页的 PDF —— 总页数兜底走的就是它
+        try:
+            import pymupdf
+            doc = pymupdf.open()
+            for _ in range(pages):
+                doc.new_page()
+            doc.save(os.path.join(base, "slides_rendered.pdf"))
+            doc.close()
+            has_pdf = True
+        except Exception:
+            has_pdf = False
+
+        app._save_job({"id": orig_id, "status": "done", "phase": "已完成",
+                       "created_at": "2026-09-18 10:00:00", "config": {},
+                       "ref_img": portrait})
+        with open(portrait, "wb") as fh:
+            fh.write(b"\x89PNG\r\n\x1a\n")
+
+        app._build_argv = lambda job: [sys.executable, "-u", "-c", "pass"]
+
+        with TestClient(app.app) as client:
+            # ① 基线：原任务自己能看见 → 证明造的数据是有效的
+            r0 = client.get("/api/jobs/%s/artifacts" % orig_id)
+            names0 = [a["name"] for a in r0.json().get("artifacts", [])]
+            ok &= check("基线：原任务能看到 3_merage.mp4", "3_merage.mp4" in names0,
+                        "原任务产物 %s" % names0)
+
+            # ② 续跑
+            rr = client.post("/api/jobs/%s/rerun" % orig_id,
+                             json={"stages": ["3"], "reuse_script": True,
+                                   "portrait_path": portrait})
+            new_id = rr.json().get("job_id")
+            ok &= check("rerun 返回新任务 id", rr.status_code == 200 and bool(new_id),
+                        "HTTP %s / %s" % (rr.status_code, new_id))
+            if not new_id:
+                return False
+            created.append(app._job_dir(new_id))
+
+            nj = app._load_job(new_id)
+            ok &= check("新任务的 result_dir 指向原任务的产物目录",
+                        (nj.get("config") or {}).get("result_dir") == base,
+                        "result_dir=%s" % (nj.get("config") or {}).get("result_dir"))
+
+            # ③ 关键断言：新任务的产物列表不能是空的
+            r1 = client.get("/api/jobs/%s/artifacts" % new_id)
+            names1 = [a["name"] for a in r1.json().get("artifacts", [])]
+            ok &= check("**续跑任务能看到产物**（修复前这里是空的）",
+                        "3_merage.mp4" in names1,
+                        "新任务产物 %s" % names1)
+
+            r2 = client.get("/api/jobs/%s/pages" % new_id)
+            ok &= check("续跑任务的逐页索引可用",
+                        r2.status_code == 200 and r2.json().get("total") == pages,
+                        "total=%s / 期望 %s" % (
+                            r2.json().get("total") if r2.status_code == 200 else "-", pages))
+
+            r3 = client.get("/api/jobs/%s/files/3_merage.mp4" % new_id)
+            ok &= check("续跑任务的文件服务可取到产物",
+                        r3.status_code == 200 and r3.content == b"\x00" * 4096,
+                        "HTTP %s / %d 字节" % (r3.status_code, len(r3.content)))
+
+            if has_pdf:
+                prog = app.read_progress(nj)
+                ok &= check("续跑任务的总页数兜底走产物目录",
+                            prog["total_pages"] == pages,
+                            "total_pages=%s / 期望 %s" % (prog["total_pages"], pages))
+
+            # ④ 「续跑的续跑」也要能找到（否则第二次续跑会指向第一个续跑的空目录）
+            r4 = client.post("/api/jobs/%s/rerun" % new_id,
+                             json={"stages": ["3"], "portrait_path": portrait})
+            third = r4.json().get("job_id")
+            ok &= check("续跑的续跑也能入队", r4.status_code == 200 and bool(third),
+                        "HTTP %s / %s" % (r4.status_code, third))
+            if third:
+                created.append(app._job_dir(third))
+                r5 = client.get("/api/jobs/%s/artifacts" % third)
+                names5 = [a["name"] for a in r5.json().get("artifacts", [])]
+                ok &= check("**二层续跑仍指向同一产物目录**",
+                            "3_merage.mp4" in names5,
+                            "产物 %s" % names5)
+    finally:
+        if os.path.isfile(portrait):
+            os.remove(portrait)
+        for path in created:
+            shutil.rmtree(path, ignore_errors=True)
+    return ok
+
+
 def main():
     app = load_app()
     results = [
@@ -827,6 +954,7 @@ def main():
         test_struct_prepare(app),
         test_portrait_upload(app),
         test_log_encoding_and_model_registry(app),
+        test_rerun_shares_artifacts(app),
     ]
     print()
     print("=" * 66)

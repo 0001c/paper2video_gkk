@@ -82,6 +82,23 @@ def _load_job(job_id):
         return json.load(handle)
 
 
+def _result_dir(job):
+    """任务的**产物目录** —— 读取侧的唯一入口。
+
+    为什么不能直接拼 ``<job_dir>/result``：续跑（rerun）**不复制产物**，
+    新任务只在 ``config.result_dir`` 里指向原任务的 result 目录
+    （slides/audio 动辄几百 MB，复制没必要）。写入侧 `_build_argv` 一直用的是
+    这个字段，但读取侧（产物列表 / 逐页索引 / 文件服务 / 总页数）原先各拼各的
+    ``<job_dir>/result``，于是**续跑出来的任务看不到自己的产物** ——
+    使用者得回头点原任务才能看（实测反馈）。
+    """
+    config = (job or {}).get("config") or {}
+    declared = config.get("result_dir")
+    if declared:
+        return declared
+    return os.path.join(_job_dir(job["id"]), "result")
+
+
 def _save_job(job):
     job["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     with io.open(os.path.join(_job_dir(job["id"]), "job.json"), "w",
@@ -159,9 +176,13 @@ _STAGE_PATTERNS = [
 ]
 
 
-def _total_pages(job_dir):
-    """总页数：优先从渲染出的 PDF 取，其次数幻灯片图。"""
-    pdf = os.path.join(job_dir, "result", "slides_rendered.pdf")
+def _total_pages(result_dir):
+    """总页数：优先从渲染出的 PDF 取，其次数幻灯片图。
+
+    传的是**产物目录**（见 `_result_dir`）而不是任务目录 —— 续跑时产物在原任务那里，
+    拼 `<job_dir>/result` 会数出 0 页。
+    """
+    pdf = os.path.join(result_dir, "slides_rendered.pdf")
     if os.path.isfile(pdf):
         try:
             import pymupdf
@@ -171,7 +192,7 @@ def _total_pages(job_dir):
             return count
         except Exception:
             pass
-    img_dir = os.path.join(job_dir, "result", "slide_imgs")
+    img_dir = os.path.join(result_dir, "slide_imgs")
     if os.path.isdir(img_dir):
         return len([f for f in os.listdir(img_dir) if f.endswith(".png")])
     return 0
@@ -333,9 +354,10 @@ def read_progress(job):
         if found.get("stalled_seconds") is not None:
             info["stalled_seconds"] = found["stalled_seconds"]
 
-    # 总页数兜底：两个来源都没给出时，从渲染出的 PDF / 幻灯片图数推断
+    # 总页数兜底：两个来源都没给出时，从渲染出的 PDF / 幻灯片图数推断。
+    # 注意用**产物目录**（续跑时产物在原任务那里，拼 job_dir 会数出 0 页）。
     if not info["total_pages"]:
-        info["total_pages"] = _total_pages(job_dir)
+        info["total_pages"] = _total_pages(_result_dir(job))
 
     status = job.get("status")
     if status in ("done", "failed", "canceled"):
@@ -933,7 +955,9 @@ async def api_rerun_job(job_id: str, payload: dict):
     于是 stage 1 已生成的幻灯片与讲稿就地重用（动辄几百 MB~GB，复制没必要）。
     """
     src_job = _load_job(job_id)
-    src_result = os.path.join(_job_dir(job_id), "result")
+    # 用 _result_dir 而不是拼 job_dir/result：这样"续跑的续跑"也能找到真正的产物目录
+    # （否则第二次续跑会指向第一个续跑任务的空 result 目录）。
+    src_result = _result_dir(src_job)
     if not os.path.isdir(src_result):
         raise HTTPException(status_code=400,
                             detail="原任务没有 result 目录，无法续跑（可能从未开始）")
@@ -1016,6 +1040,9 @@ async def api_job_events(job_id: str, request: Request):
                 "progress": read_progress(job),
                 "exit_code": job.get("exit_code"),
                 "elapsed_min": job.get("elapsed_min"),
+                # 续跑关系要推给前端：续跑任务的产物与原任务**共享**，
+                # 界面上得说清楚，否则用户不知道产物在哪、也想不到"重跑会覆盖原任务的那份"。
+                "resumed_from": job.get("resumed_from"),
             }
             body = json.dumps(payload, ensure_ascii=False)
             if body != last:                       # 只在变化时推，减少噪音
@@ -1051,7 +1078,7 @@ async def api_cancel_job(job_id: str):
 @app.get("/api/jobs/{job_id}/artifacts")
 async def api_artifacts(job_id: str):
     job = _load_job(job_id)
-    base = os.path.join(_job_dir(job_id), "result")
+    base = _result_dir(job)                    # 续跑时指向原任务的 result
     items = []
     if os.path.isdir(base):
         for name in sorted(os.listdir(base)):
@@ -1077,8 +1104,8 @@ async def api_job_pages(job_id: str):
     这里只做**索引**，文件本身仍走 /files/ 端点（FileResponse 自带 Range，
     视频才能拖进度条、图片才能按需加载）。
     """
-    _load_job(job_id)                                   # 任务不存在则 404
-    base = os.path.join(_job_dir(job_id), "result")
+    job = _load_job(job_id)                             # 任务不存在则 404
+    base = _result_dir(job)                             # 续跑时指向原任务的 result
 
     def _listing(sub, exts):
         directory = os.path.join(base, sub)
@@ -1159,7 +1186,7 @@ async def api_job_pages(job_id: str):
 @app.get("/api/jobs/{job_id}/files/{rel_path:path}")
 async def api_job_file(job_id: str, rel_path: str):
     """产物文件服务。FileResponse 自带 Range 支持，视频才能拖进度条。"""
-    root = os.path.join(_job_dir(job_id), "result")
+    root = _result_dir(_load_job(job_id))        # 续跑时指向原任务的 result
     target = os.path.realpath(os.path.join(root, rel_path))
     if not target.startswith(os.path.realpath(root)):     # 防目录穿越
         raise HTTPException(status_code=403, detail="越权路径")

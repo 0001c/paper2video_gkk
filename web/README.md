@@ -109,6 +109,45 @@ python web/app.py --help             # 看全部选项
 
 ---
 
+## 接口一览（P1 后）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/options` | 语言/类型档位（从 `language_config` 反射，前端不硬编码）|
+| POST | `/api/ingest` | 上传论文 → 提取正文 → 预览 |
+| POST | `/api/jobs` | 创建任务（需要 `ingest_id` + `portrait_path`；PDF/Word 还要 `source_path`）|
+| GET | `/api/jobs` | 任务记录列表 |
+| GET | `/api/jobs/{id}` | 单个任务（含实时进度）|
+| GET | `/api/jobs/{id}/events` | SSE 进度流（只在内容变化时推，终态即结束）|
+| POST | `/api/jobs/{id}/cancel` | 取消（杀子进程）|
+| POST | `/api/jobs/{id}/rerun` | **续跑：默认只重跑 stage 2/3 且复用讲稿 ⇒ 零 API 费用** |
+| GET | `/api/jobs/{id}/artifacts` | 产物列表 |
+| GET | `/api/jobs/{id}/pages` | 逐页素材索引（幻灯片/音频/数字人/讲稿）|
+| GET | `/api/jobs/{id}/files/{rel}` | 产物文件（自带 Range，视频可拖进度条）|
+| GET | `/api/system/info` | 硬件 + 耗时标定值 |
+
+### 进度的两个来源，优先结构化
+
+1. `progress.jsonl` —— 流水线主动写（`src/progress_report.py`，一行一个 JSON）。
+   由环境变量 `PAPER2VIDEO_PROGRESS_FILE` 开关；**不设置就不生成任何文件**，
+   所以命令行直接跑 `pipeline.py` 的行为与以前完全一致。
+2. `run.log` + 正则 —— 兜底。零改造但脆（改一句 print 就失效），只在老任务
+   目录没有 jsonl 时用到。
+
+终态（已完成/失败/已取消）一律以**任务状态**为准，不从日志文本猜。
+
+### 改前端后请跑一次类型检查
+
+```bash
+npm run typecheck     # 等价于 tsc -b --force
+```
+
+**为什么单独列出**：`build` 脚本曾经带 `--noCheck`（只转译不检查），
+于是类型错误不会让构建失败 —— 已经因此潜伏过两个 bug
+（`ConfigProvider` 的 `locale` 传错被静默忽略、TDesign 主题 CSS 漏引入）。
+现已改为 `tsc -b && vite build`，但这个教训值得记住：
+**「能构建但行为不对」比构建失败难发现得多。**
+
 ## ⚠️ 改前端样式前必读：TDesign 的主题 CSS 必须显式引入
 
 `src/main.tsx` 里这一行**不能删**，而且必须在 `./styles.css` 之前：

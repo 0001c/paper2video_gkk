@@ -17,6 +17,71 @@ _OPENAI_COMPATIBLE_ALIASES = (
     'deepseek-reasoner',
 )
 
+# 上下文窗口（token）。只为消掉一行**看着像错误的 warning**，不参与任何业务逻辑。
+#
+# camel 的 UnifiedModelType 对"不在它 ModelType 表里的名字"会打一行：
+#   Unknown model 'deepseek-flash': context window size not defined.
+#   Defaulting to 999_999_999.
+# 这行不是错误：它只说明 camel 没登记这个名字，于是把上下文窗口当成 1e9。
+# 已登记的名字会返回真实值（实测 gpt-4o -> 128000）。
+#
+# 影响面很小 —— token_limit 只被 camel 的上下文摘要逻辑消费
+# （num_tokens > token_limit 时才触发），而本项目每个阶段都是**一次性 prompt**，
+# 远达不到上限、永远不会触发。但两点仍值得修：
+#   ① 日志里少一行"像错误"的 warning，演示与排查时不会被误导；
+#   ② 万一将来做多轮对话，camel 手里是一个真实上限，而不是 1e9（1e9 意味着
+#      **永远不触发摘要**，等于这层保护形同虚设）。
+_CONTEXT_WINDOWS = {
+    'deepseek-flash': 1_000_000,
+    'deepseek-v4-flash': 1_000_000,
+    'deepseek-chat': 128_000,
+    'deepseek-reasoner': 128_000,
+}
+
+
+def _register_context_windows():
+    """把上面的表补进 camel；失败不影响主流程（纯日志/元数据层面的改进）。
+
+    实现方式刻意保守：**只覆盖基类属性，且先查我们的表、查不到再交回原实现**。
+    已登记的模型是 ``ModelType`` 枚举成员、自带自己的 ``token_limit`` property，
+    因此完全不受影响（这一点实测确认过：gpt-4o 仍返回 128000）。
+    另外 fallback 保留了 camel 原来的 warning，所以别的未知模型行为不变。
+
+    可用 ``PAPER2VIDEO_CONTEXT_WINDOW`` 统一覆盖（换模型/换服务商时不用改代码）。
+    """
+    override = os.environ.get('PAPER2VIDEO_CONTEXT_WINDOW')
+    if override:
+        try:
+            value = int(override)
+        except ValueError:
+            print("[wei_utils] PAPER2VIDEO_CONTEXT_WINDOW={!r} 不是整数，已忽略".format(override))
+        else:
+            for name in _CONTEXT_WINDOWS:
+                _CONTEXT_WINDOWS[name] = value
+
+    try:
+        from camel.types.unified_model_type import UnifiedModelType
+    except Exception:
+        return                      # camel 结构变了也不能拖垮流水线
+
+    original = UnifiedModelType.__dict__.get('token_limit')
+    if not isinstance(original, property) or original.fget is None:
+        return
+    if getattr(original.fget, '_p2v_patched', False):
+        return                      # 已被打过（重复 import 时幂等）
+
+    def token_limit(self):
+        known = _CONTEXT_WINDOWS.get(str(self))
+        if known is not None:
+            return known
+        return original.fget(self)
+
+    token_limit._p2v_patched = True
+    UnifiedModelType.token_limit = property(token_limit)
+
+
+_register_context_windows()
+
 
 def _max_output_tokens():
     """输出 token 上限（可用 ``PAPER2VIDEO_MAX_TOKENS`` 覆盖），默认 32768。

@@ -31,6 +31,12 @@ FAILURES = []
 
 
 def check(name, ok, detail=""):
+    """`detail` 必须描述**观察到的事实**（如 "tts=2 / talking=1"）。
+
+    ⚠️ 不要写成否定句（如"没找到该赋值"）——它**成功时也会打印**，
+    于是会出现「✔ 某某检查 — 没找到某某」这种自相矛盾的行，
+    读日志的人（包括我自己）会被误导成失败。实测踩过。
+    """
     mark = "✔" if ok else "✘"
     print("   %s %s%s" % (mark, name, ("  — " + detail) if detail else ""))
     if not ok:
@@ -726,6 +732,91 @@ def test_portrait_upload(app):
     return ok
 
 
+def test_log_encoding_and_model_registry(app):
+    """日志编码 + 模型上下文窗口登记。
+
+    这两件事都属于"不会崩、但会静默出错"的类别，而且**在开发机上不容易暴露**：
+    ① `run.log` 有两个写入者、编码不同（父进程 UTF-8 写自己的行，子进程 stdout 按
+       Windows 控制台编码 GBK 输出）→ 混合文件用任何单一解码器都读不了：
+       界面日志尾巴变乱码，日志兜底解析的正则命中变成 0。
+    ② camel 没登记我们起的模型名 → 打一行
+       "Unknown model ... Defaulting to 999_999_999."，看着像错误，其实不是。
+    """
+    print()
+    print("=" * 66)
+    print("[7] 日志编码统一 + 模型上下文窗口登记")
+    print("=" * 66)
+    ok = True
+
+    # ── ① 混合编码的 run.log 必须能读全（这条是硬断言，编码是确定的）──
+    job_id = "smoke_enc_" + uuid.uuid4().hex[:6]
+    jd = app._job_dir(job_id)
+    try:
+        os.makedirs(jd, exist_ok=True)
+        app._save_job({"id": job_id, "status": "running", "stage": 2, "phase": "合成语音"})
+        with open(os.path.join(jd, "run.log"), "wb") as fh:
+            fh.write("### 命令 pipeline.py\n".encode("utf-8"))          # 父进程风格
+            fh.write("[struct] 正在把论文转成 LaTeX 工程\n".encode("utf-8"))
+            fh.write("[speech_gen] 第 0 页合成完成\n".encode("gbk"))     # 子进程风格
+            fh.write("[speech_gen] 第 1 页合成完成\n".encode("gbk"))
+            fh.write("[talking_gen] 第 0 页完成\n".encode("gbk"))
+
+        log_path = os.path.join(jd, "run.log")
+        text = app._read_log_text(log_path)
+        ok &= check("混合编码日志能读全（utf-8 行与 gbk 行都在、无替换字符）",
+                    "\ufffd" not in text and "LaTeX" in text and "第 1 页合成完成" in text,
+                    "替换字符 %d 个 / 长度 %d" % (text.count("\ufffd"), len(text)))
+
+        try:
+            open(log_path, "rb").read().decode("utf-8")
+            strict = True
+            strict_note = "整文件可解码"
+        except UnicodeDecodeError as exc:
+            strict = False
+            strict_note = "第 %d 字节处解码失败" % exc.start
+        ok &= check("对照组：整文件严格 utf-8 解码会失败（证明这是一个真问题）",
+                    not strict, strict_note)
+
+        prog = app.read_progress(app._load_job(job_id))
+        ok &= check("从 GBK 行里数出页数（修复前正则命中 0）",
+                    prog["tts_done"] == 2 and prog["talking_done"] == 1,
+                    "tts=%s talking=%s" % (prog["tts_done"], prog["talking_done"]))
+        ok &= check("日志尾巴可读、不是乱码",
+                    bool(prog["tail"]) and all("\ufffd" not in ln for ln in prog["tail"]),
+                    " / ".join(prog["tail"])[-90:])
+    finally:
+        shutil.rmtree(jd, ignore_errors=True)
+
+    # ── ② 选项层：子进程环境必须显式统一编码 ──
+    # 行为层已验证过（真实任务的 run.log 现在可严格 utf-8 解码），这里做静态断言，
+    # 防止以后有人把这一行删掉 —— 删掉后不会立刻报错，只会让日志重新变乱码。
+    src = io.open(os.path.join(os.path.dirname(os.path.abspath(app.__file__)), "app.py"),
+                  encoding="utf-8").read()
+    ok &= check('_run_job 里显式设置了 PYTHONIOENCODING=utf-8',
+                'env["PYTHONIOENCODING"] = "utf-8"' in src,
+                "源码中出现 %d 次" % src.count('PYTHONIOENCODING'))
+
+    # ── ③ 模型名已登记上下文窗口 ──
+    if app.P2V_SRC not in sys.path:
+        sys.path.insert(0, app.P2V_SRC)
+    try:
+        import wei_utils  # noqa: F401  导入即触发注册
+        from camel.types import UnifiedModelType
+        model = wei_utils._OPENAI_COMPATIBLE_ALIASES[0]
+        got = UnifiedModelType(model).token_limit
+        ok &= check("我们的模型名已登记上下文窗口（不再退化成 1e9）",
+                    got != 999_999_999 and got >= 128_000,
+                    "%s -> %s" % (model, got))
+        ok &= check("已登记的模型不受影响（gpt-4o 仍是 128000）",
+                    UnifiedModelType("gpt-4o").token_limit == 128_000,
+                    "gpt-4o -> %s" % UnifiedModelType("gpt-4o").token_limit)
+    except Exception as exc:
+        ok &= check("模型上下文窗口登记可导入", False,
+                    "%s: %s" % (type(exc).__name__, exc))
+
+    return ok
+
+
 def main():
     app = load_app()
     results = [
@@ -735,6 +826,7 @@ def main():
         test_pages_and_rerun(app),
         test_struct_prepare(app),
         test_portrait_upload(app),
+        test_log_encoding_and_model_registry(app),
     ]
     print()
     print("=" * 66)

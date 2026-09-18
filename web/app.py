@@ -189,6 +189,36 @@ _PHASE_LABEL = {
 }
 
 
+def _read_log_text(path):
+    """读日志文本，**逐行**做编码回落（utf-8 → gbk）。
+
+    为什么不能整文件用一种编码：`run.log` 里有两个写入者，编码不同 ——
+    父进程用 UTF-8 写自己的行（`_log_line`），子进程的 stdout 默认按 Windows
+    控制台编码（GBK）输出。实测这种混合文件**用 utf-8 与 gbk 解码都会抛
+    UnicodeDecodeError**，而且按 utf-8 读出来是一堆替换字符：
+      · 界面上的「日志尾巴」变成乱码；
+      · 日志兜底解析彻底失效 —— 数「第 N 页合成完成」的正则命中 **0** 条。
+
+    逐行回落可以同时兼容三种情况：新日志（已在 `_run_job` 里统一成 UTF-8）、
+    历史混合日志、纯 GBK 老日志。逐行而不是整文件，是因为**同一文件里就混着两种编码**。
+    """
+    try:
+        raw = open(path, "rb").read()
+    except OSError:
+        return ""
+    lines = []
+    for line in raw.split(b"\n"):
+        for enc in ("utf-8", "gbk"):
+            try:
+                lines.append(line.decode(enc))
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            lines.append(line.decode("utf-8", errors="replace"))
+    return "\n".join(lines)
+
+
 def _read_tail(job_dir, count=6):
     """日志尾巴。
 
@@ -198,10 +228,7 @@ def _read_tail(job_dir, count=6):
     log_path = os.path.join(job_dir, "run.log")
     if not os.path.isfile(log_path):
         return []
-    try:
-        text = io.open(log_path, encoding="utf-8", errors="replace").read()
-    except Exception:
-        return []
+    text = _read_log_text(log_path)
     return [ln.strip() for ln in text.splitlines() if ln.strip()][-count:]
 
 
@@ -251,10 +278,7 @@ def _progress_from_log(job, job_dir):
     log_path = os.path.join(job_dir, "run.log")
     if not os.path.isfile(log_path):
         return None
-    try:
-        text = io.open(log_path, encoding="utf-8", errors="replace").read()
-    except Exception:
-        return None
+    text = _read_log_text(log_path)
 
     info = {"source": "log",
             "tts_done": len(re.findall(r"第 \d+ 页合成完成", text)),
@@ -570,6 +594,14 @@ async def _run_job(job):
     # P1：告诉流水线把结构化进度写到哪里。未设置该环境变量时，
     # 流水线**不生成任何额外文件**（命令行直接跑 pipeline.py 行为完全不变）。
     env["PAPER2VIDEO_PROGRESS_FILE"] = os.path.join(job_dir, "progress.jsonl")
+    # run.log 的编码必须统一。父进程用 UTF-8 写自己的行（_log_line），而子进程的
+    # stdout 默认按 **Windows 控制台编码（GBK）** 输出 —— 两种编码混在同一个文件里，
+    # 实测 utf-8 与 gbk **解码都会抛 UnicodeDecodeError**，后果是：
+    #   · 界面上的日志尾巴全是乱码（"第 5 页合成完成" → "�� 5 ҳ�ϳ����"）；
+    #   · 日志兜底解析失效（数页数的正则命中 0 条）。
+    # 只设 PYTHONIOENCODING（**不设 PYTHONUTF8**），把影响限制在标准流上，
+    # 不去改变子进程里 open() 的默认编码。
+    env["PYTHONIOENCODING"] = "utf-8"
     if _SESSION_KEYS["api_key"]:
         env["OPENAI_API_KEY"] = _SESSION_KEYS["api_key"]
         env["OPENAI_COMPATIBLE_MODEL_API_KEY"] = _SESSION_KEYS["api_key"]

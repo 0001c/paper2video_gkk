@@ -79,6 +79,12 @@ PDF 必须行合并且句末判据同时认中英文标点。**真实 Word 不�
 成本口径：`result/<名字>/token.json`；一篇约 5.6 万 token，**讲稿占 76%**，
 故 `--reuse_script` 是省钱主力。
 
+**日志编码必须统一**：`run.log` 同时是父进程写入目标与子进程 stdout 目标，
+子进程默认按 Windows 控制台编码（GBK）输出 → 混合编码文件任何单一解码器都读不了，
+表现为界面乱码 + **日志解析正则命中 0 条**（不报错）。
+已修：子进程加 `PYTHONIOENCODING=utf-8`；读取端 `_read_log_text()` 逐行回落。
+**迁 Linux 后这一行仍要保留**（Linux 默认 UTF-8，属无操作，但别删）。
+
 架构：FastAPI + 单 worker 串行队列（单卡并行必 OOM）；流水线走子进程
 `Popen(argv, cwd=绝对路径)` 不经 shell；只监听 127.0.0.1。
 

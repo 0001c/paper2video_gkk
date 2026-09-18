@@ -71,17 +71,17 @@ type SysInfo = {
        "还活着"由 phase_elapsed_s / phase_expected_s 表达。 */
 type Progress = {
   /* 当前阶段：key 给步骤条用，phase 是中文文案 */
-  phase_key: string;
+  phase_key?: string;
   phase: string;
-  phase_index: number;
-  phase_count: number;
+  phase_index?: number;
+  phase_count?: number;
   /* 阶段加权总进度（0~100） */
-  overall_pct: number;
+  overall_pct?: number;
   /* 只有 has_pages 的阶段才有值，其余为 null */
-  page_done: number | null;
-  page_total: number | null;
-  phase_elapsed_s: number | null;
-  phase_expected_s: number | null;
+  page_done?: number | null;
+  page_total?: number | null;
+  phase_elapsed_s?: number | null;
+  phase_expected_s?: number | null;
   /* 兼容字段（后端仍下发）：旧口径的页数计数 */
   tts_done: number;
   talking_done: number;
@@ -90,9 +90,22 @@ type Progress = {
   stalled_seconds: number | null;
   /* 卡住由**后端按阶段**判定：数字人阶段本来就几分钟没有新记录，
      用同一个阈值会在整个阶段持续误报「疑似卡住」。 */
-  stalled: boolean;
-  stalled_limit_s: number;
+  stalled?: boolean;
+  stalled_limit_s?: number;
 };
+
+/* 新版字段缺失时的兜底（= 修复前的口径）。
+ *
+ * 为什么需要：静态前端是由后端**直接服务**的文件，浏览器一刷新就会拿到新界面，
+ * 而服务进程可能还在跑旧代码 —— 两边短暂不同步是常态。这时 `overall_pct`
+ * 不存在，若直接用 `?? 0` 就会显示一个假的 0%，反而更像坏掉了。
+ * 退回旧口径不精确（会回跳/停在满格），但至少是个有意义的数。 */
+function legacyPct(p?: Progress): number {
+  if (!p) return 0;
+  const total = p.total_pages || 0;
+  const done = p.talking_done || p.tts_done || 0;
+  return total ? Math.min(100, Math.round((done / total) * 100)) : 0;
+}
 
 type Job = {
   id: string;
@@ -482,7 +495,7 @@ export default function App() {
   // 旧公式 `talking_done || tts_done` 造成两个可见的错：幻灯片/讲稿阶段永远是 0%，
   // 数字人开工时从 100% 掉回 7%。现在用阶段加权（口径见 app.py 的 _phase_overall_pct）。
   const p = job?.progress;
-  const pct = job?.status === "done" ? 100 : p?.overall_pct ?? 0;
+  const pct = job?.status === "done" ? 100 : p?.overall_pct ?? legacyPct(p);
   const phases: Phase[] = opts?.phases ?? [];
   const curIdx = p?.phase_index ?? -1;
   const stalled = !!p?.stalled;

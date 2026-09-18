@@ -23,6 +23,28 @@ PACKAGE_ROOT = _SRC_DIR.parent          # Paper2Video-main/
 REPO_ROOT = PACKAGE_ROOT.parent         # 仓库根，.env 在这里
 
 
+# ── 让 stdout / stderr 永不因编码问题崩溃 ──────────────────────────────────
+# 上游代码里有几处带 emoji 的 print（实测：cursor_render.py 的 "\n\u2705 Done!"、
+# cursor_gen.py 的两处 "\u26a0\ufe0f"、slide_code_gen 的一处）。
+# 当 stdout 被重定向到文件时，Python 按**平台默认编码**输出（Windows 上是 GBK），
+# emoji 编不出来就抛 UnicodeEncodeError —— 而它在流水线**最末端**才触发
+# （合片完成后那一行 print），实测把 20 分钟、11 页数字人全做完的活儿直接打断。
+#
+# 两层保护，缺一不可：
+#   ① 启动器侧设 `PYTHONIOENCODING=utf-8`（web/app.py 的子进程环境已设）；
+#   ② 这里把 errors 设成 `replace` 兜底 —— 命令行直接跑、或别的方式启动时
+#      没设环境变量，也只是把那个字符打成 "?"，而不是崩掉整条流水线。
+#
+# 放在 pv_env 里是因为它被 9 个模块导入（pipeline / pipeline_light / cursor_gen /
+# cursor_render / speech_gen / talking_gen / subtitle_render / wei_utils …），
+# 于是所有入口自动获得这层保护。放在模块级，import 即生效。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except Exception:
+        pass        # stdout 可能是 None 或被替换成非 TextIOWrapper，忽略即可
+
+
 def _parse_dotenv(path):
     """极简 .env 解析：支持 KEY=VALUE、# 注释、空行、值两侧引号。"""
     values = {}

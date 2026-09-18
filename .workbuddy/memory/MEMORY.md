@@ -88,6 +88,12 @@ libx264 拒绝编码 → temp.mp4 为 0 字节 → **整批 11 页"跑完但无�
 ⚠️ **改的是上游仓库、不在本仓库 Git 里，学校服务器重装后必须重打**；
 自检：`python scripts/verify_musetalk_patch.py`（talking_gen 也会在批量入口提示）。
 
+**stdout 兜底**：上游有 4 处 print 带 emoji（`cursor_render.py` 的 \u2705、
+`cursor_gen.py` 与 `slide_code_gen` 的 \u26a0），GBK stdout 下会抛
+UnicodeEncodeError，且崩点在流水线**最末端**。已在 `pv_env.py` 模块级做
+`stdout/stderr.reconfigure(errors="replace")`（被 9 个模块导入 ⇒ 覆盖所有入口），
+配合 web 侧 `PYTHONIOENCODING=utf-8`。
+
 **日志编码必须统一**：`run.log` 同时是父进程写入目标与子进程 stdout 目标，
 子进程默认按 Windows 控制台编码（GBK）输出 → 混合编码文件任何单一解码器都读不了，
 表现为界面乱码 + **日志解析正则命中 0 条**（不报错）。

@@ -123,8 +123,13 @@ if __name__ == "__main__":
     # 音频（不同语言共用一段参考音频会让音色和发音都别扭）。
     lang = language_config.resolve(args.slide_lang, args.script_lang, args.video_lang)
     print("[pipeline] 语言档位：{}".format(lang["desc"]))
+    # ⚠️ ref_text 必须**跟着 ref_audio 走**（2026-09-19 修，理由同 pipeline.py）：
+    # 各自 `or lang[...]` 会把语言档位的文本配到自定义音频上，克隆保真度下降
+    # 且不报错。给了自定义音频却没给文本时保持 None，交给 ASR 转写。
+    custom_audio = args.ref_audio
     args.ref_audio = args.ref_audio or lang["ref_audio"]
-    args.ref_text = args.ref_text or lang["ref_text"]
+    args.ref_text = args.ref_text if args.ref_text is not None else (
+        None if custom_audio else lang["ref_text"])
     if not args.tts_language:
         args.tts_language = lang["tts_language"]
 

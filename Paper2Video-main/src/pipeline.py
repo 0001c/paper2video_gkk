@@ -177,8 +177,15 @@ if __name__ == '__main__':
     if slide_extra_prompt:
         print("[pipeline] 论文类型显式指定为 {}，已附加覆盖指令".format(
             args.paper_type))
+    # ⚠️ ref_text 必须**跟着 ref_audio 走**（2026-09-19 修）。
+    # 原先是各自 `or lang[...]`：于是"传了自定义 ref_audio、没传 ref_text"时，
+    # 会把**语言档位那一段的文本**配到我们的音频上 —— 文本与音频不是同一句话，
+    # 零样本克隆的保真度会明显下降，而且**完全不报错**，只听得出"音色不太像"。
+    # 现在：给了自定义音频但没给文本 → 保持 None，交由 speech_gen 走 ASR 转写。
+    custom_audio = args.ref_audio
     args.ref_audio = args.ref_audio or lang["ref_audio"]
-    args.ref_text = args.ref_text or lang["ref_text"]
+    args.ref_text = args.ref_text if args.ref_text is not None else (
+        None if custom_audio else lang["ref_text"])
     
     cursor_img_path = "./cursor_image/red.png"
     os.makedirs(args.result_dir, exist_ok=True) # result dir

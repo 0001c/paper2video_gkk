@@ -287,6 +287,28 @@ html, body {
 }
 .checkline input { accent-color: var(--paper-accent); }
 
+/* 音色描述 / 参考文本这类多行输入。
+   用自绘的 textarea 而不是 TDesign 的 Input：这两处都是"写一段话"，
+   需要的是能看到 3~4 行、且与页面纸感一致，而不是带计数器的单行输入框。 */
+.voiceinput {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--paper-ink);
+  background: #fff;
+  border: 1px solid var(--paper-rule);
+  border-radius: var(--td-radius-default);
+  padding: 8px 10px;
+  resize: vertical;
+}
+.voiceinput:focus {
+  outline: none;
+  border-color: var(--paper-accent);
+}
+.voiceinput::placeholder { color: var(--paper-ink-faint); }
+
 /* ── 日志尾巴：等宽、低对比、可滚动 ── */
 .logtail {
   margin-top: 14px;

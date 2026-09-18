@@ -41,6 +41,37 @@ type Options = {
   paper_types: Opt[];
   accept_formats: string[];
   phases: Phase[];
+  voice: Voices;
+};
+
+/* 音色：候选与"可提交的规格"都由后端组装好（`spec` 字段），前端只负责
+   把选中的 spec 原样塞进 config。
+   为什么这样切：预置 / 描述设计 / 上传三种来源的字段不同，若让前端也拼一遍，
+   就成了"同一件事两处各拼一次"—— 这个项目已经在"产物路径"上踩过那个坑。 */
+type VoiceSpec = {
+  kind: "default" | "preset" | "design" | "upload";
+  voice?: string;
+  prompt?: string;
+  path?: string;
+  ref_text?: string | null;
+};
+
+type VoiceItem = {
+  label: string;
+  kind: string;
+  lang?: string | null;
+  gender?: string;
+  duration_s?: number | null;
+  sample_url?: string;
+  spec: VoiceSpec;
+};
+
+type Voices = {
+  available: boolean;
+  by_lang: Record<string, { presets: VoiceItem[]; custom: VoiceItem[] }>;
+  ref_texts: Record<string, string>;
+  limits: { min_s: number; max_s: number };
+  accept_audio: string[];
 };
 
 /* 本机配置 + 耗时标定值（来自 /api/system/info）。
@@ -285,7 +316,97 @@ export default function App() {
   const [jobs, setJobs] = useState<any[]>([]);
   const [pages, setPages] = useState<any | null>(null);
   const [rerunning, setRerunning] = useState(false);
+  // ④ 音色。四种来源最终都归结为"一份参考音频 + 它的参考文本"：
+  //    default 用内置（零依赖）、preset 用 MiMo 预置音色、design 用描述生成、
+  //    upload 用使用者自己的音频。生成与缓存都在后端（同一个音色只生成一次）。
+  const [voiceMode, setVoiceMode] = useState<VoiceSpec["kind"]>("default");
+  // 直接存整条候选（而不是只存音色名）：候选里已经带了后端组装好的 spec，
+  // "上传的音频"这类候选根本没有音色名，只存名字就没法还原成 spec。
+  const [presetPick, setPresetPick] = useState<VoiceItem | null>(null);
+  const [designPrompt, setDesignPrompt] = useState("");
+  const [uploadSpec, setUploadSpec] = useState<VoiceSpec | null>(null);
+  const [uploadText, setUploadText] = useState("");
+  const [uploadInfo, setUploadInfo] = useState<any | null>(null);
+  const [preview, setPreview] = useState<any | null>(null);
+  const [voiceBusy, setVoiceBusy] = useState(false);
+
   const { job, streamState } = useJobStream(jobId);
+
+  // 候选音色：预置 + 我保存过的（按讲稿语言过滤，后端已组装好 spec）
+  const voiceList: VoiceItem[] = useMemo(() => {
+    const bucket = opts?.voice?.by_lang?.[scriptLang];
+    if (!bucket) return [];
+    return [...bucket.presets, ...bucket.custom];
+  }, [opts, scriptLang]);
+
+  const sameSpec = (a: VoiceSpec | null, b: VoiceSpec) =>
+    JSON.stringify(a) === JSON.stringify(b);
+
+  // 讲稿语言一变，选中的预置音色很可能已不在候选里（中英是两组不同的音色），
+  // 这时必须清掉 —— 否则会提交一个跨语言的音色，音色和发音都会打折扣。
+  useEffect(() => {
+    if (presetPick && !voiceList.some((it) => sameSpec(presetPick.spec, it.spec))) {
+      setPresetPick(null);
+      setPreview(null);
+    }
+  }, [voiceList, presetPick]);
+
+  const voiceSpecNow = useCallback((): VoiceSpec => {
+    if (voiceMode === "preset") return presetPick?.spec ?? { kind: "default" };
+    if (voiceMode === "design") return { kind: "design", prompt: designPrompt };
+    if (voiceMode === "upload") {
+      // 参考文本以输入框为准：使用者常常是"先传音频、想起文本再补"，
+      // 不该逼他重新上传一遍。
+      return uploadSpec ? { ...uploadSpec, ref_text: uploadText.trim() || null } : { kind: "default" };
+    }
+    return { kind: "default" };
+  }, [voiceMode, presetPick, designPrompt, uploadSpec, uploadText]);
+
+  // 试听 = 让后端生成（或取缓存）这段参考音频，然后直接播它。
+  // 听参考音频 = 听最终音色（逐页合成只是把同一音色套到别的文本上）。
+  const genVoice = useCallback(
+    async (force: boolean) => {
+      setVoiceBusy(true);
+      const { data } = await api.post("/api/voices/generate", {
+        kind: voiceMode === "design" ? "design" : "preset",
+        voice: presetPick?.spec.voice,
+        prompt: designPrompt || undefined,
+        lang: scriptLang,
+        force,
+      });
+      setVoiceBusy(false);
+      if (!data.ok) {
+        MessagePlugin.error(`${data.error || "生成失败"}${data.detail ? "：" + data.detail : ""}`);
+        return;
+      }
+      setPreview(data);
+      MessagePlugin.success(
+        data.cached ? "已取回这个音色（缓存命中，未调用接口）"
+                    : "音色已生成并保存 —— 以后再用它不会重复调用接口",
+      );
+    },
+    [voiceMode, presetPick, designPrompt, scriptLang],
+  );
+
+  const uploadVoice = useCallback(
+    async (f: File) => {
+      setVoiceBusy(true);
+      const form = new FormData();
+      form.append("paper", f);                 // 字段名沿用上传接口的约定
+      form.append("ref_text", uploadText);
+      const { status, data } = await api.postForm("/api/voices/upload", form);
+      setVoiceBusy(false);
+      if (status !== 200 || !data.ok) {
+        setUploadSpec(null);
+        setUploadInfo(null);
+        return MessagePlugin.error(data.error || "参考音频上传失败");
+      }
+      setUploadSpec(data.spec);
+      setUploadInfo(data);
+      MessagePlugin.success(`参考音频已就绪（${data.duration_s ?? "?"} 秒）`);
+    },
+    [uploadText],
+  );
 
   useEffect(() => {
     api.get("/api/options").then(setOpts).catch(() => {});
@@ -366,6 +487,17 @@ export default function App() {
     if (!ingest || ingest.error) return MessagePlugin.warning("请先上传论文并完成提取预览");
     if (!portraitFile) return MessagePlugin.warning("请上传人像图（数字人环节必需）");
     if (!apiKey) return MessagePlugin.warning("请填写 API Key（幻灯片与讲稿生成需要）");
+    // 音色没选全就提交，会静默回落到内置音色 —— 使用者只会觉得"我选的音色没生效"。
+    // 在这里拦住，比在成片里听出来划算得多。
+    if (voiceMode === "preset" && !presetPick) {
+      return MessagePlugin.warning("请选择一个预置音色（或改回「内置默认音色」）");
+    }
+    if (voiceMode === "design" && !designPrompt.trim()) {
+      return MessagePlugin.warning("请填写音色描述（或改回「内置默认音色」）");
+    }
+    if (voiceMode === "upload" && !uploadSpec) {
+      return MessagePlugin.warning("请先上传参考音频（或改回「内置默认音色」）");
+    }
 
     // 人像走**专用接口**。
     // ⚠️ 不能复用 /api/ingest：那个接口做的是"论文 → 正文提取"，
@@ -398,12 +530,22 @@ export default function App() {
         script_lang: scriptLang,
         paper_type: paperType,
         reuse_script: false,
+        // 音色：只提交"选择"，参考音频/文本由后端解析（能把失败回落成内置音色，
+        // 并把实际用了哪个音色回给界面 —— 见响应里的 voice_note）。
+        voice: voiceSpecNow(),
       },
     });
     if (status !== 200) return MessagePlugin.error(data.detail || "创建任务失败");
     setJobId(data.job_id);
     setArtifacts([]);
-  }, [ingest, portraitFile, apiKey, slideLang, scriptLang, paperType]);
+    // 音色的最终结论必须回显：使用者选了"冰糖"却听到原来的男声时，
+    // 这一句就是唯一能解释原因的地方。
+    if (data.voice_note) {
+      if (data.voice_active) MessagePlugin.success(`已入队 · 音色：${data.voice_note}`);
+      else MessagePlugin.info(`已入队 · 音色：${data.voice_note}`);
+    }
+  }, [ingest, portraitFile, apiKey, apiBase, slideLang, scriptLang, paperType,
+      voiceMode, presetPick, designPrompt, uploadSpec, uploadText, voiceSpecNow]);
 
   // 任务列表：每 5 秒刷新。本地工具，这点开销可以忽略，
   // 换来的是"后端重启前留下的任务也能看到最新状态"。
@@ -617,7 +759,7 @@ export default function App() {
               }}
             />
             <div className="hint" style={{ fontSize: 11.5, color: "var(--paper-ink-faint)", marginTop: 6 }}>
-              参考音频可留空 —— 会按讲稿语言自动选择音色
+              人像只用于数字人（画面角落的小窗）。音色见下一节。
             </div>
             {/* 人像校验结果内联在 Dropzone 下方（不用弹窗，避免遮住刚要确认的东西） */}
             {portraitInfo && (
@@ -733,10 +875,185 @@ export default function App() {
         </div>
       </section>
 
-      {/* ③ API key */}
+      {/* ③ 音色 —— 四种来源最终都归结为"一份参考音频 + 它的参考文本"。
+          逐页合成始终是**本地** Qwen3-TTS：云端只用来造这一小段音色样本，
+          所以免费额度、断网、没配 key 都不会影响出片（会回落到内置音色）。 */}
       <section className="section">
         <div className="section-head">
           <span className="section-num">3</span>
+          <h2 className="section-title">音色</h2>
+          <span className="section-note">
+            {opts?.voice?.available
+              ? "可生成 / 可上传"
+              : "未配置 MIMO_API_KEY —— 仍可用内置音色与上传"}
+          </span>
+        </div>
+
+        <div className="field">
+          <label>讲稿由谁来讲</label>
+          <RadioGroup value={voiceMode} onChange={(v) => { setVoiceMode(v as VoiceSpec["kind"]); setPreview(null); }}>
+            <Radio value="default">内置默认音色（零依赖，不会失败）</Radio>
+            <Radio value="preset" disabled={!opts?.voice?.available}>
+              预置音色（推荐 · 中英男女各 2 个）
+            </Radio>
+            <Radio value="design" disabled={!opts?.voice?.available}>
+              用一句话描述生成
+            </Radio>
+            <Radio value="upload">上传我的音频</Radio>
+          </RadioGroup>
+        </div>
+
+        {voiceMode === "default" && (
+          <div className="hint" style={{ marginTop: 10 }}>
+            用讲稿语言对应的内置参考音频（现在是{scriptLang === "zh" ? "中文" : "英文"}）。
+            它不联网、不需要 key，也永远不会失败 —— 想换人声就选上面任意一项。
+          </div>
+        )}
+
+        {voiceMode === "preset" && (
+          <div className="grid grid-2" style={{ marginTop: 12 }}>
+            <div className="field">
+              <label>选择音色</label>
+              <Select
+                value={presetPick ? JSON.stringify(presetPick.spec) : ""}
+                onChange={(v) => {
+                  const found = voiceList.find((it) => JSON.stringify(it.spec) === v) ?? null;
+                  setPresetPick(found);
+                  setPreview(null);
+                }}
+                options={voiceList.map((it) => ({
+                  label: it.label + (it.duration_s ? ` · ${it.duration_s}s` : ""),
+                  value: JSON.stringify(it.spec),
+                }))}
+                style={{ width: "100%" }}
+              />
+              <div className="hint">
+                只列出与讲稿语言相同的音色 —— 跨语言克隆会让音色和发音都打折扣；
+                列表末尾是"我保存过的音色"（设计出来的、上传过的）。
+              </div>
+            </div>
+            <div className="field">
+              <label>试听</label>
+              <div className="actions">
+                <Button
+                  variant="outline"
+                  loading={voiceBusy}
+                  disabled={!presetPick}
+                  onClick={() => genVoice(false)}
+                >
+                  生成并试听
+                </Button>
+                <span className="hint">同一个音色只生成一次，之后走缓存</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {voiceMode === "design" && (
+          <div style={{ marginTop: 12 }}>
+            <div className="field">
+              <label>音色描述（1~4 句）</label>
+              <textarea
+                className="voiceinput"
+                rows={3}
+                value={designPrompt}
+                onChange={(e) => setDesignPrompt(e.target.value)}
+                placeholder="例：三十多岁的女性学者，音色清亮而稳，语速适中，咬字清晰，像在讲台上讲课。"
+              />
+              <div className="hint">
+                写法：性别年龄 + 音色质感 + 语速节奏（可选：角色 / 场景）。
+                别写混响、EQ 这类后期处理词，模型会忽略它们。
+              </div>
+            </div>
+            <div className="actions">
+              <Button
+                variant="outline"
+                loading={voiceBusy}
+                disabled={!designPrompt.trim()}
+                onClick={() => genVoice(false)}
+              >
+                生成并试听
+              </Button>
+              <Button
+                variant="outline"
+                loading={voiceBusy}
+                disabled={!designPrompt.trim() || !preview}
+                onClick={() => genVoice(true)}
+              >
+                重新生成
+              </Button>
+              <span className="hint">
+                同一段描述每次结果略有不同 —— 不满意就重掷；生成出来就自动存进"我的音色"，可反复用
+              </span>
+            </div>
+          </div>
+        )}
+
+        {voiceMode === "upload" && (
+          <div className="grid grid-2" style={{ marginTop: 12 }}>
+            <Dropzone
+              label="参考音频"
+              hint="5~15 秒、单人、无背景音乐；wav / mp3 / m4a / flac"
+              accept="audio/*"
+              picked={uploadInfo ? `已就绪 · ${uploadInfo.duration_s} 秒` : null}
+              onPick={uploadVoice}
+            />
+            <div className="field">
+              <label>参考文本（强烈建议填写）</label>
+              <textarea
+                className="voiceinput"
+                rows={3}
+                value={uploadText}
+                onChange={(e) => setUploadText(e.target.value)}
+                placeholder="把这段音频里说的话原样打出来"
+              />
+              <div className="hint">
+                留空会交给 ASR 自动转写 —— 实测<b>可能转错</b>，
+                而错的参考文本会让克隆出来的音色跑偏（这是本项目的已知坑）。
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 试听：参考音频就是这个音色的定义，听到它=听到最终音色 */}
+        {voiceMode !== "upload" && preview && (
+          <div className="notice info" style={{ marginTop: 12 }}>
+            <div className="statusline">
+              <span className="dot ok" />
+              <span>
+                试听 · {preview.duration_s} 秒
+                {preview.cached ? "（取自已保存的音色）" : "（刚生成，已保存）"}
+              </span>
+            </div>
+            <audio controls src={preview.sample_url} style={{ width: "100%", marginTop: 6 }} />
+            <div className="hint" style={{ marginTop: 6 }}>它念的是：{preview.ref_text}</div>
+          </div>
+        )}
+        {voiceMode === "upload" && uploadInfo && (
+          <div className="notice info" style={{ marginTop: 12 }}>
+            <div className="statusline">
+              <span className="dot ok" />
+              <span>试听 · {uploadInfo.duration_s} 秒</span>
+            </div>
+            <audio controls src={uploadInfo.sample_url} style={{ width: "100%", marginTop: 6 }} />
+          </div>
+        )}
+        {voiceMode === "upload" && uploadInfo?.warnings?.map((text: string) => (
+          <div className="notice warn" key={text} style={{ marginTop: 8, fontSize: 11.5 }}>
+            <span>{text}</span>
+          </div>
+        ))}
+
+        <div className="hint" style={{ marginTop: 10 }}>
+          音色只影响讲稿的说话人。生成动作每篇论文最多一次（同一个音色之后走缓存），
+          写在服务端的 <code>MIMO_API_KEY</code> 上，不需要你额外配置。
+        </div>
+      </section>
+
+      {/* ④ API key */}
+      <section className="section">
+        <div className="section-head">
+          <span className="section-num">4</span>
           <h2 className="section-title">接口凭据</h2>
           <span className="section-note">
             {rememberKey ? "保存在本机浏览器" : "仅本次会话（刷新即丢）"}
@@ -798,7 +1115,7 @@ export default function App() {
       {/* ④ 运行 */}
       <section className="section">
         <div className="section-head">
-          <span className="section-num">4</span>
+          <span className="section-num">5</span>
           <h2 className="section-title">运行</h2>
           <span className="section-note">{running ? "任务执行中" : "未运行"}</span>
         </div>
@@ -992,7 +1309,7 @@ export default function App() {
       {/* ⑤ 任务记录（P1）：续跑是省钱主力，界面上不做就浪费了 */}
       <section className="section">
         <div className="section-head">
-          <span className="section-num">5</span>
+          <span className="section-num">6</span>
           <h2 className="section-title">任务记录</h2>
           <span className="section-note">续跑只重跑 stage 2/3，复用已有讲稿</span>
         </div>
@@ -1013,6 +1330,13 @@ export default function App() {
                   {j.config?.stages ? ` · stage ${j.config.stages.join("")}` : ""}
                   {j.config?.reuse_script ? " · 复用讲稿" : ""}
                   {j.resumed_from ? " · 续跑" : ""}
+                  {/* 音色：任务记录里显示用了哪个 —— 否则事后只能靠听或翻 run.log */}
+                  {j.config?.voice && j.config.voice.kind !== "default"
+                    ? ` · 音色 ${
+                        j.config.voice.voice
+                        || (j.config.voice.kind === "design" ? "自定义" : "上传")
+                      }`
+                    : ""}
                 </span>
                 <span className="jactions">
                   <button type="button" className="linkbtn" onClick={() => setJobId(j.id)}>

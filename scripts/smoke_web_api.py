@@ -37,6 +37,14 @@ def check(name, ok, detail=""):
     于是会出现「✔ 某某检查 — 没找到某某」这种自相矛盾的行，
     读日志的人（包括我自己）会被误导成失败。实测踩过。
     """
+    # 两个强转都是被真实故障逼出来的：
+    # ① `ok`：调用处常写 `a == b and c.get("x")`，而 `and` 返回的是**操作数本身**
+    #    （可能是 dict / list / str），直接 `ok &= 那个值` 会 TypeError，
+    #    于是套件**停在断言行上**、报错还指向测试框架，看上去像框架坏了。
+    # ② `detail`：传 list / dict 时 "%s" 拼接会 TypeError，同样打断套件。
+    ok = bool(ok)
+    if detail and not isinstance(detail, str):
+        detail = str(detail)
     mark = "✔" if ok else "✘"
     print("   %s %s%s" % (mark, name, ("  — " + detail) if detail else ""))
     if not ok:
@@ -1297,6 +1305,383 @@ def _cleanup_orphan_jobs(app):
     return orphan
 
 
+
+# ──────────────────────────────────────────────────────────────
+# ⑩ 音色：解析/回落/缓存/透传（2026-09-19）
+#
+# 这一组**绝不调用真实的 MiMo 接口**（限时免费的配额不该被测试消耗，而且测试
+# 不该依赖网络）。所有网络路径都用假 client 或"缺 key"来覆盖。
+# 重点钉住三件容易悄悄坏掉的事：
+#   · **回落必须发生**：音色生成失败绝不能拦住任务（音色是增强，不是前提）；
+#   · **同一音色只生成一次**：缓存命中不能再打接口；
+#   · **ref_text 必须跟着 ref_audio 走**：否则会拿"另一段音频的文本"去克隆，
+#     音色会明显跑偏而且**不报错**（这类问题只能靠断言防住）。
+# ──────────────────────────────────────────────────────────────
+def test_voice_and_ref_audio(app):
+    print()
+    print("=" * 66)
+    print("[10] 音色 —— 解析 / 失败回落 / 缓存命中 / argv 透传")
+    print("=" * 66)
+    ok = True
+    import base64
+    import threading  # noqa: F401  （与其它测试保持一致，便于以后加并发用例）
+    from fastapi.testclient import TestClient
+
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    import mimo_voice as mv
+
+    # ── A. /api/options 下发的音色配置 ──
+    with TestClient(app.app) as client:
+        opts = client.get("/api/options").json()
+    voice = opts.get("voice") or {}
+    ok &= check("/api/options 下发 voice 配置",
+                # ⚠️ 必须 bool()：`and` 返回的是**操作数本身**，这里右边是个 dict，
+                # check() 会把 dict 当 ok 返回，`ok &= dict` 直接 TypeError（踩过）。
+                bool(isinstance(voice.get("by_lang"), dict) and voice.get("limits")),
+                "by_lang=%s / limits=%s"
+                % (sorted((voice.get("by_lang") or {}).keys()), voice.get("limits")))
+    zh_presets = (voice.get("by_lang") or {}).get("zh", {}).get("presets", [])
+    en_presets = (voice.get("by_lang") or {}).get("en", {}).get("presets", [])
+    ok &= check("预置音色按讲稿语言分组（中文 4 个 / 英文 4 个）",
+                len(zh_presets) == 4 and len(en_presets) == 4,
+                "中文 %d 个 / 英文 %d 个" % (len(zh_presets), len(en_presets)))
+    ok &= check("每个候选都自带可直接提交的 spec（前端不再自己拼）",
+                all(isinstance(x.get("spec"), dict) and x["spec"].get("kind") == "preset"
+                    for x in zh_presets + en_presets),
+                "示例：%s" % (zh_presets[0]["spec"] if zh_presets else "无"))
+    ok &= check("参考文本随配置下发（使用者能看到这个音色会念什么）",
+                bool((voice.get("ref_texts") or {}).get("zh"))
+                and bool((voice.get("ref_texts") or {}).get("en")),
+                "zh %d 字 / en %d 字符"
+                % (len((voice.get("ref_texts") or {}).get("zh") or ""),
+                   len((voice.get("ref_texts") or {}).get("en") or "")))
+
+    # ── B. resolve：四条路径，任何失败都必须回落 ──
+    ok &= check("default -> 交给语言档位内置音色（不联网）",
+                mv.resolve({"kind": "default"}, "zh")[:2] == (None, None),
+                mv.resolve({"kind": "default"}, "zh")[2])
+
+    tmp = os.path.join(ROOT, "jobs", "smoke_voice_" + uuid.uuid4().hex[:6])
+    os.makedirs(tmp, exist_ok=True)
+    ref = os.path.join(tmp, "ref.wav")
+    try:
+        import numpy as np
+        import soundfile as sf
+        sf.write(ref, np.zeros(24000 * 5, dtype="float32"), 24000)   # 5 秒静音
+    except Exception:
+        io.open(ref, "wb").write(b"RIFF" + b"\x00" * 64)
+    try:
+        got = mv.resolve({"kind": "upload", "path": ref, "ref_text": "这是参考文本"}, "zh")
+        ok &= check("upload -> 用上传的音频与文本",
+                    got[0] == ref and got[1] == "这是参考文本", got[2])
+
+        got = mv.resolve({"kind": "upload", "path": os.path.join(tmp, "no.wav")}, "zh")
+        ok &= check("upload 的文件已不在 -> 回落且不抛异常",
+                    got[0] is None and "回落" in got[2], got[2])
+
+        # 缺 key 的路径：把环境变量临时挪走
+        saved = os.environ.pop("MIMO_API_KEY", None)
+        try:
+            # 刻意用一个**必然未缓存**的描述（带 uuid），确保走的是"要联网生成"那条路；
+            # 若拿一个已缓存的音色来测，就会测出"没 key 也能用"——那是另一条结论。
+            fresh = {"kind": "design", "prompt": "smoke-never-cached-" + uuid.uuid4().hex}
+            got = mv.resolve(fresh, "zh")
+            ok &= check("没配 key 且没有缓存 -> 可预期地回落（不是崩）",
+                        mv.available() is False and got[0] is None and "回落" in got[2],
+                        got[2])
+
+            # 反向：**已经生成过的音色，没有 key 也能用**。
+            # 这条是"限时免费结束/换机器后，攒下的音色资产仍然可用"的依据。
+            cached_key = mv.cache_key("preset", "冰糖", None, "zh")
+            if mv.cached(cached_key):
+                got2 = mv.resolve({"kind": "preset", "voice": "冰糖"}, "zh")
+                ok &= check("已生成的音色没有 key 也能直接用（缓存不依赖接口）",
+                            got2[0] is not None and "缓存" in got2[2], got2[2])
+            else:
+                print("   （跳过：本机还没有缓存的冰糖音色）")
+
+            got3 = mv.resolve({"kind": "design", "prompt": "女学者"}, "zh")
+            ok &= check("缺 key 时设计音色同样回落（no_key 不影响出片）",
+                        got3[0] is None and "回落" in got3[2], got3[2])
+        finally:
+            if saved:
+                os.environ["MIMO_API_KEY"] = saved
+
+        ok &= check("design 但没给描述 -> 回落（bad_request 不抛到外面）",
+                    mv.resolve({"kind": "design", "prompt": ""}, "zh")[0] is None,
+                    mv.resolve({"kind": "design", "prompt": ""}, "zh")[2])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # ── C. 缓存：同一个音色只生成一次（用假 client，不打真实接口）──
+    cache_dir = os.path.join(ROOT, "jobs", "smoke_voicecache_" + uuid.uuid4().hex[:6])
+    os.makedirs(cache_dir, exist_ok=True)
+    origin_cache = mv.CACHE_DIR
+    calls = []
+
+    class _FakeAudio(object):
+        def __init__(self, data):
+            self.data = data
+
+    class _FakeMessage(object):
+        def __init__(self, data):
+            self.audio = _FakeAudio(data)
+
+    class _FakeChoice(object):
+        def __init__(self, data):
+            self.message = _FakeMessage(data)
+
+    class _FakeResponse(object):
+        def __init__(self, data):
+            self.choices = [_FakeChoice(data)]
+
+    class _FakeClient(object):
+        class chat(object):
+            class completions(object):
+                @staticmethod
+                def create(**kwargs):
+                    calls.append(kwargs)
+                    return _FakeResponse(wav_b64)
+
+    try:
+        import numpy as np
+        import soundfile as sf
+        sample = os.path.join(cache_dir, "_src.wav")
+        sf.write(sample, np.zeros(24000 * 6, dtype="float32"), 24000)
+        with io.open(sample, "rb") as fh:
+            wav_b64 = base64.b64encode(fh.read()).decode("ascii")
+        os.remove(sample)
+
+        mv.CACHE_DIR = cache_dir
+        mv._client = lambda: _FakeClient()
+        first = mv.generate("preset", voice="冰糖", lang="zh")
+        second = mv.generate("preset", voice="冰糖", lang="zh")
+        ok &= check("同一个音色只调用接口一次（第二次走缓存）",
+                    len(calls) == 1 and second.get("cached") is True,
+                    "接口调用 %d 次；第二次 cached=%s" % (len(calls), second.get("cached")))
+        ok &= check("缓存里落了三件东西：wav + 参考文本 + 元数据",
+                    all(os.path.isfile(os.path.join(cache_dir, first["key"] + ext))
+                        for ext in (".wav", ".txt", ".json")),
+                    "缓存目录：%s" % ", ".join(sorted(os.listdir(cache_dir))))
+        ok &= check("参考文本由我们给定（与音频一一对应，不依赖 ASR）",
+                    first["ref_text"] == mv.REF_TEXTS["zh"],
+                    "前 24 字：%s…" % first["ref_text"][:24])
+        ok &= check("生成的提示词把参考文本放在 assistant（不是 user）",
+                    calls[0]["messages"][1]["content"] == mv.REF_TEXTS["zh"],
+                    "user=%r" % calls[0]["messages"][0]["content"][:24])
+        ok &= check("预置音色模式下指明了音色名",
+                    calls[0]["audio"].get("voice") == "冰糖", str(calls[0]["audio"]))
+
+        # ── C2. 候选过滤：设计类按语言过滤，上传类不过滤 ──
+        for key, meta in (
+                ("design_zh", {"kind": "design", "lang": "zh", "prompt": "女学者",
+                               "ref_text": "x", "created_at": "2026-01-01"}),
+                ("up_one", {"kind": "upload", "lang": None, "filename": "mine.wav",
+                            "ref_text": "y", "created_at": "2026-01-02"})):
+            with io.open(os.path.join(cache_dir, key + ".json"), "w",
+                         encoding="utf-8") as fh:
+                json.dump(meta, fh, ensure_ascii=False)
+            io.open(os.path.join(cache_dir, key + ".wav"), "wb").write(b"RIFF")
+            io.open(os.path.join(cache_dir, key + ".txt"), "w",
+                    encoding="utf-8").write("z")
+        zh_list = mv.voices_for("zh")
+        en_list = mv.voices_for("en")
+        ok &= check("设计类音色按讲稿语言过滤（中文档不出现英文音色）",
+                    any(x["kind"] == "design" for x in zh_list["custom"])
+                    and not any(x["kind"] == "design" for x in en_list["custom"]),
+                    "zh 自定义 %d 个 / en 自定义 %d 个"
+                    % (len(zh_list["custom"]), len(en_list["custom"])))
+        ok &= check("上传的音色不按语言过滤（是使用者自己放的）",
+                    any(x["kind"] == "upload" for x in en_list["custom"]),
+                    "en 自定义：%s" % [x["kind"] for x in en_list["custom"]])
+        up = [x for x in zh_list["custom"] if x["kind"] == "upload"][0]
+        ok &= check("上传类候选的 spec 带 path（选它不需要重新生成）",
+                    up["spec"].get("kind") == "upload" and up["spec"].get("path"),
+                    str(up["spec"])[:70])
+    finally:
+        mv.CACHE_DIR = origin_cache
+        shutil.rmtree(cache_dir, ignore_errors=True)
+
+    # ── D. argv 透传：ref_text 必须"跟着 ref_audio 走" ──
+    jd = os.path.join(ROOT, "jobs", "smoke_argv_" + uuid.uuid4().hex[:6])
+    os.makedirs(jd, exist_ok=True)
+    try:
+        base = {"slide_lang": "en", "script_lang": "zh", "paper_type": "auto",
+                "stages": ["1", "2", "3"]}
+        job = {"id": "smoke_argv", "config": dict(base, ref_audio="X:/v/a.wav",
+                                                  ref_text="这是参考文本"),
+               "ref_img": "X:/p.png", "paper_latex_root": jd}
+        argv = app._ORIG_BUILD_ARGV(job)
+        ok &= check("argv 带上 --ref_audio / --ref_text",
+                    "--ref_audio" in argv and "--ref_text" in argv
+                    and argv[argv.index("--ref_audio") + 1] == "X:/v/a.wav",
+                    " ".join(argv[argv.index("--ref_audio"):])[:70])
+
+        job2 = {"id": "smoke_argv", "config": dict(base, ref_audio="X:/v/a.wav"),
+                "ref_img": "X:/p.png", "paper_latex_root": jd}
+        argv2 = app._ORIG_BUILD_ARGV(job2)
+        ok &= check("只有 ref_audio、没有 ref_text 时**不传** --ref_text（交给 ASR 转写）",
+                    "--ref_audio" in argv2 and "--ref_text" not in argv2,
+                    " ".join(argv2[argv2.index("--ref_audio"):])[:70])
+
+        job3 = {"id": "smoke_argv", "config": dict(base), "ref_img": "X:/p.png",
+                "paper_latex_root": jd}
+        argv3 = app._ORIG_BUILD_ARGV(job3)
+        ok &= check("不指定音色时完全不传这两个参数（行为与改动前一致）",
+                    "--ref_audio" not in argv3 and "--ref_text" not in argv3, "已确认")
+    finally:
+        shutil.rmtree(jd, ignore_errors=True)
+
+    # pipeline 侧的语义（静态断言）：自定义音频 + 无文本 => 保持 None
+    pipe_src = io.open(os.path.join(ROOT, "Paper2Video-main", "src", "pipeline.py"),
+                       encoding="utf-8").read()
+    ok &= check("pipeline：自定义 ref_audio 无 ref_text 时保持 None（不拿档位文本去配）",
+                "custom_audio" in pipe_src
+                and "None if custom_audio else lang" in pipe_src,
+                "改了这行就会退回「张冠李戴」的旧行为，故必须钉住")
+
+    # ── E. 上传端点：过短 / 非音频 / 正常 ──
+    tmp2 = os.path.join(ROOT, "jobs", "smoke_voiceup_" + uuid.uuid4().hex[:6])
+    os.makedirs(tmp2, exist_ok=True)
+    try:
+        import numpy as np
+        import soundfile as sf
+        short = os.path.join(tmp2, "short.wav")
+        sf.write(short, np.zeros(24000, dtype="float32"), 24000)          # 1 秒
+        good = os.path.join(tmp2, "good.wav")
+        sf.write(good, np.zeros(24000 * 6, dtype="float32"), 24000)       # 6 秒
+        notaudio = os.path.join(tmp2, "paper.pdf")
+        io.open(notaudio, "wb").write(b"%PDF-1.4\n" + b"\x00" * 64)
+
+        with TestClient(app.app) as client:
+            r1 = client.post("/api/voices/upload",
+                             files={"paper": ("short.wav", io.open(short, "rb"), "audio/wav")},
+                             data={"ref_text": ""})
+            ok &= check("过短的参考音频被明确拒绝（克隆会不稳定）",
+                        r1.status_code == 400 and "短" in (r1.json().get("error") or ""),
+                        "HTTP %s · %s" % (r1.status_code, (r1.json().get("error") or "")[:40]))
+
+            r2 = client.post("/api/voices/upload",
+                             files={"paper": ("paper.pdf", io.open(notaudio, "rb"),
+                                              "application/pdf")})
+            ok &= check("非音频文件在上传时就被挡住（按文件头判断）",
+                        r2.status_code == 400,
+                        "HTTP %s · %s" % (r2.status_code, (r2.json().get("error") or "")[:40]))
+
+            r3 = client.post("/api/voices/upload",
+                             files={"paper": ("good.wav", io.open(good, "rb"), "audio/wav")},
+                             data={"ref_text": "这是我录的一段话"})
+            body = r3.json()
+            ok &= check("正常音频上传成功并给出可试听的 sample_url",
+                        r3.status_code == 200 and body.get("ok")
+                        and body.get("spec", {}).get("kind") == "upload"
+                        and body.get("sample_url"),
+                        "HTTP %s · %.1f 秒 · %s" % (r3.status_code,
+                                                    body.get("duration_s") or 0,
+                                                    body.get("sample_url")))
+            key = body.get("key")
+            if key:
+                r4 = client.get("/api/voices/%s/sample" % key)
+                ok &= check("试听接口能取回这段音频",
+                            r4.status_code == 200 and r4.content[:4] == b"RIFF",
+                            "HTTP %s · 前 4 字节 %r" % (r4.status_code, r4.content[:4]))
+                ok &= check("音色 id 里带路径分隔符会被拒（不做路径穿越）",
+                            client.get("/api/voices/..%2Fetc/sample").status_code in (400, 404),
+                            "已拒绝非法 id")
+                for ext in (".wav", ".txt", ".json"):
+                    p = os.path.join(mv.CACHE_DIR, key + ext)
+                    if os.path.isfile(p):
+                        os.remove(p)
+    finally:
+        shutil.rmtree(tmp2, ignore_errors=True)
+
+    # ── E2. 端到端：建任务时音色真的落进 config（假流水线，不真跑）──
+    # 为什么还要这一条：argv 透传与 resolve 都各自测过了，但"界面的选择 -> 任务的
+    # config -> 命令行"这条**串起来**的路径才是使用者实际走的。中间任何一环断掉，
+    # 表现都是"我选的音色没生效"，而不会报错。
+    tmp3 = os.path.join(ROOT, "jobs", "smoke_voicejob_" + uuid.uuid4().hex[:6])
+    ing_dir = os.path.join(app.JOBS_ROOT, "smoke_ving_" + uuid.uuid4().hex[:6])
+    os.makedirs(tmp3, exist_ok=True)
+    os.makedirs(os.path.join(ing_dir, "ingest"), exist_ok=True)
+    io.open(os.path.join(ing_dir, "ingest", "main.tex"), "w", encoding="utf-8").write("% smoke\n")
+    portrait = os.path.join(tmp3, "portrait.png")
+    io.open(portrait, "wb").write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+    ref_wav = os.path.join(tmp3, "mine.wav")
+    saved_build = app._build_argv
+    created_ids = []
+    uploaded_key = None
+    try:
+        import numpy as np
+        import soundfile as sf
+        sf.write(ref_wav, np.zeros(24000 * 5, dtype="float32"), 24000)
+        app._build_argv = lambda job: [sys.executable, "-u", "-c", "pass"]
+        with TestClient(app.app) as client:
+            up = client.post("/api/voices/upload",
+                             files={"paper": ("mine.wav", io.open(ref_wav, "rb"), "audio/wav")},
+                             data={"ref_text": "这是我录的一段话"}).json()
+            uploaded_key = up.get("key")
+            r = client.post("/api/jobs", json={
+                "ingest_id": os.path.basename(ing_dir),
+                "portrait_path": portrait,
+                "api_key": "smoke-key-1234567",
+                "config": {"stages": ["2", "3"], "slide_lang": "en", "script_lang": "zh",
+                           "paper_type": "auto", "voice": up["spec"]},
+            })
+            body = r.json()
+            created_ids.append(body.get("job_id"))
+            ok &= check("建任务时把音色结论回给界面（选错了才不至于听出来才发现）",
+                        r.status_code == 200 and "上传的参考音频" in (body.get("voice_note") or "")
+                        and body.get("voice_active") is True,
+                        "HTTP %s · voice_note=%r" % (r.status_code, body.get("voice_note")))
+            job = app._load_job(body["job_id"])
+            cfg = job.get("config") or {}
+            ok &= check("音色真的落进了任务的 config（ref_audio / ref_text 都带上了）",
+                        cfg.get("ref_audio") == up["spec"]["path"]
+                        and cfg.get("ref_text") == "这是我录的一段话",
+                        "ref_audio=%s / ref_text=%r"
+                        % (os.path.basename(cfg.get("ref_audio") or ""), cfg.get("ref_text")))
+            # 真命令行（用原始实现）里必须有 --ref_audio
+            argv = app._ORIG_BUILD_ARGV(job)
+            ok &= check("真实命令行里带上了 --ref_audio（任务的音色最终要靠它）",
+                        "--ref_audio" in argv
+                        and argv[argv.index("--ref_audio") + 1] == up["spec"]["path"],
+                        " ".join(argv[argv.index("--ref_audio"):])[:70])
+            client.post("/api/jobs/%s/cancel" % body["job_id"])
+    finally:
+        app._build_argv = saved_build
+        shutil.rmtree(tmp3, ignore_errors=True)
+        shutil.rmtree(ing_dir, ignore_errors=True)
+        for jid in created_ids:
+            if jid:
+                shutil.rmtree(os.path.join(app.JOBS_ROOT, jid), ignore_errors=True)
+        # 上传会往音色缓存里落文件 —— 不清掉的话，测试目录会变成使用者的
+        # "我的音色"列表里的一条垃圾（实测：一条 5 秒静音的"参考音频"）。
+        if uploaded_key:
+            for ext in (".wav", ".txt", ".json"):
+                p = os.path.join(mv.CACHE_DIR, uploaded_key + ext)
+                if os.path.isfile(p):
+                    os.remove(p)
+
+    # ── F. 静态：前端音色区与任务日志 ──
+    tsx = io.open(os.path.join(ROOT, "web", "frontend", "src", "App.tsx"),
+                  encoding="utf-8").read()
+    ok &= check("前端有四种音色来源（默认/预置/描述/上传）",
+                all(x in tsx for x in ('value="default"', 'value="preset"',
+                                       'value="design"', 'value="upload"')),
+                "四个 Radio 都在")
+    ok &= check("提交时把音色选择一起带上（后端才知道用哪个音色）",
+                "voice: voiceSpecNow()" in tsx, "config.voice 已在 submit 里")
+    ok &= check("音色没选全时拦在提交前（否则会静默回落成内置音色）",
+                "请选择一个预置音色" in tsx and "请填写音色描述" in tsx
+                and "请先上传参考音频" in tsx,
+                "三条前置校验都在")
+    app_src = io.open(os.path.join(ROOT, "web", "app.py"), encoding="utf-8").read()
+    ok &= check("实际使用的音色会写进任务日志（选了冰糖却听到男声时能自证）",
+                '[voice] {}' in app_src and "voice_note" in app_src,
+                "run.log 里有 [voice] 行")
+    return ok
+
+
 def main():
     app = load_app()
     results = [
@@ -1309,6 +1694,7 @@ def main():
         test_log_encoding_and_model_registry(app),
         test_rerun_shares_artifacts(app),
         test_phase_model_and_keys(app),
+        test_voice_and_ref_audio(app),
     ]
     orphan = _cleanup_orphan_jobs(app)
     if orphan:

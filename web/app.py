@@ -17,6 +17,7 @@
     python web/app.py            # 默认 127.0.0.1:8848
 """
 import asyncio
+import hashlib
 import inspect
 import io
 import json
@@ -47,6 +48,7 @@ sys.path.insert(0, P2V_SRC)
 # 结构化进度的读写约定与流水线共用同一个模块（progress_report），
 # 避免两边对字段名/取值的理解跑偏。放 import 在这里是因为它依赖上面的 sys.path。
 import progress_report                                    # noqa: E402
+import mimo_voice                                         # noqa: E402
 
 os.makedirs(JOBS_ROOT, exist_ok=True)
 app = FastAPI(title="Paper2Video Web", version="0.1.0")
@@ -152,6 +154,15 @@ _IMAGE_MAGIC = (
     (b"BM", "bmp"),
 )
 
+# 音频同理。参考音频是喂给克隆模型的，拿错文件（比如把论文传成音频）必须在**上传时**
+# 就挡住 —— 否则要等到 stage 2 合成语音时才炸，那时已经花掉 stage 1 的 API 费用。
+_AUDIO_MAGIC = (
+    (b"RIFF", "wav"),                 # 后面还要看第 8~12 字节是不是 WAVE
+    (b"ID3", "mp3"),
+    (b"fLaC", "flac"),
+    (b"OggS", "ogg"),
+)
+
 
 def _sniff_image(file_path):
     """返回 png / jpeg / webp / bmp；不是图片则返回 None。"""
@@ -165,6 +176,31 @@ def _sniff_image(file_path):
             return name
     if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
         return "webp"
+    return None
+
+
+def _sniff_audio(file_path):
+    """返回 wav / mp3 / flac / ogg / m4a；不是音频则返回 None。
+
+    m4a 没有统一的魔数，靠 ftpy/`ftyp` 品牌判断；wav 要额外确认第 8~12 字节是 WAVE
+    （RIFF 容器也被 AVI/WEBP 用）。
+    """
+    try:
+        with io.open(file_path, "rb") as handle:
+            head = handle.read(32)
+    except Exception:
+        return None
+    if head[:4] == b"RIFF" and head[8:12] == b"WAVE":
+        return "wav"
+    if head[:4] == b"RIFF" and head[8:12] == b"AVI ":
+        return None
+    for magic, name in _AUDIO_MAGIC:
+        if name != "wav" and head.startswith(magic):
+            return name
+    if head[4:8] == b"ftyp":
+        return "m4a"
+    if len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xE0) == 0xE0:
+        return "mp3"                      # 无 ID3 标签的裸 MP3 帧同步
     return None
 
 
@@ -720,6 +756,15 @@ def _build_argv(job):
     ]
     if cfg.get("reuse_script"):
         argv += ["--reuse_script", "True"]
+    # 音色：把解析好的参考音频/参考文本透传给流水线（pipeline.py 里
+    # `args.ref_audio or lang["ref_audio"]` 会优先用我们给的这份）。
+    # ⚠️ 只传 ref_audio、不传 ref_text 时，pipeline 必须保持 ref_text=None，
+    # 让 speech_gen 去 ASR 转写；若让它回落到语言档位的文本，就会拿"另一段音频
+    # 的文本"去配这段音频，克隆保真度直接崩。这条语义在 pipeline.py 里显式写了。
+    if cfg.get("ref_audio"):
+        argv += ["--ref_audio", cfg["ref_audio"]]
+        if cfg.get("ref_text"):
+            argv += ["--ref_text", cfg["ref_text"]]
     return argv
 
 
@@ -852,6 +897,10 @@ async def _run_job(job):
         else:
             _log_line(log, "[keys] ⚠️ 本任务没有随请求提供 API key，"
                            "将使用进程环境里的 OPENAI_API_KEY（来源可能是仓库根的 .env）")
+        # 音色用了哪个、还是回落了 —— 必须写进日志：
+        # 使用者选了"冰糖"却听到原来的男声时，唯一能自证的就是这一行。
+        _log_line(log, "[voice] {}".format(
+            (job.get("config") or {}).get("voice_note") or "内置默认音色"))
         log.flush()
 
         # 前置：PDF / Word 输入先转成 LaTeX 工程（见 _prepare_latex 的说明）
@@ -943,6 +992,16 @@ async def api_options():
         # 阶段表由后端下发（前端不硬编码）：步骤条与总进度共用同一份定义，
         # 将来加阶段只改 app.py 一处，前端自动跟上。
         "phases": _phase_payload(),
+        # 音色：候选**按讲稿语言过滤**（跨语言克隆音色会漂），并告知功能是否可用 ——
+        # 没配 MIMO_API_KEY 时界面要把"生成音色"禁用并说明原因，
+        # 而不是等使用者点了才报错（也顺手把"参考文本是什么"告诉使用者）。
+        "voice": {
+            "available": mimo_voice.available(),
+            "by_lang": {lang: mimo_voice.voices_for(lang) for lang in ("zh", "en")},
+            "ref_texts": mimo_voice.REF_TEXTS,
+            "limits": {"min_s": mimo_voice.MIN_SECONDS, "max_s": mimo_voice.MAX_SECONDS},
+            "accept_audio": [".wav", ".mp3", ".m4a", ".flac", ".ogg"],
+        },
         # 明确告知前端：这个开关不存在，不要试图暴露
         "hidden_flags": {"if_tree_search": "写死 False（默认值 True 会 NameError）"},
     }
@@ -1113,6 +1172,169 @@ async def api_portrait(paper: UploadFile = File(...)):
     }
 
 
+# ──────────────────────────────────────────────────────────────
+# 音色：MiMo 生成参考音频 / 上传自己的音频
+#
+# 架构见 docs/音色方案.md —— **只用 MiMo 生成一段参考音频**，逐页合成仍走本地
+# Qwen3-TTS 克隆。于是"音色"最终就是一份 wav + 它的参考文本，三种来源
+# （预置 / 描述设计 / 上传）都归到同一对字段上，流水线完全不需要知道区别。
+# ──────────────────────────────────────────────────────────────
+@app.post("/api/voices/generate")
+async def api_voice_generate(payload: dict):
+    """生成（或命中缓存取回）一段参考音频，供界面**试听**。
+
+    两种情况下都不额外消耗配额：同一个音色第二次请求会命中缓存；
+    生成失败也只是返回 ok=False，界面照常能选别的音色。
+    `force=True` 对应界面上的"重新生成" —— 设计音色有随机性，需要多掷几次。
+    """
+    kind = (payload.get("kind") or "preset").strip()
+    lang = (payload.get("lang") or "zh").strip()
+    try:
+        data = mimo_voice.generate(kind, voice=payload.get("voice"),
+                                   prompt=payload.get("prompt"), lang=lang,
+                                   force=bool(payload.get("force")))
+    except mimo_voice.VoiceError as exc:
+        # 用 200 + ok=False：这是"可预期的业务失败"（没配 key / 限流 / 网络），
+        # 不是接口坏了 —— 前端要按 kind 给出可操作的提示，而不是弹一个通用错误。
+        return JSONResponse(status_code=200, content={
+            "ok": False, "error_kind": exc.kind,
+            "error": exc.message, "detail": exc.detail})
+    return {
+        "ok": True,
+        "key": data["key"],
+        "cached": bool(data.get("cached")),
+        "duration_s": data.get("duration_s"),
+        "ref_text": data["ref_text"],
+        "sample_url": "/api/voices/{}/sample".format(data["key"]),
+        "script_lang": data["lang"],
+        "kind": data["kind"],
+        "voice": data.get("voice"),
+        "prompt": data.get("prompt"),
+    }
+
+
+@app.get("/api/voices/{key}/sample")
+async def api_voice_sample(key: str):
+    """试听：直接回参考音频本身。
+
+    为什么是"给音频"而不是"再合成一句话"：这份音频就是这个音色的**定义**，
+    听到它=听到最终音色（逐页合成只是把同一音色套到别的文本上）。
+    """
+    if "/" in key or "\\" in key or ".." in key:
+        raise HTTPException(status_code=400, detail="非法的音色 id")
+    path = os.path.join(mimo_voice.CACHE_DIR, key + ".wav")
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="音色不存在或已被清理：{}".format(key))
+    return FileResponse(path, media_type="audio/wav", filename=key + ".wav")
+
+
+@app.post("/api/voices/upload")
+async def api_voice_upload(paper: UploadFile = File(...), ref_text: str = Form("")):
+    """上传自己的参考音频（可附参考文本）。
+
+    与 `/api/portrait` 同一套做法（流式落盘 + 按文件头判断 + 失败删空壳），
+    但多两步 —— 目的都是"别等到 stage 2 合成语音时才炸"：
+
+      1. **用 ffmpeg 解码成 24kHz 单声道 wav**。一举三得：证明它真能解码、
+         统一成克隆模型需要的格式、拿到可测的时长（mp3/m4a 用 soundfile 未必读得了）。
+      2. 时长必须落在 3~30 秒。太短克隆不稳定（宁可明确拒绝，也不要产出一个
+         人声音色乱漂的成片），太长只是白等。
+    """
+    tmp_id = "voice_" + uuid.uuid4().hex[:8]
+    work = os.path.join(JOBS_ROOT, tmp_id)
+    os.makedirs(os.path.join(work, "input"), exist_ok=True)
+
+    safe_name = os.path.basename(paper.filename or "voice.wav")
+    src = os.path.join(work, "input", safe_name)
+    with io.open(src, "wb") as handle:
+        while True:
+            chunk = await paper.read(1 << 20)
+            if not chunk:
+                break
+            handle.write(chunk)
+
+    fmt = _sniff_audio(src)
+    if fmt is None:
+        shutil.rmtree(work, ignore_errors=True)
+        return JSONResponse(status_code=400, content={
+            "ok": False,
+            "error": "这不是一段能识别的音频（按文件头判断，不看扩展名）",
+            "hint": "支持 WAV / MP3 / M4A / FLAC / OGG",
+        })
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        shutil.rmtree(work, ignore_errors=True)
+        return JSONResponse(status_code=400, content={
+            "ok": False, "error": "找不到 ffmpeg，无法解码音频（流水线本身也依赖它）",
+        })
+
+    with io.open(src, "rb") as handle:
+        digest = hashlib.sha1(handle.read()).hexdigest()[:16]
+    os.makedirs(mimo_voice.CACHE_DIR, exist_ok=True)
+    dest = os.path.join(mimo_voice.CACHE_DIR, "upload_{}.wav".format(digest))
+    proc = subprocess.run(
+        [ffmpeg, "-y", "-v", "error", "-i", src,
+         "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le", dest],
+        capture_output=True, text=True, timeout=300)
+    shutil.rmtree(work, ignore_errors=True)
+    if proc.returncode != 0 or not os.path.isfile(dest):
+        tail = (proc.stderr or "").strip().splitlines()[-3:]
+        return JSONResponse(status_code=400, content={
+            "ok": False, "error": "这段音频解不开（ffmpeg 解码失败）",
+            "detail": " / ".join(tail)[:300]})
+
+    duration = None
+    try:
+        import soundfile
+        duration = float(soundfile.info(dest).duration)
+    except Exception:
+        pass
+    if duration is not None and duration < mimo_voice.MIN_SECONDS:
+        os.remove(dest)
+        return JSONResponse(status_code=400, content={
+            "ok": False,
+            "error": "音频只有 {:.1f} 秒，太短（至少 {:.0f} 秒）".format(
+                duration, mimo_voice.MIN_SECONDS),
+            "hint": "参考音频越接近你要的说话风格越好；建议 5~15 秒、单人、无背景音乐",
+        })
+
+    text = (ref_text or "").strip()
+    txt_path = os.path.join(mimo_voice.CACHE_DIR, "upload_{}.txt".format(digest))
+    if text:
+        with io.open(txt_path, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+    elif os.path.isfile(txt_path):                 # 换了内容但沿用同一指纹的旧文本
+        os.remove(txt_path)
+
+    warnings = []
+    if not text:
+        # 不给参考文本时流水线会退回 ASR 转写；这条**必须**提前说清楚，
+        # 因为实测 Qwen3-ASR 对参考音频会转出错文本，而错的 ref_text 直接拉低克隆保真度。
+        warnings.append("未提供参考文本：将由 ASR 自动转写，实测**可能不准**（建议手填）")
+    if duration is not None and duration > mimo_voice.MAX_SECONDS:
+        warnings.append("时长 {:.1f} 秒偏长（超过 {:.0f} 秒只会让克隆编码变慢）"
+                        .format(duration, mimo_voice.MAX_SECONDS))
+
+    meta = {
+        "key": "upload_{}".format(digest), "kind": "upload", "lang": None,
+        "filename": safe_name, "source_format": fmt,
+        "duration_s": round(duration, 2) if duration else None,
+        "ref_text": text or None, "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    with io.open(os.path.join(mimo_voice.CACHE_DIR, "upload_{}.json".format(digest)),
+                 "w", encoding="utf-8", newline="") as handle:
+        json.dump(meta, handle, ensure_ascii=False, indent=2)
+    return {
+        "ok": True,
+        "spec": {"kind": "upload", "path": dest, "ref_text": text or None},
+        "key": meta["key"],
+        "duration_s": meta["duration_s"],
+        "sample_url": "/api/voices/{}/sample".format(meta["key"]),
+        "warnings": warnings,
+    }
+
+
 @app.post("/api/jobs")
 async def api_create_job(payload: dict):
     """创建任务 → 入队。同一时刻只会有一个在跑（单卡）。"""
@@ -1134,6 +1356,22 @@ async def api_create_job(payload: dict):
     _remember_keys(job_id, payload)          # 凭据跟着任务走，不是全局一份
     job_dir = _job_dir(job_id)
     os.makedirs(job_dir, exist_ok=True)
+
+    # 音色：把界面上的选择解析成「参考音频 + 参考文本」。
+    # **任何失败都回落到内置音色**，绝不因为音色问题拦住任务 —— 音色是增强，
+    # 而 MiMo 是"限时免费"的第三方服务，网络/配额/key 都可能出问题。
+    # 回落原因会同时进 config、响应体与任务日志（回落必须可见，见 _run_job）。
+    config = dict(payload.get("config") or {})
+    voice_spec = config.get("voice") or {"kind": "default"}
+    ref_audio, ref_text, voice_note = mimo_voice.resolve(
+        voice_spec, config.get("script_lang", "en"))
+    config["voice"] = voice_spec
+    config["voice_note"] = voice_note
+    if ref_audio:
+        config["ref_audio"] = ref_audio
+        # ref_text 可能是 None（上传音频没给文本）—— 不要在这里编一个，
+        # 让流水线退回 ASR 转写，而不是拿语言档位的文本去配另一段音频。
+        config["ref_text"] = ref_text
     shutil.copytree(os.path.join(work, "ingest"), os.path.join(job_dir, "ingest"),
                     dirs_exist_ok=True)
 
@@ -1148,7 +1386,7 @@ async def api_create_job(payload: dict):
         # 机器可读的阶段（中文 phase 只用于显示）—— 步骤条与总进度靠它
         "phase_key": "queued",
         "queue_ahead": _QUEUE.qsize(),
-        "config": payload.get("config", {}),
+        "config": config,
         "ref_img": portrait,
         "paper_latex_root": payload.get("paper_latex_root") or os.path.join(job_dir, "latex_proj"),
         "needs_struct": needs_llm,
@@ -1160,7 +1398,11 @@ async def api_create_job(payload: dict):
     _save_job(job)
     await _QUEUE.put(job_id)
     return {"ok": True, "job_id": job_id, "queue_ahead": _QUEUE.qsize(),
-            "queued": True}
+            "queued": True,
+            # 把这个任务的音色结论回给界面：用了哪个音色、还是回落到了内置默认。
+            # 不返回的话，使用者只能从成片里"听"出来自己选的音色没生效。
+            "voice_note": voice_note,
+            "voice_active": bool(ref_audio)}
 
 
 @app.post("/api/jobs/{job_id}/rerun")

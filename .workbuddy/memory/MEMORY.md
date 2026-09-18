@@ -50,6 +50,28 @@
 **许可证雷区**：`tencent/HunyuanVideo-Avatar` 是腾讯社区协议（非商用）→
 商业交付只用 Apache-2.0 的 InfiniteTalk。
 
+## 音色：MiMo 造参考音频 + 本地克隆（2026-09-19 完成）
+
+方案与实测数据见 `docs/音色方案.md`。要点：
+
+- **接法是"云端只造一次音色、逐页仍本地 Qwen3-TTS 克隆"**（不是逐页调云端 TTS）：
+  音色一次定下 → 全片一致；免费期结束/断网/无 key 都不影响出片；字幕对齐链路不动。
+- **地基已实测**：MiMo 生成的 wav 直接当克隆参考可用（f0 差 53 Hz 证明音色真变了）。
+- **`MIMO_API_KEY` 在服务端 `.env`**（gitignore 里）；参考文本写死在
+  `scripts/mimo_voice.py` 的 `REF_TEXTS`（**必须由我们给定**并放 assistant ——
+  用文档的 `optimize_text_preview=True` 会让 ref_text 失控，只能回头靠 ASR 转写，
+  而 ASR 在本项目里是已知会转错的）。
+- **限时免费 ⇒ 必须有回落**：`resolve()` 任何失败都回落内置音色，且回落原因
+  会进响应与 run.log（`[voice]` 行）。
+- **已生成的音色不需要 key**（缓存命中直接可用）⇒ 攒下的音色资产长期有效。
+  缓存目录 `jobs/_voices/<sha1>.wav|.txt|.json`，key = kind|voice|prompt|lang。
+- **踩过的坑**：`pipeline.py` 里 `ref_audio` 与 `ref_text` 各自 `or lang[...]` 回落
+  ⇒ 自定义音频 + 没给文本时会把**档位那段的文本**配上去，克隆失真且**不报错**。
+  已改成 ref_text 跟着 ref_audio 走（无文本则保持 None 交给 ASR）。
+- 预置音色 8 个（中英男女各 2），**不用 `mimo_default`**（它因集群而异，
+  同一份配置在不同部署上会出不同音色）。
+- 测试不消耗配额：网络路径全用假 client / 缺 key 覆盖（第 10 组，35 项）。
+
 ## H5 可视化改造（2026-09-18）
 
 方案文档 `docs/Web可视化方案.md`。改造**只加外壳、不碰算法**。

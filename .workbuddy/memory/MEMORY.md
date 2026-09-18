@@ -54,28 +54,34 @@
 **许可证雷区**：`OmniAvatar-1.3B` 的 model card 无 license 字段；
 `tencent/HunyuanVideo-Avatar` 是腾讯社区协议（非商用）→ 商业交付只用 Apache-2.0 的 InfiniteTalk。
 
-## H5 可视化改造（2026-09-18，决策 A 已定）
+## H5 可视化改造（2026-09-18）
 
 方案文档 `docs/Web可视化方案.md`。改造**只加外壳、不碰算法**。
 
-**输入支持 `.tex`/`.zip`/`.docx`/`.doc`/`.pdf`** —— 使用者的真实输入是「自己写的 Word」
-与「下载/提交的 PDF」。链路：输入 → 提取文本（`scripts/paper_ingest.py`，零成本）
-→ LLM 结构化 → `main.tex`。**B/C 已定**（B2 内联预览；做任务列表+续跑）；
-**D 建议 React+Vite+TDesign+FastAPI**（build 产物由后端服务、不引路由/状态库）。
-两种格式都有时**优先 pdf**（.doc 必然混入开头表单字段）。
+**输入支持 `.tex`/`.zip`/`.docx`/`.doc`/`.pdf`**（使用者给的是 Word 与 PDF，不是 tex）。
+链路：输入 → 提取（`scripts/paper_ingest.py`，零成本）→ LLM 结构化 → `main.tex`。
+**A/B/C 已定**（B2 内联预览；做任务列表+续跑）；**D 建议 React+Vite+TDesign+FastAPI**
+（build 产物由后端服务、不引路由与状态库）。
+
+**⚠️ 迁移目标：学校 Linux 服务器**（本机 Windows 只是开发环境，导师演示通过后搬迁）：
+- 中文字幕字体**不能硬编码 Windows 字体**（已修：`_cjk_subtitle_font()`，
+  Linux 用 Noto Sans CJK，可 `PAPER2VIDEO_CJK_FONT` 覆盖）—— 英文不受影响、
+  中文会变方框，这类问题在开发机上永远不出现
+- 权重/缓存路径不要出现盘符；GPU 档位不要写死（服务器可能多卡）
+- 多人使用要补：任务按人隔离、排队可见、按人统计 token、只监听内网
 
 三条硬约束：
 1. **入口是 LaTeX 源码目录**：`--paper_latex_root` 下必须有 `main.tex`。
 2. **只需一组 API key**：`OPENAI_API_KEY` / `OPENAI_API_BASE`（DeepSeek）。
-   `.env` 的 `DASHSCOPE_API_KEY` 只在 `check_env.py` 查存在性，流水线不读。
-3. **`--if_tree_search` 必须写死 False**：`pipeline.py:31` 的 import 被注释，
-   默认值 True 会走 `latex_code_gen` → `NameError`。别暴露到界面上。
+3. **`--if_tree_search` 必须写死 False**（默认值 True 会走 `latex_code_gen` → NameError）。
 
-转换层：不用 Office/WPS 的 COM（会连到使用者的 WPS 并挂死）；`.doc` 用 olefile
-读 WordDocument 流（**有损**）；PDF 必须行合并且句末判据认中英文标点。
+转换层：不用 Office/WPS 的 COM（会连到使用者的 WPS 并挂死）；`.doc` 走 olefile（**有损**）；
+PDF 必须行合并且句末判据同时认中英文标点。**真实 Word 不用标题样式（heading=0）**，
+所以 `.docx` 并无结构优势，三种格式都靠 LLM 从正文推断章节；
+三者内容等价，**pdf 噪声最少、优先用**。
 
-成本口径：`result/<名字>/token.json` 记实际用量；一篇约 5.6 万 token，
-**讲稿生成占 76%**，故 `--reuse_script` 是省钱主力。
+成本口径：`result/<名字>/token.json`；一篇约 5.6 万 token，**讲稿占 76%**，
+故 `--reuse_script` 是省钱主力。
 
-架构要点：FastAPI + 单 worker 串行队列（单卡 16GB 并行必 OOM）；流水线走子进程
-`Popen(argv, cwd=绝对路径)` 不经 shell；服务只监听 127.0.0.1。
+架构：FastAPI + 单 worker 串行队列（单卡并行必 OOM）；流水线走子进程
+`Popen(argv, cwd=绝对路径)` 不经 shell；只监听 127.0.0.1。

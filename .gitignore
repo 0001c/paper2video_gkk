@@ -212,3 +212,6 @@ assets/gkk/
 
 # 输入摄取 smoke test 的输出（可随时重跑生成）
 .workbuddy/ingest_smoke/
+
+# 结构化生成的产物（可重跑生成）
+.workbuddy/struct_out/

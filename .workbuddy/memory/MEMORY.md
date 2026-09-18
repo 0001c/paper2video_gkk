@@ -128,6 +128,20 @@ TDesign 主题 CSS 漏引入（`--td-*` 全未定义）、`ConfigProvider` 只�
 验证：`scripts/smoke_web_api.py` 共 44 项断言，**零 API 费用**即可复现
 SSE/取消/产物 Range/进度优先级/逐页索引/续跑参数。
 
+## 前端体验：四条机制性缺陷（2026-09-18 分析，方案见 `docs/前端体验改进方案.md`，未实施）
+
+- **数字人阶段的进度是「批量跑完后一次性补报」**：`talking_gen.py:536-568` 先让 MuseTalk 一个进程
+  跑完 N 页，**之后**才逐页取回产物并 `report()`。实测 14 条记录时间戳全为 `22:58:21`（相差 1~2 ms）。
+  后果三连：进度条停在 100%、阶段名停在上一阶段、`stalled_seconds` 涨到 600+ 触发**「疑似卡住」误报**。
+  要真实进度只能**旁路取数**（轮询 `musetalk_batch_output()` 算出的预期产物路径，不改 MuseTalk）。
+- **进度条口径错误**：`done = talking_done || tts_done` ÷ 总页数，一个条要表达 6 个阶段；
+  实测序列含 **100% → 7% 的回跳**，且 stage 1 的 `total=0` 所以条是空的。应改**阶段加权**。
+- **SSE 断流即冻结**：`App.tsx` 的 `es.onerror = () => es.close()` **禁用了 EventSource 自带重连**，
+  且不提示；而产物/逐页素材**只在 `job.status` 变化时拉一次** → 断流后唯一触发点永不到来，
+  产物区要手动刷新才出现。**"单一触发点 + 静默失败"是同一类坏味道**，凡"只在 X 变化时刷新"都要加轮询兜底。
+- **`_SESSION_KEYS` 是进程级全局**（`/api/key/verify` 与建任务都写它）→ **多人共用一份 key**：
+  迁学校服务器前必须改成按 `job_id` 注入。
+
 ## 结构化层（`scripts/paper_struct.py`，2026-09-18 跑通）
 
 链路：输入 → `paper_ingest` 提取（零成本）→ **`paper_struct` LLM 结构化**（花钱）→ `main.tex`。

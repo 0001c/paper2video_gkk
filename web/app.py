@@ -535,13 +535,99 @@ if os.path.isdir(_STATIC):
     app.mount("/", StaticFiles(directory=_STATIC, html=True), name="static")
 
 
+def _port_owner(port):
+    """查占用某端口的进程（给报错用）。psutil 缺失时返回 None，不影响主流程。"""
+    try:
+        import psutil
+    except ImportError:
+        return None
+    try:
+        for conn in psutil.net_connections(kind="inet"):
+            if conn.laddr and conn.laddr.port == port and conn.status == psutil.CONN_LISTEN:
+                try:
+                    proc = psutil.Process(conn.pid)
+                    return "{} (pid={}, 已运行 {:.0f} 分钟)".format(
+                        proc.name(), conn.pid, (time.time() - proc.create_time()) / 60)
+                except Exception:
+                    return "pid={}".format(conn.pid)
+    except Exception:
+        return None
+    return None
+
+
+def _find_free_port(host, start, tries=20):
+    import socket
+    for offset in range(tries):
+        candidate = start + offset
+        # ⚠️ 这里**绝对不能**设 SO_REUSEADDR：Windows 的语义与 Linux 相反，
+        # 它允许 bind 到已被占用的端口（相当于"抢占"），于是每个端口都"看起来空闲"。
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            try:
+                sock.bind((host, candidate))
+            except OSError:
+                continue
+        return candidate
+    return None
+
+
+def _port_in_use(host, port):
+    """端口是否已被占用。
+
+    ⚠️ 不给探测 socket 设 SO_REUSEADDR —— Windows 上该选项允许 bind 到
+    已被占用的端口，会让预检**永远返回"空闲"**，形同虚设（实测踩过）。
+    """
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind((host, port))
+        except OSError:
+            return True
+    return False
+
+
 def main():
+    import argparse
+
     import uvicorn
-    host = os.environ.get("P2V_WEB_HOST", "127.0.0.1")
-    port = int(os.environ.get("P2V_WEB_PORT", "8848"))
-    print("Paper2Video Web → http://{}:{}".format(host, port))
-    print("（只监听本机；如需局域网访问请自行评估风险后设置 P2V_WEB_HOST）")
-    uvicorn.run(app, host=host, port=port, log_level="info")
+
+    parser = argparse.ArgumentParser(description="Paper2Video Web 服务")
+    parser.add_argument("--host", default=os.environ.get("P2V_WEB_HOST", "127.0.0.1"),
+                        help="监听地址，默认 127.0.0.1（只监听本机）")
+    parser.add_argument("--port", type=int,
+                        default=int(os.environ.get("P2V_WEB_PORT", "8848")),
+                        help="监听端口，默认 8848")
+    parser.add_argument("--auto-port", action="store_true",
+                        help="端口被占时自动顺延选一个空闲端口，而不是退出")
+    args = parser.parse_args()
+
+    # ── 启动前先探端口。理由：uvicorn 抛出的原生错误是
+    #    「[Errno 10048] 通常每个套接字地址只允许使用一次」——
+    #    它既不告诉你是谁占着，也不告诉你怎么改，看着像代码坏了。
+    #    这里提前拦下，并指出占用进程与解决办法。
+    if _port_in_use(args.host, args.port):
+        owner = _port_owner(args.port)
+        print("端口 {} 已被占用{}。".format(
+            args.port, "：" + owner if owner else ""))
+        if args.auto_port:
+            free = _find_free_port(args.host, args.port + 1)
+            if free is None:
+                print("从 {} 起试了 20 个端口都不可用，请手动指定 --port。".format(args.port + 1))
+                raise SystemExit(2)
+            print("已自动改用端口 {}。".format(free))
+            args.port = free
+        else:
+            print("解决办法（任选其一）：")
+            print("  1) 换端口：  python web/app.py --port 8849")
+            print("  2) 自动顺延：python web/app.py --auto-port")
+            print("  3) 结束占用进程后重试（上面的 pid 可用任务管理器结束，或：taskkill /PID <pid> /F）")
+            raise SystemExit(2)
+
+    print("Paper2Video Web → http://{}:{}".format(args.host, args.port))
+    print("（只监听本机；如需局域网访问请自行评估风险后设置 --host 或 P2V_WEB_HOST）")
+    if not os.path.isdir(_STATIC):
+        print("提示：{} 不存在，当前只有 API。执行 `npm run build` 后重启即可看到界面。".format(
+            os.path.relpath(_STATIC, os.path.dirname(os.path.abspath(__file__)))))
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 
 if __name__ == "__main__":

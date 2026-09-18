@@ -45,6 +45,33 @@ cd ../..
 | `P2V_WEB_PORT` | `8848` | |
 | `PAPER2VIDEO_CJK_FONT` | 平台相关 | 中文字幕字体。Linux 默认 `Noto Sans CJK SC` |
 
+端口也可以用命令行参数指定（**优先级高于环境变量**）：
+
+```bash
+python web/app.py --port 8849        # 换一个端口
+python web/app.py --auto-port        # 端口被占时自动顺延，不退出
+python web/app.py --help             # 看全部选项
+```
+
+**8848 被占时会发生什么**：服务会在启动前自行探测并打印占用者，而不是抛
+`[Errno 10048] 通常每个套接字地址只允许使用一次`（那条错误既不告诉你是谁占着、
+也不告诉你怎么改）。输出形如：
+
+```
+端口 8848 已被占用：python.exe (pid=24780, 已运行 0 分钟)。
+解决办法（任选其一）：
+  1) 换端口：  python web/app.py --port 8849
+  2) 自动顺延：python web/app.py --auto-port
+  3) 结束占用进程后重试
+```
+
+> 最常见的占用者就是**上一次没关掉的自己**。Windows 上用
+> `netstat -ano | findstr :8848` 看 pid，再 `taskkill /PID <pid> /F`。
+>
+> 实现上有个 Windows 专属坑：探测端口时**不能设 `SO_REUSEADDR`** ——
+> 该选项在 Windows 的语义与 Linux 相反，允许 bind 到已被占用的端口，
+> 会让预检永远返回"空闲"。代码里已写成注释，改这段时别加回去。
+
 ---
 
 ## ⚠️ 两个会骗过排查的环境坑

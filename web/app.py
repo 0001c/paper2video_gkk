@@ -693,6 +693,14 @@ async def api_key_verify(payload: dict):
             messages=[{"role": "user", "content": "ping"}],
             max_tokens=8, temperature=0)
         usage = getattr(resp, "usage", None)
+        # 校验通过就记进进程内存 —— 这样真正开跑时 _run_job 才能把它注入子进程。
+        # ⚠️ 原先只校验不保存，于是注入那段代码**永远拿不到使用者填的 key**，
+        #    实际用的是 .env 里那把：本地因为 .env 有 key 所以"看着能跑"，
+        #    换到没有 .env 的服务器就会静默失败。
+        # 注意这是**进程级**的：多人共用同一服务时会互相覆盖，
+        # 学校服务器阶段需要把凭据挂到任务上做隔离（方案文档已列）。
+        _SESSION_KEYS["api_key"] = api_key
+        _SESSION_KEYS["api_base"] = api_base
         return {"ok": True, "kind": "ok",
                 "message": "连接正常",
                 "usage": {"total_tokens": getattr(usage, "total_tokens", None)}}
@@ -837,6 +845,13 @@ async def api_create_job(payload: dict):
     work = os.path.join(JOBS_ROOT, ingest_id or "")
     if not ingest_id or not os.path.isdir(work):
         raise HTTPException(status_code=400, detail="先上传论文（缺少有效的 ingest_id）")
+
+    # 创建任务时也接受凭据（使用者可能没点"自检"就直接开跑）。
+    # 只放进程内存，不落盘。
+    if payload.get("api_key"):
+        _SESSION_KEYS["api_key"] = str(payload["api_key"]).strip()
+    if payload.get("api_base"):
+        _SESSION_KEYS["api_base"] = str(payload["api_base"]).strip()
 
     # 人像与音色也是上传来的；没人像就直接拒绝（数字人环节必然失败）
     portrait = payload.get("portrait_path")

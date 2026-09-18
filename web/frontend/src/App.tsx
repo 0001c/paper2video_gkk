@@ -267,6 +267,11 @@ export default function App() {
       // 原始文件路径必须带上：PDF / Word 输入时后端要靠它先转成 LaTeX 工程
       // （流水线入口要「含 main.tex 的目录」）。只有 .tex 输入才不需要。
       source_path: ingest.source_path || undefined,
+      // 凭据随任务一起提交（后端只存进程内存）。
+      // 不传的话后端就没有可注入子进程的 key，会退回读 .env ——
+      // 本地因为 .env 有 key 所以看不出问题，换成没配 .env 的服务器就会静默失败。
+      api_key: apiKey,
+      api_base: apiBase || undefined,
       config: {
         stages: ["1", "2", "3"],
         slide_lang: slideLang,

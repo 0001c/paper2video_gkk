@@ -137,6 +137,10 @@ def r(phase, **kw):
 def p(s):
     print(s); sys.stdout.flush()
 p("### fake pipeline (smoke test)")
+# 让流水线把"注入进来的 key 长度"打出来：这样能验证后端确实把使用者填的 key
+# 传给了子进程。这一条在本地看不出问题（.env 里本来就有 key），
+# 换到没配 .env 的服务器才会静默失败，所以必须由测试守住。
+p("ENVKEY_LEN=" + str(len(os.environ.get("OPENAI_API_KEY") or "")))
 r("slides", stage=1)
 p("start stage 1")
 r("script", stage=2)
@@ -191,6 +195,8 @@ def test_queue_and_http(app):
             # ── 任务 A：跑完（走 done 路径）──
             r = client.post("/api/jobs", json={
                 "ingest_id": ingest_id, "portrait_path": portrait,
+                "api_key": "smoke-key-1234567",       # 17 字符，下面据此断言
+                "api_base": "https://example.invalid/v1",
                 "config": {"slide_lang": "en", "script_lang": "zh",
                            "paper_type": "auto", "stages": ["2", "3"]},
             })
@@ -246,6 +252,18 @@ def test_queue_and_http(app):
                         j["progress"]["total_pages"] == state["pages"],
                         "total=%s / 期望 %s" % (j["progress"]["total_pages"],
                                                 state["pages"]))
+
+            # 使用者填的 key 必须真的注入子进程环境。
+            # 原先 _SESSION_KEYS 从来没被写入过（/api/key/verify 只校验不保存），
+            # 于是这段注入永远拿不到 key、实际用的是 .env 里那把 ——
+            # 本地因为 .env 有 key 所以"看着能跑"，服务器上才会静默失败。
+            log_text = io.open(os.path.join(app._job_dir(job_a), "run.log"),
+                               encoding="utf-8", errors="replace").read()
+            ok &= check("创建任务时带的 API key 被注入子进程环境",
+                        "ENVKEY_LEN=17" in log_text,
+                        "看到的 ENVKEY 行: %s" % (
+                            [ln.strip() for ln in log_text.splitlines()
+                             if ln.strip().startswith("ENVKEY")] or "无"))
             ok &= check("/api/system/gpu 的 running_job 在空闲时为 null",
                         client.get("/api/system/gpu").json()["running_job"] is None)
 

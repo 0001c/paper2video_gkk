@@ -225,3 +225,6 @@ jobs/
 
 # TypeScript 增量构建缓存（vite build 顺带产生的）
 web/frontend/*.tsbuildinfo
+
+# 耗时标定用的提取产物（可重跑生成）
+.workbuddy/calib/

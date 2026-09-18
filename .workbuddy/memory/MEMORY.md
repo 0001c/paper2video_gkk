@@ -58,9 +58,11 @@
 
 方案文档 `docs/Web可视化方案.md`。改造**只加外壳、不碰算法**。
 
-**决策 A 已定：输入支持 `.tex`/`.zip`/`.docx`/`.doc`/`.pdf`** —— 使用者的真实输入是
-「自己写的 Word」与「下载/提交的 PDF」，要求上传 `.tex` 不现实。链路：输入 →
-提取文本（`scripts/paper_ingest.py`，纯本地零成本）→ LLM 结构化 → `main.tex`。B/C/D 待定。
+**输入支持 `.tex`/`.zip`/`.docx`/`.doc`/`.pdf`** —— 使用者的真实输入是「自己写的 Word」
+与「下载/提交的 PDF」。链路：输入 → 提取文本（`scripts/paper_ingest.py`，零成本）
+→ LLM 结构化 → `main.tex`。**B/C 已定**（B2 内联预览；做任务列表+续跑）；
+**D 建议 React+Vite+TDesign+FastAPI**（build 产物由后端服务、不引路由/状态库）。
+两种格式都有时**优先 pdf**（.doc 必然混入开头表单字段）。
 
 三条硬约束：
 1. **入口是 LaTeX 源码目录**：`--paper_latex_root` 下必须有 `main.tex`。
@@ -69,10 +71,8 @@
 3. **`--if_tree_search` 必须写死 False**：`pipeline.py:31` 的 import 被注释，
    默认值 True 会走 `latex_code_gen` → `NameError`。别暴露到界面上。
 
-转换层实测结论（见跨项目记忆的详细条）：
-- 不用 Office/WPS 的 COM（会连到使用者正在跑的 WPS 并挂死）；
-- `.doc` 用 olefile 读 WordDocument 流，**有损**；
-- PDF 必须行合并，句末判据要同时认中英文标点。
+转换层：不用 Office/WPS 的 COM（会连到使用者的 WPS 并挂死）；`.doc` 用 olefile
+读 WordDocument 流（**有损**）；PDF 必须行合并且句末判据认中英文标点。
 
 成本口径：`result/<名字>/token.json` 记实际用量；一篇约 5.6 万 token，
 **讲稿生成占 76%**，故 `--reuse_script` 是省钱主力。

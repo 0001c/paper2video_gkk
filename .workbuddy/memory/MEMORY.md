@@ -138,6 +138,12 @@ UnicodeEncodeError，且崩点在流水线**最末端**。已在 `pv_env.py` 模
   且"续跑的续跑"会被 400 拒掉。
 - **`POST /api/jobs/{id}/rerun`**：只重跑 stage 2/3 + `--reuse_script` ⇒ **零 API 费用**。
   **不复制产物**：新任务指向原 `result` 目录（`_build_argv` 支持 `result_dir` 覆盖）。
+- ⚠️ **数字人产物的复用只看 `result_dir`**（2026-09-19 查证）：落点
+  `<result_dir>/talking_<backend>/<音频序号>/<参考图主文件名>/merge_video.mp4`，
+  存在即跳过。`result_dir` 每任务一份 ⇒ **手动上传相同素材 = 新任务 = 一页都不跳过**
+  （中间 workspace 的 `avatar_id` 还带时间戳，刻意禁止跨运行复用）；
+  `_file_sha1()` 只在**单次运行内**按参考图分组，不是跨运行去重。
+  ⇒ 想省数字人那 10 分钟，只能用**续跑**，不能靠"重新上传同样文件"。
 - **`GET /api/jobs/{id}/pages`**：服务端拼逐页索引（幻灯片 1-based / 音频 0-based /
   数字人多一层参考图目录，命名不一致，前端别自己拼）。
 - **补上 P0 缺口**：`needs_struct` 原本没人用（PDF/Word 输入不会生成 main.tex）

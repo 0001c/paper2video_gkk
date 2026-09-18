@@ -820,6 +820,16 @@ export default function App() {
             <span><b>有损提取</b>　{ingest.hint || "该格式无法保留结构信息，请在预览中核对"}</span>
           </div>
         )}
+        {/* 内容寻址：同一份文件之前在服务器上存在时直接复用提取结果。
+            不说一句的话，"秒出结果"会被当成"没真提取"（实测容易误判）。 */}
+        {ingest?.cached && !ingest.error && (
+          <div className="notice info">
+            <span>
+              <b>复用了已有结果</b>　这份文件之前上传过（按内容指纹识别），
+              服务器没有重复保存、也没有重复解析 —— 所以这次是秒出的。
+            </span>
+          </div>
+        )}
       </section>
 
       {/* ② 语言与类型 */}

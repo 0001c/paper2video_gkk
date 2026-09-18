@@ -281,8 +281,11 @@ def run_avatar_inference(task):
 
     target_dir, target_video = _target_paths(save_dir, idx, ref_img_path)
     if path.exists(target_video):
-        print("[talking_gen] 第 {} 页已存在，跳过：{}".format(idx, target_video))
-        return idx, True, target_video
+        reusable, why = _inputs_unchanged(target_dir, ref_img_path, audio_path)
+        if reusable:
+            print("[talking_gen] 第 {} 页已存在且{}，跳过：{}".format(idx, why, target_video))
+            return idx, True, target_video
+        print("[talking_gen] 第 {} 页已有产物但{}，重新生成".format(idx, why))
 
     paths = resolve_paths(env_python, backend=backend)
     workspace = _ascii_workspace(idx, backend)
@@ -301,6 +304,7 @@ def run_avatar_inference(task):
 
     os.makedirs(target_dir, exist_ok=True)
     shutil.move(produced, target_video)
+    _write_inputs_stamp(target_dir, ref_img_path, audio_path)
     print("[talking_gen] 第 {} 页完成 -> {}".format(idx, target_video))
     return idx, True, target_video
 
@@ -366,6 +370,83 @@ def _file_sha1(p):
         for chunk in iter(lambda: handle.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+# ──────────────────────────────────────────────────────────────
+# 产物复用判据：输入的指纹
+# ──────────────────────────────────────────────────────────────
+# ⚠️ 为什么必须有这一层（2026-09-19 发现的缺陷）
+#
+# 跳过判据原先只看「页号 + 参考图主文件名」，**音频完全不参与**；而合片
+# （merge_talking.merge_slides_and_talking）的签名里根本没有音频参数 ——
+# 音轨取自数字人视频自带的那条。于是：
+#
+#     音频变了、页数与人像文件名没变 ⇒ 该页被跳过 ⇒ 旧配音跟着旧视频进成片，
+#     本次新生成的 TTS 音频被静默丢弃，字幕与声音整体错位，**全程不报错**。
+#
+# 触发路径已经出现过：续跑时 `reuse_script=False`；或者讲稿文件丢了导致
+# 被动重新生成（`pipeline.py` 里 `if args.reuse_script and path.isfile(...)`
+# 不成立就重新生成，哪怕请求里写了 reuse_script=True）。
+#
+# 修法：产物落盘时把「参考图 + 音频」的 size/sha1 一起写在同目录的
+# ``.inputs.json`` 里；下次跳过之前先比对，不一致就重新生成。
+_INPUTS_STAMP = ".inputs.json"
+_INPUTS_STAMP_VERSION = 1
+
+
+def _inputs_fingerprint(ref_img_path, audio_path):
+    """这一页输入的指纹（参考图 + 音频）。读不到就返回带 error 的字典。"""
+    out = {"version": _INPUTS_STAMP_VERSION}
+    for key, p in (("ref_img", ref_img_path), ("audio", audio_path)):
+        try:
+            out[key] = {"size": os.path.getsize(p), "sha1": _file_sha1(p)}
+        except OSError as exc:
+            return {"version": _INPUTS_STAMP_VERSION,
+                    "error": "{}: {}".format(key, exc)}
+    return out
+
+
+def _inputs_unchanged(target_dir, ref_img_path, audio_path):
+    """产物目录里的指纹与当前输入一致吗？返回 ``(能否复用, 原因)``。
+
+    **任何不确定都判为"不能复用"**，宁可重做：
+      · 没有指纹文件 → 旧产物（本次修复前生成的），无法证明它的音轨对应哪份音频；
+      · 指纹读不动 / 当前输入读不动 → 没证据。
+    代价是重生成一页（几十秒），收益是不会静默产出一版错配音的成片。
+    """
+    stamp_path = path.join(target_dir, _INPUTS_STAMP)
+    if not path.isfile(stamp_path):
+        return False, "没有输入指纹（本次修复前生成的产物）"
+    try:
+        with open(stamp_path, encoding="utf-8") as handle:
+            saved = json.load(handle)
+    except Exception as exc:
+        return False, "输入指纹读不了（{}）".format(type(exc).__name__)
+    now = _inputs_fingerprint(ref_img_path, audio_path)
+    if "error" in now:
+        return False, "当前输入读不了（{}）".format(now["error"])
+    for key in ("ref_img", "audio"):
+        if saved.get(key) != now.get(key):
+            return False, "{} 变了".format(key)
+    if saved.get("version") != now.get("version"):
+        return False, "指纹版本不同"
+    return True, "输入未变"
+
+
+def _write_inputs_stamp(target_dir, ref_img_path, audio_path):
+    """产物落盘后记下输入指纹。**失败只提示**，不影响出片（下次重生成而已）。"""
+    stamp = _inputs_fingerprint(ref_img_path, audio_path)
+    if "error" in stamp:
+        print("[talking_gen] 提示：第 {} 页无法记录输入指纹（{}），下次会重新生成"
+              .format(path.basename(target_dir), stamp["error"]))
+        return
+    try:
+        with open(path.join(target_dir, _INPUTS_STAMP), "w",
+                  encoding="utf-8", newline="") as handle:
+            json.dump(stamp, handle, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        print("[talking_gen] 提示：第 {} 页写入输入指纹失败（{}），下次会重新生成"
+              .format(path.basename(target_dir), type(exc).__name__))
 
 
 def _child_env(gpu_id, backend):
@@ -538,6 +619,8 @@ def _run_musetalk_batch(tasks, profile, env_path):
     # ── 1) 逐页暂存（很便宜），并按参考图指纹分组 ──
     staged = []          # [(idx, target_dir, target_video, staged_img)]
     audio_of = {}        # idx -> staged_audio
+    inputs_of = {}       # idx -> (原始参考图, 原始音频)：写指纹要用**原始**路径，
+                         # 不能用暂存副本（暂存路径按页号复用，跨任务会互相覆盖）
     groups = {}          # sha1 -> [idx, ...]
     for idx, ref_img_path, audio_path, save_dir, _gid, _env, _prof in tasks:
         target_dir, target_video = _target_paths(save_dir, idx, ref_img_path)
@@ -545,6 +628,7 @@ def _run_musetalk_batch(tasks, profile, env_path):
         staged_img, staged_audio = _stage_inputs(ws, ref_img_path, audio_path)
         staged.append((idx, target_dir, target_video, staged_img))
         audio_of[idx] = staged_audio
+        inputs_of[idx] = (ref_img_path, audio_path)
         groups.setdefault(_file_sha1(staged_img), []).append(idx)
 
     # ── 2) 写批量 YAML ──
@@ -619,6 +703,7 @@ def _run_musetalk_batch(tasks, profile, env_path):
             continue
         os.makedirs(target_dir, exist_ok=True)
         shutil.move(produced, target_video)
+        _write_inputs_stamp(target_dir, *inputs_of[idx])
         print("[talking_gen] 第 {} 页完成 -> {}".format(idx, target_video))
         _progress_done += 1
         if progress_report:
@@ -711,10 +796,14 @@ def talking_gen_per_slide(model_type, input_list, save_dir, gpu_list, env_path,
 
     tasks = []
     for idx, (ref_img_path, audio_path) in enumerate(input_list):
-        _, done = _target_paths(save_dir, idx, ref_img_path)
+        target_dir, done = _target_paths(save_dir, idx, ref_img_path)
         if path.exists(done):
-            print("[talking_gen] 第 {} 页已存在，跳过".format(idx))
-            continue
+            # 光"文件在"不够：还要证明它是**这一份输入**生成的（见 _inputs_unchanged）
+            reusable, why = _inputs_unchanged(target_dir, ref_img_path, audio_path)
+            if reusable:
+                print("[talking_gen] 第 {} 页已存在且{}，跳过".format(idx, why))
+                continue
+            print("[talking_gen] 第 {} 页已有产物但{}，重新生成".format(idx, why))
         tasks.append((idx, ref_img_path, audio_path, save_dir,
                       gpu_ids[idx % len(gpu_ids)], env_path, resolved))
 

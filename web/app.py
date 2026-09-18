@@ -102,6 +102,159 @@ def _load_job(job_id):
         return json.load(handle)
 
 
+# ──────────────────────────────────────────────────────────────
+# 上传内容库（内容寻址）
+# ──────────────────────────────────────────────────────────────
+# 为什么不再用随机 id（2026-09-19 改）：
+#   原先三个上传端点都用 `uuid4().hex[:8]` 当目录名 ⇒ 同一份 PDF 上传三次就在
+#   jobs/ 下留三份完全相同的副本（实测：一份 1.5 MB 的 PDF 有 3 个副本、同一张
+#   人像 2 个，重复占用 3.8 MB）。比磁盘更贵的是**重复的解析与重复花钱的步骤**。
+#
+# 现在按**内容指纹**寻址：同一份文件必然落到同一个目录，于是
+#   · 不重复落盘；· 提取结果（paper_text.md）直接复用；
+#   · 将来把指纹接进 main.tex / 幻灯片缓存，就能省掉一次结构化调用。
+#
+# ⚠️ 三条基本要求（详见 docs/内容寻址与去重方案.md）
+#   1. **不可变**：入库后永不修改，存成 `<sha1[:12]><扩展名>`，原文件名只记在 meta；
+#   2. **只对原始上传文件取指纹**：派生结果（正文 / main.tex）不参与寻址，它们的
+#      缓存键必须额外带处理版本号（见 paper_ingest.EXTRACTOR_VERSION）；
+#   3. **删除要有引用意识**：一个内容目录可能被多个任务引用，不做"随任务删"。
+CONTENT_ROOT = os.path.join(JOBS_ROOT, "_content")
+_CONTENT_DIGEST_RE = re.compile(r"^[0-9a-f]{8,40}$")
+
+
+def _content_dir(digest):
+    """内容库里某份内容的目录。"""
+    return os.path.join(CONTENT_ROOT, digest)
+
+
+def _upload_work(upload_id):
+    """把「上传 id」解析成工作目录 —— **唯一入口**。
+
+    读取侧（建任务、预览、后续步骤）一律走这里，不许自己拼路径：命名规则这次从
+    随机 id 改成了内容指纹，若还有地方按老规则拼，症状会是"文件明明在、却报找不到"，
+    而且只在部分入口出现 —— 这类漂移必须靠收敛到一个函数来避免。
+
+    两种格式并存，**都必须认**（浏览器里、老任务的记录里都还存着旧 id）：
+      · ``content_<sha1[:12]>``  → ``jobs/_content/<sha1[:12]>``（新，内容寻址）
+      · 任何**单个路径段**的名字   → ``jobs/<名字>``（旧随机 id，以及手工建的目录）
+    解析不出来返回 ``None``，由调用方报 400。
+
+    ⚠️ 校验的是「只有一个路径段」而不是「前缀在白名单里」：
+    前缀白名单挡不住 `content_../..`（前缀是对的），却会误伤手工/工具建的目录名；
+    而"单段 + 不以点开头"正好是我们要的安全边界，且不限制命名。
+    """
+    if not isinstance(upload_id, str):
+        return None
+    uid = upload_id.strip()
+    if not uid or uid != os.path.basename(uid) or uid.startswith("."):
+        return None                                  # 含路径分隔符 / 隐藏项 → 拒绝
+    if uid.startswith("content_"):
+        digest = uid[len("content_"):]
+        if not _CONTENT_DIGEST_RE.match(digest):     # 指纹必须是纯十六进制
+            return None
+        return _content_dir(digest)
+    return os.path.join(JOBS_ROOT, uid)
+
+
+def _file_digest(file_path):
+    """文件内容 sha1。分块读，别把大文件整块读进内存。"""
+    digest = hashlib.sha1()
+    with io.open(file_path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _content_meta(work):
+    """读内容库里的 ``meta.json``；不存在或坏了返回 None。"""
+    p = os.path.join(work or "", "meta.json")
+    if not os.path.isfile(p):
+        return None
+    try:
+        with io.open(p, encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception:
+        return None
+
+
+def _write_content_meta(work, meta):
+    with io.open(os.path.join(work, "meta.json"), "w",
+                 encoding="utf-8", newline="") as handle:
+        json.dump(meta, handle, ensure_ascii=False, indent=2)
+
+
+def _new_upload_temp(filename):
+    """上传文件的临时落点：先落这里算指纹，再决定是否入库。"""
+    tmp_dir = os.path.join(CONTENT_ROOT, "_tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    return os.path.join(tmp_dir, uuid.uuid4().hex[:12] + _safe_ext(filename))
+
+
+def _safe_ext(filename):
+    """只保留扩展名里的字母数字与点，且截断 —— 上传文件名不可信。"""
+    return re.sub(r"[^A-Za-z0-9.]", "", os.path.splitext(filename or "")[1])[:10]
+
+
+def _remove_quietly(file_path):
+    """尽力删一个文件（失败不抛）。用于清理上传临时件。"""
+    try:
+        os.remove(file_path)
+    except OSError:
+        pass
+
+
+async def _receive_upload(upload, safe_name):
+    """把上传流式落盘到临时文件，返回其路径。"""
+    tmp = _new_upload_temp(safe_name)
+    with io.open(tmp, "wb") as handle:
+        while True:                                  # 流式，不整块读进内存
+            chunk = await upload.read(1 << 20)
+            if not chunk:
+                break
+            handle.write(chunk)
+    return tmp
+
+
+def _store_content(kind, tmp_path, filename):
+    """把一个刚上传的文件放进内容库。
+
+    返回 ``(内容 id, 内容目录, 是否命中已有内容, 入库后的绝对路径, meta)``。
+
+    命中（同一份内容以前上传过）时**不覆盖**已存在的文件 —— 内容寻址的前提是
+    不可变：指纹一样就说明内容一样，覆盖没有意义，还多一次写。
+    """
+    digest = _file_digest(tmp_path)
+    short = digest[:12]
+    work = _content_dir(short)
+    os.makedirs(os.path.join(work, "input"), exist_ok=True)
+    stored = os.path.join(work, "input", short + _safe_ext(filename))
+    hit = os.path.isfile(stored)
+    if not hit:
+        shutil.move(tmp_path, stored)
+    try:
+        os.remove(tmp_path)                          # 命中时删临时文件；不命中已被搬走
+    except OSError:
+        pass
+
+    meta = _content_meta(work) or {}
+    names = list(meta.get("original_names") or [])
+    if filename and filename not in names:
+        names.append(filename)
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    meta.update({
+        "sha1": digest, "sha1_12": short, "kind": kind,
+        "stored_name": os.path.basename(stored),
+        # 原名只作展示/追溯用：入库文件名必须是内容的函数，否则指纹不再代表内容
+        "original_names": names[-8:],
+        "size": os.path.getsize(stored),
+        "updated_at": now,
+    })
+    meta.setdefault("created_at", now)
+    _write_content_meta(work, meta)
+    return "content_" + short, work, hit, stored, meta
+
+
 def _result_dir(job):
     """任务的**产物目录** —— 读取侧的唯一入口。
 
@@ -1091,37 +1244,61 @@ async def api_ingest(paper: UploadFile = File(...)):
 
     这是「转换预览」这一步的后端：把 main.tex 的章节结构 + 正文开头
     给使用者确认，确认无误再开跑 —— 因为转换错了下游无法补救。
+
+    **内容寻址（2026-09-19）**：同一份文件上传两次会落到**同一个内容目录**，
+    第二次直接复用已提取的正文，不再落第二份盘、也不再重复解析。
+    可复用的前提是「文件内容 + 提取器版本」都一致 —— 缺了版本号这一项，
+    改了预处理逻辑却仍命中旧缓存（内容对不上且不报错）。
     """
-    tmp_id = "ingest_" + uuid.uuid4().hex[:8]
-    work = os.path.join(JOBS_ROOT, tmp_id)
-    os.makedirs(os.path.join(work, "input"), exist_ok=True)
+    import paper_ingest as pi
 
     safe_name = os.path.basename(paper.filename or "upload.bin")
-    src = os.path.join(work, "input", safe_name)
-    with io.open(src, "wb") as handle:
-        while True:                                   # 流式落盘，不整块读进内存
-            chunk = await paper.read(1 << 20)
-            if not chunk:
-                break
-            handle.write(chunk)
-
-    import paper_ingest as pi
+    tmp = await _receive_upload(paper, safe_name)
     try:
-        text, meta = pi.ingest(src, os.path.join(work, "ingest"))
-    except Exception as exc:
-        # 失败就把临时目录删掉：否则每次失败都在 jobs/ 里留一个空壳，
-        # 使用者（和后续排查的人）会以为"上传过但没结果"（实测踩过）。
-        shutil.rmtree(work, ignore_errors=True)
-        return JSONResponse(status_code=400, content={
-            "ok": False,
-            "error": "{}: {}".format(type(exc).__name__, exc),
-            "hint": "支持 .tex / .zip / .docx / .doc / .pdf",
-        })
+        content_id, work, existed, src, meta = _store_content("paper", tmp, safe_name)
+    except Exception:
+        try:
+            os.remove(tmp)                       # 入库失败别留临时文件
+        except OSError:
+            pass
+        raise
+
+    text_file = os.path.join(work, "ingest", "paper_text.md")
+    cached = bool(existed
+                  and meta.get("extractor_version") == pi.EXTRACTOR_VERSION
+                  and os.path.isfile(text_file))
+
+    if cached:
+        with io.open(text_file, encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+        print("[ingest] 内容命中（{}），复用已提取的正文：{}".format(
+            content_id, os.path.basename(src)))
+    else:
+        try:
+            text, extracted = pi.ingest(src, os.path.join(work, "ingest"))
+        except Exception as exc:
+            shutil.rmtree(os.path.join(work, "ingest"), ignore_errors=True)
+            if not existed:
+                # 内容目录是这次刚建的，而且这个 id **还没被返给任何人** ⇒
+                # 不可能有任务引用它，可以安全删掉（不留空壳，原代码的意图）。
+                # `existed` 为真时绝不能删：老任务的 source_path 指在里面。
+                shutil.rmtree(work, ignore_errors=True)
+            return JSONResponse(status_code=400, content={
+                "ok": False,
+                "error": "{}: {}".format(type(exc).__name__, exc),
+                "hint": "支持 .tex / .zip / .docx / .doc / .pdf",
+            })
+        # 提取结论与版本号一起记进 meta：下次命中就靠它判断"能不能复用"
+        meta.update(dict(extracted or {}))
+        meta["extractor_version"] = pi.EXTRACTOR_VERSION
+        _write_content_meta(work, meta)
 
     return {
         "ok": True,
-        "ingest_id": tmp_id,
+        "ingest_id": content_id,
         "source_path": src,
+        # 让界面能告诉使用者"这份论文之前传过，直接复用了提取结果"
+        "cached": cached,
         "detected_format": meta.get("detected_format"),
         "needs_llm": meta.get("needs_llm", True),
         "chars": meta.get("chars", len(text or "")),
@@ -1147,28 +1324,29 @@ async def api_portrait(paper: UploadFile = File(...)):
     **不做人脸检测** —— 本机 OpenCV 5 已移除级联分类器且不带数据文件，
     要做得下载模型，而学校服务器可能离线。所以返回里写明"未做检测"，
     并列出人工确认要点，不给虚假的安全感。
+
+    **内容寻址（2026-09-19）**：同一张图上传两次落到同一个内容目录。
+    这条不只是省磁盘 —— 入库文件名是内容的函数（`<sha1[:12]><扩展名>`），
+    而数字人的产物路径里**含参考图的主文件名**，所以"同样的图 ⇒ 同样的产物路径"，
+    跨任务的产物复用才可能行得通。
     """
-    tmp_id = "portrait_" + uuid.uuid4().hex[:8]
-    work = os.path.join(JOBS_ROOT, tmp_id)
-    os.makedirs(os.path.join(work, "input"), exist_ok=True)
-
     safe_name = os.path.basename(paper.filename or "portrait.png")
-    dest = os.path.join(work, "input", safe_name)
-    with io.open(dest, "wb") as handle:
-        while True:                                   # 流式落盘，不整块读进内存
-            chunk = await paper.read(1 << 20)
-            if not chunk:
-                break
-            handle.write(chunk)
+    tmp = await _receive_upload(paper, safe_name)
 
-    fmt = _sniff_image(dest)
+    fmt = _sniff_image(tmp)
     if fmt is None:
-        shutil.rmtree(work, ignore_errors=True)       # 失败不留空壳目录
+        try:
+            os.remove(tmp)                            # 失败不留任何残留
+        except OSError:
+            pass
         return JSONResponse(status_code=400, content={
             "ok": False,
             "error": "这不是一张能识别的图片（按文件头判断，不看扩展名）",
             "hint": "支持 PNG / JPEG / WEBP / BMP",
         })
+
+    content_id, work, existed, dest, content_meta = _store_content(
+        "portrait", tmp, safe_name)
 
     warnings = []
     width = height = None
@@ -1194,11 +1372,15 @@ async def api_portrait(paper: UploadFile = File(...)):
 
     return {
         "ok": True,
+        "portrait_id": content_id,
         "portrait_path": dest,
+        "cached": existed,
         "format": fmt,
         "width": width,
         "height": height,
         "size_mb": round(os.path.getsize(dest) / 2 ** 20, 2),
+        # 界面上显示原名（入库文件名是指纹，直接给用户看没意义）
+        "original_name": (content_meta.get("original_names") or [safe_name])[-1],
         "warnings": warnings,
         "note": "未做人脸检测（本机 OpenCV 已移除级联分类器）。请自行确认："
                 "正脸、单人、无遮挡；侧脸或多人会让数字人环节失败或效果很差。",
@@ -1273,22 +1455,14 @@ async def api_voice_upload(paper: UploadFile = File(...), ref_text: str = Form("
       2. 时长必须落在 3~30 秒。太短克隆不稳定（宁可明确拒绝，也不要产出一个
          人声音色乱漂的成片），太长只是白等。
     """
-    tmp_id = "voice_" + uuid.uuid4().hex[:8]
-    work = os.path.join(JOBS_ROOT, tmp_id)
-    os.makedirs(os.path.join(work, "input"), exist_ok=True)
-
     safe_name = os.path.basename(paper.filename or "voice.wav")
-    src = os.path.join(work, "input", safe_name)
-    with io.open(src, "wb") as handle:
-        while True:
-            chunk = await paper.read(1 << 20)
-            if not chunk:
-                break
-            handle.write(chunk)
+    # 临时落盘即可：算完指纹、解完码就删 —— 音色自身的缓存本来就是内容寻址的
+    # （`jobs/_voices/upload_<sha1[:16]>.wav`），没必要再留一份原始上传件。
+    src = await _receive_upload(paper, safe_name)
 
     fmt = _sniff_audio(src)
     if fmt is None:
-        shutil.rmtree(work, ignore_errors=True)
+        _remove_quietly(src)
         return JSONResponse(status_code=400, content={
             "ok": False,
             "error": "这不是一段能识别的音频（按文件头判断，不看扩展名）",
@@ -1297,7 +1471,7 @@ async def api_voice_upload(paper: UploadFile = File(...), ref_text: str = Form("
 
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
-        shutil.rmtree(work, ignore_errors=True)
+        _remove_quietly(src)
         return JSONResponse(status_code=400, content={
             "ok": False, "error": "找不到 ffmpeg，无法解码音频（流水线本身也依赖它）",
         })
@@ -1310,7 +1484,7 @@ async def api_voice_upload(paper: UploadFile = File(...), ref_text: str = Form("
         [ffmpeg, "-y", "-v", "error", "-i", src,
          "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le", dest],
         capture_output=True, text=True, timeout=300)
-    shutil.rmtree(work, ignore_errors=True)
+    _remove_quietly(src)
     if proc.returncode != 0 or not os.path.isfile(dest):
         tail = (proc.stderr or "").strip().splitlines()[-3:]
         return JSONResponse(status_code=400, content={
@@ -1372,8 +1546,10 @@ async def api_voice_upload(paper: UploadFile = File(...), ref_text: str = Form("
 async def api_create_job(payload: dict):
     """创建任务 → 入队。同一时刻只会有一个在跑（单卡）。"""
     ingest_id = payload.get("ingest_id")
-    work = os.path.join(JOBS_ROOT, ingest_id or "")
-    if not ingest_id or not os.path.isdir(work):
+    # 走**唯一入口**解析往哪找上传内容：它同时认新老两种 id（老的 ingest_<随机>
+    # 目录还在、老任务也还指着），并挡住 `../` 这类穿越（使用者传的字段不可信）。
+    work = _upload_work(ingest_id)
+    if not work or not os.path.isdir(work):
         raise HTTPException(status_code=400, detail="先上传论文（缺少有效的 ingest_id）")
 
     # 创建任务时也接受凭据（使用者可能没点"自检"就直接开跑）。
@@ -1427,6 +1603,11 @@ async def api_create_job(payload: dict):
         # 放在这里而不是去 jobs/<ingest_id>/input 里找，是因为 ingest 目录
         # 将来可能被清理，而任务自己记着更可靠。
         "source_path": payload.get("source_path"),
+        # 内容寻址的溯源信息：论文与音色的内容指纹（音色本身就是 sha1 命名的 wav）。
+        # 记下来的用处：将来把"同样的输入 ⇒ 同样的产物"做成缓存键时，这些字段
+        # 就是现成的上半截；排查时也能一眼看出"这个任务用的是哪一份文件"。
+        "ingest_id": ingest_id,
+        "source_digest": (_content_meta(work) or {}).get("sha1"),
     }
     _save_job(job)
     await _QUEUE.put(job_id)

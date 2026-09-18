@@ -150,6 +150,26 @@ UnicodeEncodeError，且崩点在流水线**最末端**。已在 `pv_env.py` 模
   新 TTS 音频静默丢弃、字幕与声音错位，**全程不报错**。
   触发：续跑 `reuse_script: False`，或讲稿文件丢失导致被动重新生成。
   修法首选「把音频指纹写进每页目录的 `.inputs.json`，跳过前比对」。
+  ✅ **已于 2026-09-19 按此修好**（`talking_gen._inputs_unchanged` /
+  `_write_inputs_stamp`，两处跳过点 + 两处写入点）。
+
+## 上传内容库（内容寻址，2026-09-19 实施）
+
+- 结构 `jobs/_content/<sha1[:12]>/`：`meta.json` + 不可变的 `input/<sha1><ext>`
+  + 派生的 `ingest/`（`paper_text.md`、`ingest_meta.json`）。
+- **解析上传 id 的唯一入口是 `_upload_work()`**（`web/app.py`）：认
+  `content_<sha1[:12]>` 与任何单个路径段的名字（老随机 id）。校验的是
+  「一个路径段 + 不以点开头」，不是前缀白名单 —— 白名单挡不住 `content_../..`，
+  却会误伤手工建的目录名。
+- **命中判据 = 内容 sha1 + `paper_ingest.EXTRACTOR_VERSION`**：
+  ⚠️ **改了 `scripts/paper_ingest.py` 的提取逻辑必须把版本号 +1**，
+  否则命中旧缓存且不报错。
+- 派生正文仍按任务复制一份到 `<job_dir>/ingest/`（任务自包含，内容库被 GC 也不影响）。
+- 任务记录新增 `ingest_id` / `source_digest`。
+- **老目录（`ingest_*`/`portrait_*`）不自动迁移**：老任务的 `source_path` 是绝对
+  路径指进去的。实测可回收仅约 1.2 MB，不值得动历史记录。
+- ⚠️ **测试清理必须跳过 `_` 开头的共享目录**（`_content` / `_voices`）：
+  已封装成 `smoke_web_api._cleanup_new()` 与 `_cleanup_new_content()`。
   ⇒ 想省数字人那 10 分钟，只能用**续跑**，不能靠"重新上传同样文件"。
 - **`GET /api/jobs/{id}/pages`**：服务端拼逐页索引（幻灯片 1-based / 音频 0-based /
   数字人多一层参考图目录，命名不一致，前端别自己拼）。

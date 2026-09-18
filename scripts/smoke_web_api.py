@@ -66,6 +66,84 @@ def load_app():
 
 
 # ──────────────────────────────────────────────────────────────
+# 清理助手：共享目录里的删除有两条硬规矩
+# ──────────────────────────────────────────────────────────────
+def _cleanup_new(app, before):
+    """删掉**本次测试新建**的 jobs/ 子目录（快照差集）。
+
+    ⚠️ 两条规矩都是被事故与真实风险逼出来的：
+      1. **只能用差集，不能用名字前缀批量删**。2026-09-19 那条"凡是 `job_` 开头
+         就删"把使用者正在跑的任务整个删了（job.json / result/ 里已生成的幻灯片与
+         音频 / progress.jsonl 全没），而流水线还在跑 —— 前缀是别人也在用的命名空间。
+      2. **跳过 `_` 开头的目录**。`_content`（内容库）与 `_voices`（音色缓存）是
+         **共享**的，可能同时被别的任务、别的任务记录引用；测试整个删掉它们，
+         别人就会遇到"文件明明在、却报找不到"。判据同样只能是"是不是我这次建的"。
+    """
+    removed = []
+    for name in sorted(set(os.listdir(app.JOBS_ROOT)) - set(before)):
+        if name.startswith("_"):
+            continue
+        p = os.path.join(app.JOBS_ROOT, name)
+        if os.path.isdir(p):
+            shutil.rmtree(p, ignore_errors=True)
+        else:
+            os.remove(p)
+        removed.append(name)
+    return removed
+
+
+def _content_state(app):
+    """内容库现在的**内容目录**集合（用于测试前后做差集）。
+
+    `_tmp` 不算：它是上传的临时落点，按需创建，不是"一份内容"。
+    """
+    root = getattr(app, "CONTENT_ROOT", None)
+    if not root or not os.path.isdir(root):
+        return set()
+    return {n for n in os.listdir(root) if n != "_tmp"}
+
+
+def _cleanup_new_content(app, before):
+    """只删**本次测试新建**的内容目录。
+
+    `_tmp` 不删：它是上传的临时落点，可能与正在运行的服务共用（并发上传时
+    删它会把别人正在写的临时文件弄没）。
+    """
+    root = getattr(app, "CONTENT_ROOT", None)
+    if not root or not os.path.isdir(root):
+        return []
+    removed = []
+    for name in sorted(set(os.listdir(root)) - set(before)):
+        if name == "_tmp":
+            continue
+        shutil.rmtree(os.path.join(root, name), ignore_errors=True)
+        removed.append(name)
+    return removed
+
+
+def _png_bytes(width, height):
+    """造一张真 PNG（用 PIL，保证文件头与结构都合法）。"""
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), (205, 185, 165)).save(buf, format="PNG")
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def _read_json_quietly(file_path):
+    try:
+        with io.open(file_path, encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception:
+        return None
+
+
+def _read_meta_quietly(app, content_id):
+    """读内容库某份内容的 meta.json（按 id，不拼路径）。"""
+    digest = (content_id or "").replace("content_", "")
+    return _read_json_quietly(os.path.join(app.CONTENT_ROOT, digest, "meta.json"))
+
+
+# ──────────────────────────────────────────────────────────────
 # ① 进度解析：用真实历史日志，拿音频个数当独立真值
 # ──────────────────────────────────────────────────────────────
 def test_read_progress(app):
@@ -617,8 +695,8 @@ def test_pages_and_rerun(app):
         # 自己的目录，所以这个写法一直"看着没问题"。
         # 现在的规矩：**共享目录里的清理只能用「进入函数前 vs 现在」的快照差集**，
         # 绝不能用名字前缀/模式批量删 —— 前缀是别人也可能在用的命名空间。
-        for name in set(os.listdir(app.JOBS_ROOT)) - jobs_before:
-            shutil.rmtree(os.path.join(app.JOBS_ROOT, name), ignore_errors=True)
+        # （助手还额外跳过 `_` 开头的共享目录，见 _cleanup_new。）
+        _cleanup_new(app, jobs_before)
     return ok
 
 
@@ -702,6 +780,7 @@ def test_portrait_upload(app):
         return buf.getvalue()
 
     before = set(os.listdir(app.JOBS_ROOT))
+    content_before = _content_state(app)
     srv = app.app
     try:
         with TestClient(srv) as client:
@@ -739,14 +818,17 @@ def test_portrait_upload(app):
                         "PNG" in (r.json().get("hint") or ""),
                         "%s" % r.json().get("hint"))
 
-            after = set(os.listdir(app.JOBS_ROOT))
-            created = after - before
-            # 3 次请求里只有 2 次成功 → 只该多出 2 个目录
-            ok &= check("失败那次不留空壳目录", len(created) == 2,
-                        "新建 %d 个目录（期望 2）：%s" % (len(created), sorted(created)))
+            # 内容寻址（2026-09-19）之后，上传不再往 jobs/ 下建随机目录，
+            # 而是进**共享内容库**。所以断言改成"库里新增了几份内容"：
+            #   3 次请求里 2 次成功，且两次是**不同**的图（512×640 与 128×128）
+            #   ⇒ 新增 2 份；失败那次不留任何内容（否则库里攒下"传过但没结果"的垃圾）。
+            new_content = _content_state(app) - content_before
+            ok &= check("失败那次不往内容库里落东西", len(new_content) == 2,
+                        "新增 %d 份内容（期望 2 份不同的图）：%s"
+                        % (len(new_content), sorted(new_content)))
     finally:
-        for name in set(os.listdir(app.JOBS_ROOT)) - before:
-            shutil.rmtree(os.path.join(app.JOBS_ROOT, name), ignore_errors=True)
+        _cleanup_new_content(app, content_before)
+        _cleanup_new(app, before)
     return ok
 
 
@@ -1765,6 +1847,239 @@ def test_voice_and_ref_audio(app):
     return ok
 
 
+
+# ──────────────────────────────────────────────────────────────
+# ⑪ 内容寻址（同一份文件只存一份）+ 产物的输入指纹
+# ──────────────────────────────────────────────────────────────
+def test_content_store_and_fingerprint(app):
+    """内容寻址去重 + 产物的输入指纹。
+
+    为什么单独一组：这两件事**退化了都不报错**。
+      · 去重退化 → 只是多占磁盘、重复解析（很难察觉）；
+      · 指纹退化 → 静默产出一版「旧配音 + 新字幕」的成片（只有听才听得出来）。
+    """
+    print()
+    print("=" * 66)
+    print("[11] 内容寻址（同一份文件只存一份）+ 输入指纹（音频变了必须重做）")
+    print("=" * 66)
+    ok = True
+
+    from fastapi.testclient import TestClient
+    import paper_ingest as pi
+
+    srv = app.app
+    jobs_before = set(os.listdir(app.JOBS_ROOT))
+    content_before = _content_state(app)
+    saved_build = app._build_argv
+    saved_ingest = pi.ingest
+    created_jobs = []
+
+    # 假提取器：只为能**数调用次数**（真提取依赖 PDF/DOCX，本组不关心内容质量）
+    calls = {"n": 0}
+
+    def fake_ingest(src, out_dir):
+        calls["n"] += 1
+        os.makedirs(out_dir, exist_ok=True)
+        text = "正文第 %d 次提取" % calls["n"]
+        io.open(os.path.join(out_dir, "paper_text.md"), "w",
+                encoding="utf-8", newline="").write(text)
+        meta = {"detected_format": "fake", "needs_llm": True, "chars": len(text)}
+        io.open(os.path.join(out_dir, "ingest_meta.json"), "w",
+                encoding="utf-8", newline="").write(json.dumps(meta))
+        return text, meta
+
+    try:
+        ok &= check("paper_ingest 暴露了提取器版本号（缓存键的另一半）",
+                    isinstance(getattr(pi, "EXTRACTOR_VERSION", None), str),
+                    "EXTRACTOR_VERSION=%r" % (getattr(pi, "EXTRACTOR_VERSION", None),))
+
+        pi.ingest = fake_ingest
+        # 建任务时把命令行换成假命令，避免测试真的拉起流水线
+        app._build_argv = lambda job: [sys.executable, "-u", "-c", "pass"]
+        paper_bytes = b"%PDF-1.4\n% smoke fake paper\n" + b"x" * 2048
+
+        with TestClient(srv) as client:
+            # ── A. 同一份文件传两次（第二次连文件名都换了）──
+            r1 = client.post("/api/ingest", files={"paper": ("论文A.pdf", paper_bytes,
+                                                             "application/pdf")})
+            r2 = client.post("/api/ingest", files={"paper": ("换了个名字.pdf", paper_bytes,
+                                                             "application/pdf")})
+            d1, d2 = r1.json(), r2.json()
+            ok &= check("两次上传都成功",
+                        r1.status_code == 200 and r2.status_code == 200,
+                        "HTTP %s / %s" % (r1.status_code, r2.status_code))
+            ok &= check("同一份内容 → 同一个 ingest_id",
+                        d1.get("ingest_id") == d2.get("ingest_id"),
+                        "%s / %s" % (d1.get("ingest_id"), d2.get("ingest_id")))
+            ok &= check("第一次真提取、第二次命中缓存（提取器只被调用一次）",
+                        calls["n"] == 1 and d1.get("cached") is False
+                        and d2.get("cached") is True,
+                        "提取 %d 次 / cached=%s→%s"
+                        % (calls["n"], d1.get("cached"), d2.get("cached")))
+            ok &= check("命中时正文与首次一致（不是空文件）",
+                        (d2.get("preview_head") or "").startswith("正文第 1 次提取"),
+                        "preview_head=%r" % (d2.get("preview_head") or "")[:36])
+            new_content = _content_state(app) - content_before
+            ok &= check("换了文件名仍是同一份内容（库里只多一份）",
+                        len(new_content) == 1,
+                        "新增 %d 份：%s" % (len(new_content), sorted(new_content)))
+            ok &= check("落库名是指纹而不是原文件名（内容寻址的要求）",
+                        os.path.basename(d2.get("source_path") or "").startswith(
+                            (d2.get("ingest_id") or "").replace("content_", "")),
+                        "落库名=%s" % os.path.basename(d2.get("source_path") or ""))
+            meta_now = _read_meta_quietly(app, d2.get("ingest_id")) or {}
+            ok &= check("原名记在 meta 里（可追溯，界面要显示人话）",
+                        "换了个名字.pdf" in (meta_now.get("original_names") or []),
+                        "original_names=%s" % (meta_now.get("original_names"),))
+
+            # ── B. 提取器版本升级 ⇒ 必须重新提取（缓存失效的经典坑）──
+            saved_ver = pi.EXTRACTOR_VERSION
+            pi.EXTRACTOR_VERSION = saved_ver + "-bumped"
+            r3 = client.post("/api/ingest", files={"paper": ("论文A.pdf", paper_bytes,
+                                                             "application/pdf")})
+            ok &= check("提取器版本变了 → 不命中缓存、重新提取",
+                        r3.json().get("cached") is False and calls["n"] == 2,
+                        "cached=%s / 提取 %d 次" % (r3.json().get("cached"), calls["n"]))
+            pi.EXTRACTOR_VERSION = saved_ver
+
+            # ── C. 人像也去重 ──
+            png = _png_bytes(512, 640)
+            pa = client.post("/api/portrait", files={"paper": ("me.png", png,
+                                                                "application/octet-stream")})
+            pb = client.post("/api/portrait", files={"paper": ("me-again.png", png,
+                                                                "application/octet-stream")})
+            ok &= check("同一张人像两次上传 → 同一个 portrait_path",
+                        pa.json().get("portrait_path") == pb.json().get("portrait_path"),
+                        os.path.basename(pa.json().get("portrait_path") or ""))
+            ok &= check("第二次标记为命中缓存", pb.json().get("cached") is True,
+                        "cached=%s" % pb.json().get("cached"))
+            ok &= check("命中时仍回传真实尺寸（校验没被跳过）",
+                        pb.json().get("width") == 512 and pb.json().get("height") == 640,
+                        "%sx%s" % (pb.json().get("width"), pb.json().get("height")))
+            ok &= check("人像落库名也是指纹（数字人产物路径含这个主文件名）",
+                        os.path.basename(pa.json().get("portrait_path") or "").startswith(
+                            (pa.json().get("portrait_id") or "").replace("content_", "")),
+                        os.path.basename(pa.json().get("portrait_path") or ""))
+
+            # ── D. 建任务能走通（新 id 与老 id 都要能解析）──
+            portrait = pa.json()["portrait_path"]
+            body = client.post("/api/jobs", json={
+                "ingest_id": d2["ingest_id"], "portrait_path": portrait,
+                "config": {"stages": ["1"], "slide_lang": "zh", "script_lang": "zh"},
+                "api_key": "sk-smoke-fake"}).json()
+            jid = body.get("job_id")
+            created_jobs.append(jid)
+            j = app._load_job(jid) if jid else {}
+            ok &= check("用内容寻址的 id 能建任务", bool(jid), "job_id=%s" % jid)
+            ok &= check("任务记录里留下内容指纹（溯源 + 将来的缓存键上半截）",
+                        len(j.get("source_digest") or "") == 40,
+                        "source_digest=%s" % (j.get("source_digest") or "<无>")[:16])
+            if jid:
+                client.post("/api/jobs/%s/cancel" % jid)
+
+            # 老格式 ingest_id 仍要能解析（老任务记录、浏览器里都还存着旧值）
+            legacy = "smoke_legacy_" + uuid.uuid4().hex[:6]
+            ldir = os.path.join(app.JOBS_ROOT, legacy)
+            os.makedirs(os.path.join(ldir, "ingest"), exist_ok=True)
+            io.open(os.path.join(ldir, "ingest", "paper_text.md"), "w",
+                    encoding="utf-8").write("老任务的正文")
+            lb = client.post("/api/jobs", json={
+                "ingest_id": legacy, "portrait_path": portrait,
+                "config": {"stages": ["1"]}, "api_key": "sk-smoke-fake"})
+            ok &= check("老格式 ingest_id 仍被接受（向后兼容）", lb.status_code == 200,
+                        "HTTP %s %s" % (lb.status_code, lb.text[:70]))
+            if lb.status_code == 200:
+                created_jobs.append(lb.json().get("job_id"))
+                client.post("/api/jobs/%s/cancel" % lb.json()["job_id"])
+    finally:
+        pi.ingest = saved_ingest
+        app._build_argv = saved_build
+        _cleanup_new_content(app, content_before)
+        _cleanup_new(app, jobs_before)
+
+    # ── E. 唯一入口的解析规则（含穿越拒绝）──
+    for uid, want_ok, why in (
+        ("content_0123456789ab", True, "内容寻址格式"),
+        ("ingest_ab12cd34", True, "老随机 id 格式"),
+        ("smoke_manual_dir", True, "手工/工具建的目录名"),
+        ("../../etc/passwd", False, "路径穿越"),
+        ("content_../../x", False, "前缀对但尾巴穿越"),
+        ("content_not_hex_here", False, "content_ 后面不是十六进制"),
+        ("..", False, "父目录"),
+        ("", False, "空串"),
+        (None, False, "None"),
+    ):
+        got = app._upload_work(uid)
+        ok &= check("_upload_work(%r) —— %s" % (uid, why),
+                    (got is not None) == want_ok,
+                    "解析为 %s" % ("<None>" if got is None else os.path.basename(got)))
+
+    # ── F. 产物的输入指纹（阶段 2）：纯文件比对，不碰 GPU ──
+    import talking_gen as tg
+    work = os.path.join(ROOT, "jobs", "smoke_fp_" + uuid.uuid4().hex[:6])
+    os.makedirs(work, exist_ok=True)
+    try:
+        img = os.path.join(work, "ref.png")
+        aud = os.path.join(work, "0.wav")
+        io.open(img, "wb").write(b"IMG-1")
+        io.open(aud, "wb").write(b"AUDIO-1")
+        tdir = os.path.join(work, "out", "0", "ref")
+        os.makedirs(tdir, exist_ok=True)
+        video = os.path.join(tdir, "merge_video.mp4")
+        io.open(video, "wb").write(b"VIDEO")
+
+        reusable, why = tg._inputs_unchanged(tdir, img, aud)
+        ok &= check("产物在、但没有输入指纹（修复前的旧产物）→ 不跳过",
+                    reusable is False, why)
+
+        tg._write_inputs_stamp(tdir, img, aud)
+        reusable, why = tg._inputs_unchanged(tdir, img, aud)
+        ok &= check("写下指纹后、同一份输入 → 可以跳过（省下重做）",
+                    reusable is True, why)
+
+        # 反面对照：旧判据只看「文件在不在」，音频变了照样跳过 —— 这正是那个静默缺陷
+        io.open(aud, "wb").write(b"AUDIO-2")
+        ok &= check("对照组：旧判据在此场景下会跳过（证明不是假想问题）",
+                    os.path.isfile(video) is True, "文件存在=%s" % os.path.isfile(video))
+        reusable, why = tg._inputs_unchanged(tdir, img, aud)
+        ok &= check("音频变了 → 新判据拒绝复用（旧配音不会静默进成片）",
+                    reusable is False and "audio" in why, why)
+
+        io.open(img, "wb").write(b"IMG-2")
+        reusable, why = tg._inputs_unchanged(tdir, img, aud)
+        ok &= check("参考图变了 → 同样拒绝复用",
+                    reusable is False and "ref_img" in why, why)
+
+        keys = set((_read_json_quietly(os.path.join(tdir, ".inputs.json")) or {}).keys())
+        ok &= check("指纹里同时有参考图与音频两组 sha1（少一个就挡不住错配）",
+                    keys >= {"ref_img", "audio", "version"}, sorted(keys))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+    # ── G. 静态：两处跳过点都必须过指纹，防止将来被改回「只看文件存在」──
+    tg_path = os.path.join(ROOT, "Paper2Video-main", "src", "talking_gen.py")
+    tg_src = io.open(tg_path, encoding="utf-8").read()
+    ok &= check("两处跳过点都过指纹（单页路径 + 批量路径）",
+                tg_src.count("_inputs_unchanged(target_dir, ref_img_path, audio_path)") == 3,
+                "出现 %d 次（1 处定义 + 2 处调用）"
+                % tg_src.count("_inputs_unchanged(target_dir, ref_img_path, audio_path)"))
+    ok &= check("产物落盘后都写下指纹（1 处定义 + 2 处调用）",
+                tg_src.count("_write_inputs_stamp(") == 3,
+                "出现 %d 次" % tg_src.count("_write_inputs_stamp("))
+    ok &= check("批量路径记的是**原始**输入路径（暂存路径按页号复用，跨任务会互相覆盖）",
+                "inputs_of[idx] = (ref_img_path, audio_path)" in tg_src,
+                "inputs_of 已记录")
+
+    # ── H. 静态：上传端点不再产生随机 id 目录 ──
+    app_src = io.open(os.path.join(ROOT, "web", "app.py"), encoding="utf-8").read()
+    ok &= check("上传端点不再用随机 id 建目录（去重的前提）",
+                "uuid.uuid4().hex[:8]" not in app_src,
+                "仍出现 %d 次" % app_src.count("uuid.uuid4().hex[:8]"))
+    ok &= check("建任务走唯一入口解析上传 id",
+                "work = _upload_work(ingest_id)" in app_src, "已收敛到一个函数")
+    return ok
+
+
 def main():
     app = load_app()
     suite_started = time.time()          # 清理护栏：只删本次测试期间新建的目录
@@ -1779,6 +2094,7 @@ def main():
         test_rerun_shares_artifacts(app),
         test_phase_model_and_keys(app),
         test_voice_and_ref_audio(app),
+        test_content_store_and_fingerprint(app),
     ]
     orphan = _cleanup_orphan_jobs(app, suite_started)
     if orphan:

@@ -28,31 +28,27 @@
 用户目标：本地模型全部国产化（优先可用 > 效果），API 侧 LLM 全部换 DeepSeek-V4.1-Flash。
 完整方案见 `docs/模型替换方案.md`，核验数据可用 `scripts/hf_check.py` 复跑。
 
-**已定选型**（许可证/参数量均在 HF API 上实测过）：
+**已定选型**（许可证/参数量均在 HF API 上实测过；详表见 `docs/模型替换方案.md`）：
 
-- 语音合成：F5-TTS（CC-BY-NC **禁商用**）→ `Qwen/Qwen3-TTS-12Hz-1.7B-Base`（Apache-2.0, 1.93B）
-- 光标定位：UI-TARS-1.5-7B（16–18GB 装不下）→ `mPLUG/GUI-Owl-1.5-4B-Instruct`（MIT, 4.44B）
-- 转写对齐：WhisperX → `Qwen/Qwen3-ASR-0.6B` + `Qwen/Qwen3-ForcedAligner-0.6B`
-- 数字人：Hallo2（锁 cu118，sm_120 死结）→ `MeiGen-AI/InfiniteTalk`（Apache-2.0, 8GB）
-- 音色相似度：SpeechBrain ECAPA → CAM++（3D-Speaker / ModelScope `iic/...`）
-- API 语言+视觉：GPT-4.1 / Gemini-2.5-Pro → **`deepseek-flash`**（原生图像输入、1M 上下文）
-- API 视频理解：Gemini-2.5-Flash → `Qwen3.5-Omni-Plus`（DeepSeek 不支持视频输入）
+- 语音合成 → `Qwen/Qwen3-TTS-12Hz-1.7B-Base`（Apache-2.0，替 F5-TTS 的 CC-BY-NC）
+- 光标定位 → `mPLUG/GUI-Owl-1.5-4B-Instruct`（MIT；UI-TARS-7B 显存装不下）
+- 转写对齐 → `Qwen/Qwen3-ASR-0.6B` + `Qwen/Qwen3-ForcedAligner-0.6B`
+- 数字人 → `MeiGen-AI/InfiniteTalk`（Apache-2.0；Hallo2 锁 cu118，在 sm_120 上是死结）
+- API 语言+视觉 → **`deepseek-flash`**（原生图像输入、1M 上下文）
+- API 视频理解 → `Qwen3.5-Omni-Plus`（DeepSeek 不支持视频输入）
 
-**改造时先记住三条**（能省大量返工）：
+**改造时先记住两条**（能省大量返工）：
 
-1. `src/wei_utils.py:get_agent_config()` 末尾有兜底分支 → 未在白名单的模型名走
-   `OPENAI_COMPATIBLE_MODEL`，**换 DeepSeek 只需设 `OPENAI_API_BASE`/`OPENAI_API_KEY` +
-   传 `--model_name_t deepseek-flash`，无需改代码**。
+1. `wei_utils.get_agent_config()` 有兜底分支 → 换成 `OPENAI_COMPATIBLE_MODEL` 只需设
+   `OPENAI_API_BASE`/`OPENAI_API_KEY` + 传 `--model_name_t deepseek-flash`，**不用改代码**。
 2. `cursor_gen.py:55` 本就用 `parse_action_to_structure_output(factor=1000, model_type="qwen25vl")`，
    与 GUI-Owl 的 0–1000 归一化坐标同源 → 换模型近乎零改造。
-3. 单卡必须放弃 `multiprocessing.Pool` 多进程（每 worker 各持一份权重 ≈24GB+），
-   改为**按阶段加载/卸载**；`infer_cursor()` 的 pipeline 要提到模块级（原来每句重载一次）。
 
-**两个环境硬约束**：① 项目路径含中文，而 InfiniteTalk 要求纯英文路径 → 权重/输出放英文目录；
-② `HF_HOME` 必须改到 E/F 盘（C 盘只剩 24GB）。
+**硬约束**：单卡必须按阶段加载/卸载（多进程会让每个 worker 各持一份权重）；
+项目路径含中文 → 权重放英文目录；`HF_HOME` 必须在 E/F 盘。
 
-**许可证雷区**：`OmniAvatar-1.3B` 的 model card 无 license 字段；
-`tencent/HunyuanVideo-Avatar` 是腾讯社区协议（非商用）→ 商业交付只用 Apache-2.0 的 InfiniteTalk。
+**许可证雷区**：`tencent/HunyuanVideo-Avatar` 是腾讯社区协议（非商用）→
+商业交付只用 Apache-2.0 的 InfiniteTalk。
 
 ## H5 可视化改造（2026-09-18）
 
@@ -85,3 +81,22 @@ PDF 必须行合并且句末判据同时认中英文标点。**真实 Word 不�
 
 架构：FastAPI + 单 worker 串行队列（单卡并行必 OOM）；流水线走子进程
 `Popen(argv, cwd=绝对路径)` 不经 shell；只监听 127.0.0.1。
+
+## 结构化层（`scripts/paper_struct.py`，2026-09-18 跑通）
+
+链路：输入 → `paper_ingest` 提取（零成本）→ **`paper_struct` LLM 结构化**（花钱）→ `main.tex`。
+**分层是刻意的**：出问题能立刻定位是"没提对"还是"没排对"，不用一起返工。
+
+实测（《议程设置》PDF，8283 字符）：20 秒 / **10482 token** → **tectonic 编译成功**，
+7 个 `\section` + 10 个 `\subsection`，`finish_reason=stop`。
+
+prompt 必须写死的四条（均为实测得来）：
+1. 中文必须 `ctex`；表格必须 `tabularray` 的 `tblr`（`tabular` 与 ctex 宏包级冲突）
+2. **真实论文标题无样式标记**（heading=0），靠内容语义与数字序号识别章节
+3. 不得编造数据/文献/图表
+4. **不得"顺手纠正"原文** —— 加这条后保真度全面提升（见跨项目记忆）
+
+配套 `scripts/check_struct_fidelity.py` 做双向保真度检查（漏 + 编）。
+**主指标必须用固定长度窗口**，不能用整句比对：两边切句方式不同、摘要前缀有无不同，
+整句比对会产生大量假阴性，而**假警报比不报更糟**（会让人不再信任报告）。
+口径：保留率 93.7% / 可溯源率 93.4%。

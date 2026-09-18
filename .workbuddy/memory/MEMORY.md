@@ -82,6 +82,27 @@ PDF 必须行合并且句末判据同时认中英文标点。**真实 Word 不�
 架构：FastAPI + 单 worker 串行队列（单卡并行必 OOM）；流水线走子进程
 `Popen(argv, cwd=绝对路径)` 不经 shell；只监听 127.0.0.1。
 
+## H5 P1（2026-09-18 完成）
+
+四件：结构化进度 / 页级可视化 / 逐页素材浏览 / 任务记录+续跑。
+
+- **`src/progress_report.py`**：流水线写 `progress.jsonl`（一行一 JSON）。
+  **默认不生效**（未设 `PAPER2VIDEO_PROGRESS_FILE` 就不生成文件）、绝不抛异常、只追加。
+  后端 `read_progress` **优先读它、回落日志**，终态以任务状态为准。
+- **`POST /api/jobs/{id}/rerun`**：只重跑 stage 2/3 + `--reuse_script` ⇒ **零 API 费用**。
+  **不复制产物**：新任务指向原 `result` 目录（`_build_argv` 支持 `result_dir` 覆盖）。
+- **`GET /api/jobs/{id}/pages`**：服务端拼逐页索引（幻灯片 1-based / 音频 0-based /
+  数字人多一层参考图目录，命名不一致，前端别自己拼）。
+- **补上 P0 缺口**：`needs_struct` 原本没人用（PDF/Word 输入不会生成 main.tex）
+  → 新增 `_prepare_latex()` 前置步骤。
+
+⚠️ 三条"能构建但行为不对"的坑（都靠完整类型检查/测试才发现）：
+TDesign 主题 CSS 漏引入（`--td-*` 全未定义）、`ConfigProvider` 只读 `globalConfig`
+（locale 被忽略）、build 带 `--noCheck` 掩盖类型错误。现 build 改为 `tsc -b && vite build`。
+
+验证：`scripts/smoke_web_api.py` 共 44 项断言，**零 API 费用**即可复现
+SSE/取消/产物 Range/进度优先级/逐页索引/续跑参数。
+
 ## 结构化层（`scripts/paper_struct.py`，2026-09-18 跑通）
 
 链路：输入 → `paper_ingest` 提取（零成本）→ **`paper_struct` LLM 结构化**（花钱）→ `main.tex`。

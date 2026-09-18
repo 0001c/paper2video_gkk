@@ -49,6 +49,7 @@ sys.path.insert(0, P2V_SRC)
 # 避免两边对字段名/取值的理解跑偏。放 import 在这里是因为它依赖上面的 sys.path。
 import progress_report                                    # noqa: E402
 import mimo_voice                                         # noqa: E402
+import artifact_cache                                     # noqa: E402
 
 os.makedirs(JOBS_ROOT, exist_ok=True)
 app = FastAPI(title="Paper2Video Web", version="0.1.0")
@@ -954,6 +955,39 @@ def _build_argv(job):
     return argv
 
 
+def _artifact_facts(job):
+    """算产物缓存指纹用的「与输出有关的事实」。
+
+    ⚠️ 加字段前先问一句：**它会改变产物吗？**
+       会 → 必须加。少一个字段 = 输入不同却误命中 = **静默产出错误内容**
+            （"数字人跳过判据不含音频"那次就是这个病）。
+       不会 → 别加。多一个字段 = 输入变了其实结果一样却重算 = 白花一次钱。
+    """
+    job_dir = _job_dir(job["id"])
+    cfg = job.get("config") or {}
+    paper_text = os.path.join(job_dir, "ingest", "paper_text.md")
+    main_tex = os.path.join(job.get("paper_latex_root") or "", "main.tex")
+    return {
+        # 结构化看的是「提取出来的正文」；.tex/.zip 输入没有正文时退回原始上传件
+        # 的内容指纹（两个都由内容库保证稳定，不会每次变）。
+        "source_sha1": (artifact_cache.digest_file(paper_text)
+                        or job.get("source_digest")
+                        or artifact_cache.digest_file(main_tex)),
+        # 幻灯片与讲稿看的是「结构化产出的 main.tex」
+        "main_tex_sha1": artifact_cache.digest_file(main_tex),
+        "paper_type": cfg.get("paper_type", "auto"),
+        "slide_lang": cfg.get("slide_lang"),
+        "script_lang": cfg.get("script_lang"),
+        "llm_model": os.environ.get("PAPER2VIDEO_LLM_MODEL", "deepseek-flash"),
+        # ⚠️ VLM 实际用的是 pipeline.py 里的 argparse 默认值。仓库根 `.env` 那行
+        #    `PAPER2VIDEO_VLM_MODEL` **没有任何代码读它**（全仓库搜过，已核实）——
+        #    别以为它在生效。哪天把它接上，必须同时加进这里的字段表，
+        #    否则"换了 VLM 但缓存不失效"，产物与配置不符且不报错。
+        "vlm_model": "deepseek-flash",
+        "talking_profile": cfg.get("talking_profile", "musetalk-local"),
+    }
+
+
 def _log_line(log, message):
     """同时写 stdout 与 run.log。
 
@@ -1073,6 +1107,9 @@ async def _run_job(job):
         env["OPENAI_COMPATIBLE_MODEL_API_BASE"] = keys["api_base"]
 
     started = time.time()
+    # 产物缓存（阶段 3）的决策与结果，最后会记进任务记录。
+    cache_only = False
+    cache_info = {"struct_hit": False, "deck_hit": False, "deck_script_hit": False}
     with io.open(log_path, "w", encoding="utf-8", errors="replace") as log:
         log.write("### 命令 {}\n".format(" ".join(argv)))
         # 凭据来源必须写进日志：**回落路径要可见**，否则"没配 key 的机器上静默
@@ -1089,15 +1126,75 @@ async def _run_job(job):
             (job.get("config") or {}).get("voice_note") or "内置默认音色"))
         log.flush()
 
+        # ── 产物缓存：命中结构化 ⇒ 这一次不调 LLM ──
+        # 为什么必须在 `_prepare_latex` **之前**：那一步本身就要花钱，
+        # 放在它后面等于"钱已经花了才说可以省"，命中就失去意义了。
+        facts = _artifact_facts(job)
+        cache_info["struct_key"] = artifact_cache.struct_key(facts)
+        force = bool((job.get("config") or {}).get("force_regenerate"))
+        if force:
+            _log_line(log, "[cache] 本次要求强制重新生成（force_regenerate），不使用缓存")
+        elif job.get("needs_struct"):
+            cached_tex, _cdir, why = artifact_cache.lookup_struct(
+                facts, key=cache_info["struct_key"])
+            if cached_tex:
+                target = os.path.join(job["paper_latex_root"], "main.tex")
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                shutil.copy2(cached_tex, target)
+                job["needs_struct"] = False           # 已拿到 main.tex，前置步骤不必跑
+                cache_info["struct_hit"] = True
+                _log_line(log, "[cache] 结构化命中：{} → 跳过这次 LLM 调用".format(why))
+            else:
+                _log_line(log, "[cache] 结构化未命中（{}），本次会调用 LLM".format(why))
+            log.flush()
+
         # 前置：PDF / Word 输入先转成 LaTeX 工程（见 _prepare_latex 的说明）
         prepared = True
         if job.get("needs_struct"):
             prepared = await _prepare_latex(job, job_dir, log, env)
 
+        # ── 产物缓存：命中幻灯片/讲稿 ⇒ 只跑剩余的本地下游 ──
+        # 讲稿是**唯一必须联网付费**的 stage 2 步骤（VLM 要读全部幻灯片，
+        # 实测占一篇 token 的 76%）；TTS/光标/数字人/合片全是本地计算。
+        entry = None
+        # main.tex 现在应该在位了 —— 在这里**定下 deck 指纹**，之后的查询与写入都用它。
+        # 不能等到写入时再算：流水线有可能改写 main.tex，那样"写入键 ≠ 查询键"，
+        # 缓存就永远命中不了，而且没有任何报错（静默失效是最难查的一种）。
+        facts = _artifact_facts(job)
+        cache_info["deck_key"] = artifact_cache.deck_key(facts)
+        if prepared and not force:
+            entry, cdir, why = artifact_cache.lookup_deck(
+                facts, key=cache_info["deck_key"])
+            if entry and entry.get("slides"):
+                cfg = job["config"]
+                want = list(cfg.get("stages") or ["1", "2", "3"])
+                copied = artifact_cache.reuse_into(cdir, _result_dir(job), entry)
+                want = [s for s in want if s != "1"]  # 幻灯片已就位，不必再生成
+                if "2" in want:
+                    cfg["reuse_script"] = bool(entry.get("script"))
+                    _log_line(log, "[cache] 讲稿{}：stage 2 的 VLM 调用{}".format(
+                        "命中" if entry.get("script") else "未命中",
+                        "已跳过（本次无讲稿 API 费用）" if entry.get("script")
+                        else "仍要执行（要花一次 API）"))
+                cfg["stages"] = want
+                argv = _build_argv(job)               # stages 变了，命令行要重建
+                job["argv"] = argv
+                cache_info["deck_hit"] = True
+                cache_info["deck_script_hit"] = bool(entry.get("script"))
+                _log_line(log, "[cache] {}；复用 {} 个文件。实际命令 {}".format(
+                    why, len(copied), " ".join(argv)))
+                cache_only = not want                 # 要的东西全从缓存来 → 不必起进程
+            else:
+                _log_line(log, "[cache] 幻灯片/讲稿未命中（{}），本次照常生成".format(why))
+            log.flush()
+
         if not prepared:
             # 前置步骤失败：不跑流水线，但仍走下面的收尾写入，
             # 让任务落到 failed 且带上 exit_code（否则状态会一直停在 running）。
             code = 1
+        elif cache_only:
+            code = 0
+            _log_line(log, "[cache] 本次无需运行流水线：要的产物已全部从缓存复用")
         else:
             # 直接传 argv 列表，不经 shell —— 中文路径与转义问题都由此规避
             proc = await asyncio.create_subprocess_exec(
@@ -1111,12 +1208,41 @@ async def _run_job(job):
                 _CURRENT["proc"] = None
                 _CURRENT["job_id"] = None
 
+        # ── 缓存回写（best-effort）：产物在就存，存不上也不影响出片 ──
+        # 刻意**不看退出码**：即使后面某步失败了，已经生成好的幻灯片与讲稿依然值钱
+        # —— 下次重试就省下那次 API。缺哪个存哪个。
+        if not force:
+            main_tex = os.path.join(job.get("paper_latex_root") or "", "main.tex")
+            paper_text = os.path.join(job_dir, "ingest", "paper_text.md")
+            if os.path.isfile(main_tex) and os.path.isfile(paper_text):
+                # key= 传查询时那个键，别在这里重算（见 artifact_cache.publish_struct 说明）
+                got = artifact_cache.publish_struct(
+                    _artifact_facts(job), main_tex, job_id,
+                    key=cache_info.get("struct_key"))
+                if got:
+                    _log_line(log, "[cache] 已存结构化产物 → {}".format(got))
+            got = artifact_cache.publish_deck(
+                _artifact_facts(job), _result_dir(job), job_id,
+                key=cache_info.get("deck_key"))
+            if got:
+                cache_info["published_deck"] = got
+                _log_line(log, "[cache] 已存幻灯片/讲稿 → {}".format(got))
+            log.flush()
+
     # ⚠️ 必须走 _update_job：它会先重新读盘再改，避免用旧快照覆盖
     #    取消接口刚写下的 status=canceled（实测踩过，见 _JOB_LOCK 处的注释）。
     async with _JOB_LOCK:
         final = _load_job(job_id)
         final["exit_code"] = code
         final["elapsed_min"] = round((time.time() - started) / 60, 1)
+        # 产物缓存的决策与回写结果：`struct_key`/`deck_key` 同时是
+        # artifact_cache.referenced_keys() 判断"这条缓存还有没有人在用"的依据。
+        final["cache"] = cache_info
+        # ⚠️ 命中缓存会改动 config（stages / reuse_script）并据此重建 argv，这些
+        #    **必须落盘**。否则任务记录里还是"请求时的样子"、实际跑的却是另一套参数
+        #    —— 事后没人能解释"为什么这次没跑 stage 1"（日志里有，但记录里查不到）。
+        final["config"] = job.get("config", final.get("config"))
+        final["argv"] = job.get("argv", final.get("argv"))
         if final.get("status") == "canceled":
             # 取消是使用者的明确意图，不该被退出码改写；
             # 但退出码与耗时仍要记下来 —— 排查时有用，且能证明收尾确实执行过。
@@ -1690,6 +1816,19 @@ async def api_rerun_job(job_id: str, payload: dict):
 @app.get("/api/jobs")
 async def api_list_jobs():
     return {"jobs": _list_jobs()}
+
+
+@app.get("/api/cache")
+async def api_cache():
+    """产物缓存现状（只读）。
+
+    ⚠️ 刻意**不提供删除**：缓存目录可能被多个任务引用，删除前必须先问"谁还在用"
+    —— 本仓库踩过"按前缀批量删"的事故。这里只给清点与「无人引用」的候选清单，
+    删不删、删哪些由人来定。
+    """
+    info = artifact_cache.status()
+    info["referenced"] = artifact_cache.plan_gc(JOBS_ROOT)
+    return info
 
 
 @app.get("/api/jobs/{job_id}")

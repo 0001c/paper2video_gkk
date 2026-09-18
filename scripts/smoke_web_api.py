@@ -2080,6 +2080,324 @@ def test_content_store_and_fingerprint(app):
     return ok
 
 
+
+# 假流水线：造出"幻灯片 + 讲稿"，让 publish_deck 有东西可存
+FAKE_CACHE_PIPELINE = (
+    "import io, os\n"
+    "r = {result!r}\n"
+    "d = os.path.join(r, 'slide_imgs')\n"
+    "os.makedirs(d, exist_ok=True)\n"
+    "for i in (1, 2, 3):\n"
+    "    io.open(os.path.join(d, '%d.png' % i), 'wb').write(b'PNG' + bytes([i]))\n"
+    "io.open(os.path.join(r, 'slides_rendered.pdf'), 'wb').write(b'%PDF-1.4 fake')\n"
+    "io.open(os.path.join(r, 'subtitle_w_cursor.txt'), 'w', encoding='utf-8')"
+    ".write('第一页讲稿\\n第二页讲稿\\n第三页讲稿\\n')\n"
+    "print('[fake] 幻灯片 3 页 / 讲稿 3 行')\n"
+    "print('第 1 页合成完成')\n"
+    "print('第 3 页完成')\n"
+)
+
+
+def test_artifact_cache_and_reuse(app):
+    """产物缓存（阶段 3）：按输入指纹跳过已经付过费的步骤。
+
+    为什么值得单测：这套机制的失败方式是**静默**的 ——
+      · 指纹少一个字段 → 输入不同却命中 → 产出错误内容且不报错；
+      · 写入键与查询键不一致 → 永远命中不了 → 每次都白花钱，也不报错。
+    所以本组把两件事都钉住：字段表覆盖（正反两面）与"键只算一次"的端到端闭环。
+    """
+    print()
+    print("=" * 66)
+    print("[12] 产物缓存 —— 指纹字段覆盖 / 命中闭环 / 只增不删")
+    print("=" * 66)
+    ok = True
+
+    from fastapi.testclient import TestClient
+    import artifact_cache as ac
+
+    srv = app.app
+    jobs_before = set(os.listdir(app.JOBS_ROOT))
+    content_before = _content_state(app)
+    cache_before = set()
+    for kind in ("struct", "deck"):
+        base = os.path.join(ac.CACHE_ROOT, kind)
+        cache_before |= {"%s/%s" % (kind, n) for n in os.listdir(base)} if os.path.isdir(base) else set()
+    created_jobs = []
+    made_cache = set()
+    made_content = set()
+    saved_build = app._build_argv
+
+    base_facts = {"source_sha1": "aaa", "main_tex_sha1": "mmm", "paper_type": "auto",
+                  "slide_lang": "en", "script_lang": "zh", "llm_model": "deepseek-flash",
+                  "vlm_model": "deepseek-flash", "talking_profile": "musetalk-local"}
+
+    # ── A. 指纹的字段覆盖（正反两面）──
+    ok &= check("同一份输入算两次得到同一个键（否则永远命中不了）",
+                ac.struct_key(base_facts) == ac.struct_key(base_facts)
+                and ac.deck_key(base_facts) == ac.deck_key(base_facts),
+                "struct=%s deck=%s" % (ac.struct_key(base_facts), ac.deck_key(base_facts)))
+    ok &= check("字段顺序不影响键（用 sort_keys 序列化）",
+                ac.struct_key(dict(reversed(list(base_facts.items()))))
+                == ac.struct_key(base_facts), "顺序无关")
+    ok &= check("缺字段等价于该字段为 None（缺字段是可见差异，不是静默相等）",
+                ac.struct_key({k: v for k, v in base_facts.items() if k != "paper_type"})
+                == ac.struct_key(dict(base_facts, paper_type=None)), "等价")
+
+    # struct 的输入：正文 + 论文类型 + LLM。**不含**语言/人像/音色 ——
+    # 含进来会让"只换个头像"也白花一次结构化的钱。
+    struct_only = {"source_sha1": "bbb", "paper_type": "ml", "llm_model": "other"}
+    for field, value in struct_only.items():
+        ok &= check("struct 指纹对 %s 敏感" % field,
+                    ac.struct_key(dict(base_facts, **{field: value})) != ac.struct_key(base_facts),
+                    "改 %s 后键变了" % field)
+    for field in ("main_tex_sha1", "slide_lang", "script_lang", "vlm_model",
+                  "talking_profile"):
+        ok &= check("struct 指纹对 %s **不**敏感（它不影响 main.tex，敏感就是白花钱）" % field,
+                    ac.struct_key(dict(base_facts, **{field: "other"})) == ac.struct_key(base_facts),
+                    "改 %s 后键没变" % field)
+
+    # deck 的输入：main.tex + 两种语言 + 论文类型 + 两个模型 + 数字人档位
+    for field in ("main_tex_sha1", "slide_lang", "script_lang", "paper_type",
+                  "llm_model", "vlm_model", "talking_profile"):
+        ok &= check("deck 指纹对 %s 敏感" % field,
+                    ac.deck_key(dict(base_facts, **{field: "other"})) != ac.deck_key(base_facts),
+                    "改 %s 后键变了" % field)
+    for field in ("portrait_sha1", "ref_audio_sha1", "voice_note", "job_id"):
+        ok &= check("deck 指纹对 %s **不**敏感（换头像/换声音不该废掉幻灯片与讲稿）" % field,
+                    ac.deck_key(dict(base_facts, **{field: "xxx"})) == ac.deck_key(base_facts),
+                    "改 %s 后键没变" % field)
+
+    ok &= check("两类指纹不会互相撞（同一份 facts）",
+                ac.struct_key(base_facts) != ac.deck_key(base_facts), "不同")
+    saved_ver = ac.CACHE_VERSION
+    ac.CACHE_VERSION = saved_ver + "-bumped"
+    bumped = (ac.struct_key(base_facts) != ac.struct_key(base_facts) or
+              ac.deck_key(base_facts) is not None)
+    changed = ac.struct_key(base_facts)
+    ac.CACHE_VERSION = saved_ver
+    ok &= check("CACHE_VERSION 参与指纹（改了提示词/流程忘了 +1 也不会命中旧产物）",
+                changed != ac.struct_key(base_facts), "版本变化让键变了")
+
+    # ── B. 模块级往返：写入 → 查询 → 复用 ──
+    tmp = os.path.join(ROOT, "jobs", "smoke_cache_" + uuid.uuid4().hex[:6])
+    os.makedirs(tmp, exist_ok=True)
+    try:
+        odd = dict(base_facts, source_sha1="only-struct-" + uuid.uuid4().hex[:6])
+        miss, _d, why = ac.lookup_struct(odd)
+        ok &= check("没有缓存时 lookup_struct 明确返回未命中", miss is None, why)
+
+        main_tex = os.path.join(tmp, "main.tex")
+        io.open(main_tex, "w", encoding="utf-8").write("% fake main\n")
+        got = ac.publish_struct(odd, main_tex, "smoke", key=ac.struct_key(odd))
+        made_cache.add("struct/" + ac.struct_key(odd))
+        ok &= check("publish_struct 后能查到 main.tex",
+                    bool(got) and os.path.isfile(ac.lookup_struct(odd)[0] or ""),
+                    "目录=%s" % os.path.basename(got or "<未写>"))
+        man = ac.read_manifest(got) or {}
+        ok &= check("manifest 记下了「这条缓存是拿什么算的」",
+                    man.get("key") == ac.struct_key(odd) and man.get("facts"),
+                    "key=%s" % man.get("key"))
+
+        # deck：只有幻灯片时，讲稿要报"无"
+        odd2 = dict(base_facts, main_tex_sha1="only-deck-" + uuid.uuid4().hex[:6])
+        dk = ac.deck_key(odd2)
+        ddir = ac.cache_dir("deck", dk)
+        os.makedirs(os.path.join(ddir, "slide_imgs"), exist_ok=True)
+        io.open(os.path.join(ddir, "slide_imgs", "1.png"), "wb").write(b"PNG")
+        io.open(os.path.join(ddir, "slides_rendered.pdf"), "wb").write(b"%PDF")
+        made_cache.add("deck/" + dk)
+        entry, _d2, why2 = ac.lookup_deck(odd2)
+        ok &= check("只存了幻灯片时：slides=是 / script=否（讲稿仍要生成）",
+                    entry and entry["slides"] and not entry["script"], why2)
+
+        io.open(os.path.join(ddir, "subtitle_w_cursor.txt"), "w",
+                encoding="utf-8").write("讲稿\n")
+        entry, _d3, why3 = ac.lookup_deck(odd2)
+        ok &= check("补上讲稿后：两个都为是（stage 2 的 VLM 调用可以跳过）",
+                    entry and entry["slides"] and entry["script"], why3)
+
+        # 输入不可辨认（指纹字段取不到）时：既不命中也不写入。
+        # 这是 2026-09-19 写本组测试时发现的真问题 —— 两个都取不到指纹的任务
+        # 会因为字段都是 None 而塌成同一个键，后跑的直接拿到前一个的产物。
+        unnamed = dict(base_facts, main_tex_sha1=None)
+        e, _dn, why_n = ac.lookup_deck(unnamed)
+        ok &= check("取不到输入指纹时：不命中（否则不同输入会塌成同一个键）",
+                    e is None and "无法确定输入" in why_n, why_n)
+        e_s, _ds, why_s = ac.lookup_struct(dict(base_facts, source_sha1=None))
+        ok &= check("struct 同理：正文指纹缺失时不命中",
+                    e_s is None and "无法确定输入" in why_s, why_s)
+
+        dest = os.path.join(tmp, "result")
+        copied = ac.reuse_into(ddir, dest, entry)
+        ok &= check("reuse_into 把幻灯片与讲稿复制进本次产物目录",
+                    os.path.isfile(os.path.join(dest, "slide_imgs", "1.png"))
+                    and os.path.isfile(os.path.join(dest, "subtitle_w_cursor.txt")),
+                    "复制 %d 个文件：%s" % (len(copied), sorted(copied)))
+
+        # ── C. 只增不删：清点是只读的，删除要人来做 ──
+        plan = ac.plan_gc(app.JOBS_ROOT)
+        keys_unref = [x["key"] for x in plan["unreferenced"]["deck"]
+                      if x["key"] in {k.split("/")[1] for k in made_cache}]
+        ok &= check("plan_gc 列出无人引用的条目（只读，不删）",
+                    dk in keys_unref, "无人引用里有 %s" % dk)
+        ok &= check("任务记录里写过这个键 → 会被计为被引用（判据是「谁还在用」）",
+                    True, "见下面端到端部分的断言")
+        ok &= check("取不到输入指纹时：也不写入（写了会污染那个键）",
+                    ac.publish_deck(unnamed, dest, "smoke") is None,
+                    "未写入")
+
+        src = io.open(os.path.join(ROOT, "scripts", "artifact_cache.py"),
+                      encoding="utf-8").read()
+        ok &= check("缓存模块里没有任何删除实现（只增不删）",
+                    "rmtree" not in src and "def delete" not in src
+                    and "def purge" not in src and "os.remove" not in src,
+                    "没找到删除调用")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # ── D. 端到端闭环：第一次跑生成缓存，第二次跑必须命中 ──
+    # 用**真实形态**的输入：ingest_id 来自内容库（所以 source_digest 有值）、
+    # paper_latex_root 指向工程目录（所以 main.tex 指纹稳定）。
+    # ⚠️ 这不只是"像真的"：两个指纹里任何一个取不到，指纹就会退化成 None，
+    #    而不同输入会因为都是 None 而塌成同一个键 —— 见下面那条断言。
+    tex_tmp = os.path.join(ROOT, "jobs", "smoke_ctex_" + uuid.uuid4().hex[:6] + ".tex")
+    io.open(tex_tmp, "w", encoding="utf-8").write("% smoke cache tex\n")
+    ing_id, content_work, _hit, _stored, _meta = app._store_content(
+        "paper", tex_tmp, "smoke.tex")
+    made_content.add(ing_id)
+    ing_dir = content_work
+    latex_root = os.path.join(content_work, "ingest")
+    os.makedirs(latex_root, exist_ok=True)
+    # 已经是 LaTeX 工程 ⇒ needs_struct=False，本组不牵入结构化那一步
+    # （它要真调 API，由 [5] 单独测）。
+    io.open(os.path.join(latex_root, "main.tex"), "w",
+            encoding="utf-8").write("% smoke cache main\n")
+    portrait = os.path.join(ROOT, "jobs", "smoke_cportrait_" + uuid.uuid4().hex[:6] + ".png")
+    io.open(portrait, "wb").write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+
+    def fake_build(job):
+        return [sys.executable, "-u", "-c",
+                FAKE_CACHE_PIPELINE.format(result=app._result_dir(job))]
+
+    app._build_argv = fake_build
+    config = {"stages": ["1", "2", "3"], "slide_lang": "en", "script_lang": "zh",
+              "paper_type": "auto"}
+
+    def run_job(client, cfg, label):
+        body = client.post("/api/jobs", json={
+            "ingest_id": ing_id, "portrait_path": portrait,
+            "paper_latex_root": latex_root,
+            "config": dict(cfg), "api_key": "sk-smoke-fake"}).json()
+        jid = body.get("job_id")
+        created_jobs.append(jid)
+        deadline = time.time() + 60
+        j = {}
+        while time.time() < deadline:
+            j = client.get("/api/jobs/%s" % jid).json()
+            if j.get("status") in ("done", "failed", "canceled"):
+                break
+            time.sleep(0.5)
+        log_path = os.path.join(app._job_dir(jid), "run.log")
+        raw = open(log_path, "rb").read() if os.path.isfile(log_path) else b""
+        text = raw.decode("utf-8", errors="replace")
+        return jid, j, text
+
+    try:
+        with TestClient(srv) as client:
+            jid_a, job_a, log_a = run_job(client, config, "A")
+            ok &= check("第一次跑：任务完成", job_a.get("status") == "done",
+                        "status=%s exit=%s" % (job_a.get("status"), job_a.get("exit_code")))
+            key_a = (job_a.get("cache") or {}).get("deck_key")
+            ok &= check("第一次跑：幻灯片/讲稿被回写进缓存",
+                        bool((job_a.get("cache") or {}).get("published_deck")),
+                        "published=%s" % ((job_a.get("cache") or {}).get("published_deck")))
+            ok &= check("第一次跑：日志里明确说未命中（回落/命中都要可见）",
+                        "[cache] 幻灯片/讲稿未命中" in log_a,
+                        [l for l in log_a.splitlines() if "[cache]" in l][:1])
+            if key_a:
+                made_cache.add("deck/" + key_a)
+
+            jid_b, job_b, log_b = run_job(client, config, "B")
+            cinfo = job_b.get("cache") or {}
+            ok &= check("第二次跑（同样输入）：deck 命中", cinfo.get("deck_hit") is True,
+                        "cache=%s" % json.dumps(cinfo, ensure_ascii=False)[:120])
+            ok &= check("命中时讲稿也命中 ⇒ stage 2 的 VLM 调用被跳过",
+                        cinfo.get("deck_script_hit") is True, "script_hit")
+            cfg_b = job_b.get("config") or {}
+            ok &= check("命中的任务不再跑 stage 1（幻灯片已就位）",
+                        cfg_b.get("stages") == ["2", "3"],
+                        "config.stages=%s" % (cfg_b.get("stages"),))
+            ok &= check("命中的任务带 reuse_script（pipeline 才会跳过 VLM）",
+                        cfg_b.get("reuse_script") is True,
+                        "config.reuse_script=%s" % (cfg_b.get("reuse_script"),))
+            # 上面两条看的是 config（缓存逻辑改的就是它）；这里再用**真实**的
+            # _build_argv 过一遍，证明这两项真的会落到命令行上（只看 config
+            # 有可能被"argv 不从 config 读"这种情况骗过）。
+            real_argv = app._ORIG_BUILD_ARGV(job_b)
+            ok &= check("真实命令行里 stage 是 2/3、且带 --reuse_script True",
+                        '"2", "3"' in " ".join(real_argv)
+                        and "--reuse_script" in real_argv
+                        and real_argv[real_argv.index("--reuse_script") + 1] == "True",
+                        " ".join(real_argv[2:9]))
+            ok &= check("缓存的幻灯片被复制进本次产物目录（下游才读得到）",
+                        os.path.isfile(os.path.join(app._result_dir(job_b), "slide_imgs", "1.png"))
+                        and os.path.isfile(os.path.join(app._result_dir(job_b), "subtitle_w_cursor.txt")),
+                        "产物目录已有 slide_imgs/1.png 与讲稿")
+            ok &= check("第二次跑：日志写明命中与省下了什么",
+                        "[cache] 讲稿命中" in log_b and "无讲稿 API 费用" in log_b,
+                        [l for l in log_b.splitlines() if "[cache]" in l][:2])
+            ok &= check("任务记录里留下的 deck_key 与缓存的键一致（写入键=查询键）",
+                        cinfo.get("deck_key") == key_a,
+                        "%s vs %s" % (cinfo.get("deck_key"), key_a))
+
+            plan = ac.plan_gc(app.JOBS_ROOT)
+            ok &= check("被任务引用过的缓存键会被 plan_gc 计为「有人用」",
+                        key_a in plan["referenced"]["deck"],
+                        "referenced 里有 %s" % key_a)
+
+            # 反面对照：换讲稿语言 → 指纹必须变 → 不许命中
+            alt = dict(config, script_lang="en")
+            jid_c, job_c, log_c = run_job(client, alt, "C")
+            ok &= check("对照组：改了讲稿语言就不再命中（否则会拿中文讲稿配英文要求）",
+                        (job_c.get("cache") or {}).get("deck_hit") is not True,
+                        "deck_hit=%s" % ((job_c.get("cache") or {}).get("deck_hit")))
+            ok &= check("对照组：仍然完整跑 stage 1（该花钱的地方没有偷懒）",
+                        (job_c.get("config") or {}).get("stages") == ["1", "2", "3"],
+                        "config.stages=%s" % ((job_c.get("config") or {}).get("stages"),))
+            # 对照组这次**也会**写一条自己的缓存（它是未命中 → 正常生成 → 回写），
+            # 必须一起记下来清理：只记 A 的键会让 en 那条留在库里，
+            # 下次跑本组时"对照组"就会命中上一次的遗留 → 假失败（实测踩过）。
+            key_c = (job_c.get("cache") or {}).get("deck_key")
+            if key_c:
+                made_cache.add("deck/" + key_c)
+    finally:
+        app._build_argv = saved_build
+        _cleanup_new(app, jobs_before)          # 人像文件也在 jobs/ 下，一并按差集清掉
+        _cleanup_new_content(app, content_before)
+        for cid in made_content:
+            shutil.rmtree(os.path.join(app.CONTENT_ROOT,
+                                       cid.replace("content_", "")), ignore_errors=True)
+        # 只删**本测试自己建的**缓存条目（按 key，精确删；绝不整体清 _cache）
+        for item in made_cache:
+            kind, _, key = item.partition("/")
+            shutil.rmtree(os.path.join(ac.CACHE_ROOT, kind, key), ignore_errors=True)
+
+    # ── E. 静态守卫 ──
+    app_src = io.open(os.path.join(ROOT, "web", "app.py"), encoding="utf-8").read()
+    run_seg = app_src[app_src.find("async def _run_job"):][:9000]
+    ok &= check("结构化命中检查在 _prepare_latex **之前**（放后面就等于钱花了才想省）",
+                0 < run_seg.find("lookup_struct") < run_seg.find("await _prepare_latex"),
+                "顺序：lookup_struct(%d) < _prepare_latex(%d)" % (
+                    run_seg.find("lookup_struct"), run_seg.find("await _prepare_latex")))
+    ok &= check("deck 命中检查在前置结构化**之后**（那时才有 main.tex 可算指纹）",
+                run_seg.find("await _prepare_latex") < run_seg.find("lookup_deck"),
+                "顺序：_prepare_latex < lookup_deck")
+    ok &= check("缓存回写用的是查询时那个键（写入键≠查询键会让缓存永远不命中）",
+                "key=cache_info.get" in app_src, "publish 调用带 key=")
+    ok &= check("有新接口可以只读地看缓存现状", '"/api/cache"' in app_src, "GET /api/cache")
+    return ok
+
+
 def main():
     app = load_app()
     suite_started = time.time()          # 清理护栏：只删本次测试期间新建的目录
@@ -2095,6 +2413,7 @@ def main():
         test_phase_model_and_keys(app),
         test_voice_and_ref_audio(app),
         test_content_store_and_fingerprint(app),
+        test_artifact_cache_and_reuse(app),
     ]
     orphan = _cleanup_orphan_jobs(app, suite_started)
     if orphan:

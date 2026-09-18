@@ -80,7 +80,7 @@ SYSTEM_PROMPT = """你是学术论文的 LaTeX 排版专家。用户会给你一
   （例如人名拼写 `Elisha` / `Elishar` 混用）统一成你认为正确的形式。
   即使确实是笔误，**也请原样保留** —— 你的职责是排版，不是校对。
   唯一允许的改写是把明显的提取噪声（页眉页脚、"课程论文评阅表"之类的表单字段）
-  去掉，以及移除正文里手写的小节编号（`\section` 会自动编号）。
+  去掉，以及移除正文里手写的小节编号（`\\section` 会自动编号）。
 - 参考文献：只把源文本里已有的条目原样列出（可放入 thebibliography 环境）；
   原文没有就省略整个环境，不要自己编造引用。
 - 源文本里若混入明显的提取噪声（页眉页脚、"课程论文评阅表"之类的表单字段、
@@ -152,7 +152,7 @@ def strip_code_fence(text):
     return text.strip()
 
 
-def call_llm(system_prompt, user_prompt, model=None, max_tokens=32768,
+def call_llm(system_prompt, user_prompt, model=None, max_tokens=65536,
              temperature=0.2, timeout=900):
     """调用 OpenAI 兼容接口。返回 (正文, usage)。
 
@@ -211,8 +211,13 @@ def compile_tex(tex_path, timeout=600):
     """
     workdir = os.path.dirname(os.path.abspath(tex_path)) or "."
     try:
+        # 必须显式指定编码：不给 encoding 时 subprocess 按**平台默认编码**解码
+        # （Windows 上是 GBK），而 tectonic 输出的是 UTF-8 —— 实测会抛
+        # UnicodeDecodeError: 'gbk' codec can't decode byte 0x93，
+        # 且异常发生在 reader 线程里，表现为"编译失败"但日志残缺，极易误判。
         result = subprocess.run(["tectonic", os.path.basename(tex_path)],
                                 cwd=workdir, capture_output=True, text=True,
+                                encoding="utf-8", errors="replace",
                                 timeout=timeout)
     except FileNotFoundError:
         return False, "tectonic 未找到（应装在 E:\\ai-models\\bin）"
@@ -222,7 +227,110 @@ def compile_tex(tex_path, timeout=600):
     return result.returncode == 0, log
 
 
-def structurize(source, out_dir, model=None, max_tokens=32768,
+CONTINUE_TEMPLATE = """下面是一份 LaTeX 源码的**末尾片段**。它因为长度上限被截断了，还没写完。
+
+请**接着它继续输出剩余的 LaTeX 内容**：
+- 从断点处直接续写，**不要重复**任何已经出现过的内容；
+- **不要**重新输出 \\documentclass 或任何 \\usepackage（前言已经写过了）；
+- 若断点落在一张表 / 列表 / 环境的中间，先把那一处补完整，再继续往下写；
+- 不要输出解释文字，也不要加 markdown 代码块；
+- 一直写到 \\end{document} 为止。
+
+──────── 已输出内容的末尾片段（供你判断断点）────────
+{tail}
+──────── 片段结束 ────────"""
+
+
+def _tex_is_complete(tex):
+    return "\\end{document}" in tex
+
+
+def _repair_unclosed(tex):
+    """把被截断的 LaTeX 收尾成**可编译**的样子，返回 (源码, 是否真的动过)。
+
+    做法：从左到右扫 begin/end 配对，找出"所有内层环境都闭好了"的最后一个位置，
+    截到那里，再补上 ``\\end{document}``。
+
+    ⚠️ 判据不是"环境栈为空"——正文整体包在 ``\\begin{document}`` 里，
+    文档级扫描下栈**永远不会空**（第一版就是这么写错的：65116 字符被削成 17 字符）。
+    正确的基准是 ``\\begin{document}`` 之后的深度，栈回到该深度即为一个安全切点。
+
+    为什么值得做：截断点常常落在一张表或一个列表中间，此时 LaTeX 会报
+    ``File ended while scanning use of \\environment tblr`` —— 编译直接失败；
+    而这份 main.tex 还要作为**下游生成幻灯片的输入**，把半个环境喂给模型，
+    只会让那部分幻灯片变得不可控。丢掉尾部那一小段未完成内容，比留一个坏文件好。
+    """
+    token = re.compile(r"\\(begin|end)\{([^}]*)\}")
+    stack = []
+    baseline = None
+    last_balanced = None
+    for match in token.finditer(tex):
+        kind, name = match.group(1), match.group(2)
+        if kind == "begin":
+            stack.append(name)
+            if name == "document" and baseline is None:
+                baseline = len(stack)          # 正文的基准深度
+        elif stack and stack[-1] == name:
+            stack.pop()
+        if baseline is not None and len(stack) == baseline:
+            last_balanced = match.end()
+
+    if baseline is None or last_balanced is None:
+        return tex, False                      # 连 \begin{document} 都没有，不做猜测
+    if not stack:
+        return tex, False                      # 栈回到 0 = 已见到 \end{document}，本就完整
+    head = tex[:last_balanced].rstrip()
+    dropped = len(tex) - len(head)
+    if dropped > 0.3 * len(tex):
+        print("      ⚠️ 收尾会丢弃 %.0f%% 的内容（截断位置很靠前）—— "
+              "建议提高 PAPER2VIDEO_MAX_TOKENS 后重跑结构化"
+              % (100.0 * dropped / len(tex)))
+    return head + "\n\n\\end{document}\n", True
+
+
+def _continue_tex(tex, info, model, max_tokens, max_rounds=3):
+    """撞上限后**续写**，尽量把整篇拿全。
+
+    实测触发条件：24 页 / 6.6 万字符的论文，思维链就吃掉一大半额度
+    （那次 reasoning 34722 字符），正文写到一张表中间就没有额度了。
+    提高上限能缓解（接口实测接受 ≥131072），但论文再长还是会撞 ——
+    所以这里做成"撞了就接着写"，而不是只把上限调大。
+    """
+    rounds = 0
+    total = dict(info.get("usage") or {})
+    elapsed = info.get("elapsed", 0.0)
+    while not _tex_is_complete(tex) and rounds < max_rounds:
+        rounds += 1
+        tail = tex[-2500:]
+        piece, more = call_llm(SYSTEM_PROMPT, CONTINUE_TEMPLATE.format(tail=tail),
+                               model=model, max_tokens=max_tokens)
+        piece = strip_code_fence(piece)
+        print("      续写第 %d 轮：%.1fs | finish=%s | +%d 字符"
+              % (rounds, more["elapsed"], more["finish_reason"], len(piece)))
+        if not piece.strip():
+            break
+        tex = tex.rstrip() + "\n" + piece
+        for key, value in (more.get("usage") or {}).items():
+            if isinstance(value, (int, float)):
+                total[key] = total.get(key, 0) + value
+        elapsed += more["elapsed"]
+        if more["finish_reason"] != "length":
+            break
+
+    info = dict(info)
+    info["usage"] = total
+    info["elapsed"] = elapsed
+    info["continuation_rounds"] = rounds
+
+    if not _tex_is_complete(tex):
+        tex, repaired = _repair_unclosed(tex)
+        info["repaired"] = repaired
+        print("      ⚠️ 仍未见 \\end{document}：已截到最后一个环境配平点并补收尾"
+              "（尾部未完成的一小段内容会丢失，但产物保证可编译）")
+    return tex, info
+
+
+def structurize(source, out_dir, model=None, max_tokens=65536,
                 do_compile=True, keep_text=False):
     """完整流程：提取 → 结构化 → 落盘 → （可选）编译验证。"""
     os.makedirs(out_dir, exist_ok=True)
@@ -248,8 +356,12 @@ def structurize(source, out_dir, model=None, max_tokens=32768,
              info["finish_reason"]))
 
     if info["finish_reason"] == "length":
-        print("      ⚠️ finish_reason=length —— 输出被 max_tokens 截断，"
-              "LaTeX 很可能不完整（可提高 --max-tokens 或分段）")
+        # 输出撞上限 —— 长论文（实测 24 页 / 6.6 万字符）一次装不下。
+        # 直接收下会得到一个"少了后半篇"的 main.tex，而它还要喂给下游生成幻灯片，
+        # 所以先尝试续写；实在拿不全再退化成"截到最后一个配平点 + 补 \end{document}"，
+        # 保证产物至少是**可编译**的。
+        print("      ⚠️ finish_reason=length —— 输出撞上限，开始续写 ...")
+        tex, info = _continue_tex(tex, info, model, max_tokens)
 
     tex_dir = os.path.join(out_dir, "latex_proj")
     os.makedirs(tex_dir, exist_ok=True)
@@ -272,6 +384,9 @@ def structurize(source, out_dir, model=None, max_tokens=32768,
         "usage": info["usage"],
         "elapsed": round(info["elapsed"], 1),
         "finish_reason": info["finish_reason"],
+        # 截断相关：续写了几轮、以及是否退化成"截到配平点 + 补收尾"
+        "continuation_rounds": info.get("continuation_rounds", 0),
+        "repaired": info.get("repaired", False),
     }
 
     if do_compile:
@@ -302,7 +417,7 @@ def main(argv=None):
                                                       "struct_out"),
                         help="输出目录")
     parser.add_argument("--model", default=None, help="模型名（默认 deepseek-flash）")
-    parser.add_argument("--max-tokens", type=int, default=32768)
+    parser.add_argument("--max-tokens", type=int, default=65536)
     parser.add_argument("--no-compile", action="store_true", help="跳过 tectonic 编译")
     args = parser.parse_args(argv)
 

@@ -84,9 +84,19 @@ _register_context_windows()
 
 
 def _max_output_tokens():
-    """输出 token 上限（可用 ``PAPER2VIDEO_MAX_TOKENS`` 覆盖），默认 32768。
+    """输出 token 上限（可用 ``PAPER2VIDEO_MAX_TOKENS`` 覆盖），默认 65536。
 
-    ⚠️ 为什么从 16384 提到 32768（2026-09-18 实测）——
+    ⚠️ 为什么从 16384 提到 32768、再到 65536（2026-09-18 两次实测）——
+
+    第二次（提到 65536 的起因）：用一篇 **24 页 / 6.6 万字符**的 arXiv 论文
+    （波斯语 ASR 语料库）跑结构化，`completion_tokens=32768` **正好贴死上限**，
+    `finish_reason=length` —— 产物 main.tex **没有 \\end{document}**、
+    尾部断在一张表中间，tectonic 报
+    `File ended while scanning use of \\environment tblr`。
+    思维链那次吃掉约 3.5 万字符。**接口实测接受 max_tokens 到 131072**，
+    所以上限可以给得更宽。注意：上限只是"允许的最小值上界"，不产出就不计费。
+
+    第一次（提到 32768 的起因）——
     跑 `gkk_en_zh`（11 张幻灯片 + **中文**讲稿）时报的是
     「VLM 连续 3 次未能给出可用的讲稿」，**看起来完全像网关抖动**。
     但末次 usage 是 `completion_tokens=16386`，**正好贴死在旧上限 16384 上**：
@@ -108,8 +118,8 @@ def _max_output_tokens():
                 return value
         except ValueError:
             print("[wei_utils] PAPER2VIDEO_MAX_TOKENS 不是正整数，"
-                  "回落到默认 32768：{!r}".format(raw))
-    return 32768
+                  "回落到默认 65536：{!r}".format(raw))
+    return 65536
 
 
 def get_agent_config(model_type):

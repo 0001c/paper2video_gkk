@@ -136,6 +136,12 @@ SSE/取消/产物 Range/进度优先级/逐页索引/续跑参数。
 实测（《议程设置》PDF，8283 字符）：20 秒 / **10482 token** → **tectonic 编译成功**，
 7 个 `\section` + 10 个 `\subsection`，`finish_reason=stop`。
 
+**输出上限 65536**（`PAPER2VIDEO_MAX_TOKENS` 可覆盖）。长论文会撞上限：实测一篇 24 页/
+6.6 万字符的论文把 32768 用满（思维链占大头），main.tex 断在半张表上、
+**没有 \end{document}**，而它正是下游生成幻灯片的输入 —— 尾部内容静默缺失。
+`paper_struct` 现已：撞上限**续写**（最多 3 轮）→ 仍不全则**截到最后一个
+环境配平点 + 补 \end{document}**（实测只丢 1.3%、编译通过）。
+
 prompt 必须写死的四条（均为实测得来）：
 1. 中文必须 `ctex`；表格必须 `tabularray` 的 `tblr`（`tabular` 与 ctex 宏包级冲突）
 2. **真实论文标题无样式标记**（heading=0），靠内容语义与数字序号识别章节

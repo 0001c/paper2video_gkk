@@ -1276,6 +1276,27 @@ def test_phase_model_and_keys(app):
     return ok
 
 
+def _cleanup_orphan_jobs(app):
+    """清掉测试留下的**孤儿任务目录**（有 run.log 但没有 job.json）。
+
+    为什么需要：好几个测试用 `python -c pass` 假命令走**真实队列**，
+    任务目录是 worker 建的，而各测试的 finally 只清理自己显式记下的那些 ——
+    实测每跑一次会留下 2 个孤儿目录（界面上看不到，因为它们没有 job.json，
+    但 jobs/ 会越攒越乱）。
+    刻意**打印**清掉了什么：这样"哪个测试漏了清理"依然可见，
+    而不是被一个静默的兜底抹平。真正的任务一定有 job.json，所以这里删不到正货。
+    """
+    orphan = []
+    for name in os.listdir(app.JOBS_ROOT):
+        path = os.path.join(app.JOBS_ROOT, name)
+        if not os.path.isdir(path) or not name.startswith("job_"):
+            continue
+        if not os.path.isfile(os.path.join(path, "job.json")):
+            orphan.append(name)
+            shutil.rmtree(path, ignore_errors=True)
+    return orphan
+
+
 def main():
     app = load_app()
     results = [
@@ -1289,6 +1310,11 @@ def main():
         test_rerun_shares_artifacts(app),
         test_phase_model_and_keys(app),
     ]
+    orphan = _cleanup_orphan_jobs(app)
+    if orphan:
+        print()
+        print("   （已清理 %d 个测试孤儿任务目录：%s）" % (len(orphan), ", ".join(orphan)))
+        print("   （说明有测试的清理不完整 —— 不影响结果，但值得顺手补上）")
     print()
     print("=" * 66)
     if FAILURES:

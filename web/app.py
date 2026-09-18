@@ -503,6 +503,10 @@ def read_progress(job):
     if status in ("done", "failed", "canceled"):
         info["phase"] = {"done": "已完成", "failed": "失败",
                          "canceled": "已取消"}[status]
+    if status == "done":
+        # 收尾阶段与终态对齐：否则会出现"任务已完成、阶段却停在 merge"这种
+        # 自相矛盾的对象（步骤条按 status 判定所以不显示错，但接口消费者会困惑）。
+        info["phase_key"] = "finish"
 
     # ── 步骤条 + 总进度（前端的唯一数据源）──
     phase_key = info["phase_key"]

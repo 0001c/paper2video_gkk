@@ -20,15 +20,23 @@ import "tdesign-react/es/style/index.css";
 import App from "./App";
 import "./styles.css";
 
-// 主题定制（学术感）走两条路：
-// ConfigProvider 管品牌色，styles.css 覆盖圆角/字体等 TDesign token。
+/* 关于 ConfigProvider 的两个坑（都是靠"跑一次完整类型检查"才发现的）：
+ *
+ * 1. **它只读 `globalConfig` 与 `notSet`**，没有 `locale` / `theme` 这两个 prop。
+ *    所以 `<ConfigProvider locale={zhConfig}>` 里的 locale 会被**静默忽略**，
+ *    组件内的中文文案（如"请选择""清空"）仍是英文 —— 界面看着正常，只是文案不对。
+ *    正确写法是把 locale 对象的字段**展开进 globalConfig**：
+ *    每个 locale 文件（这里是 es/locale/zh_CN）的默认导出本身就是一个 GlobalConfigProvider。
+ *
+ * 2. 品牌色**不能**通过 props 配（没有 theme prop），走 styles.css 的 :root 覆盖
+ *    `--td-brand-color` 即可，那里同时管圆角与字体。
+ *
+ * 注：项目的 build 脚本带 `--noCheck`（不检查类型），这类错误不会让构建失败 ——
+ * 改动前端后建议单独跑一次 `tsc -b --force`。
+ */
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <ConfigProvider
-      globalConfig={{ classPrefix: "t" }}
-      locale={zhConfig}
-      theme={{ "--td-brand-color": "#1b3a5c" }}
-    >
+    <ConfigProvider globalConfig={{ ...zhConfig, classPrefix: "t" }}>
       <App />
     </ConfigProvider>
   </React.StrictMode>

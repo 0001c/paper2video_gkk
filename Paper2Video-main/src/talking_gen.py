@@ -423,6 +423,47 @@ def _run(cmd, cwd, env, profile):
 
 
 
+def _check_upstream_even_dim_patch(paths):
+    """自检上游 MuseTalk 是否已打「偶数尺寸」补丁，没有就大声提示。
+
+    为什么值得单独查一次：上游用
+
+        ffmpeg ... -vcodec libx264 -vf format=yuv420p -crf 18 temp.mp4
+
+    把帧序列编码成视频，而 **libx264 的 yuv420p 要求宽高都是偶数**。
+    人脸裁框尺寸来自检测框，可能是奇数（实测 215x221）→ 编码器初始化失败、
+    temp.mp4 是 **0 字节** → 合音频时读不进去（``moov atom not found``）→
+    **该页没有产物**。
+
+    最难受的地方是症状：整批 11 页会在 ~5 分钟内"全部跑完但全部没有产物"，
+    日志里只有一句 ``width not divisible by 2``，很容易被当成模型/环境问题。
+    而且裁框奇偶取决于**参考图**，换一张人像才会触发 —— 同一套代码昨天能跑。
+
+    修法是给滤镜链加 ``crop=trunc(iw/2)*2:trunc(ih/2)*2``（向下取偶）。
+    这里**只提示、不中断**：裁框恰好是偶数时，上游原样也能跑通。
+    细节见 ``docs/MuseTalk补丁.md``。
+    """
+    script = os.path.join(paths.repo_dir, "scripts", "realtime_inference.py")
+    try:
+        with open(script, encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError:
+        return
+    if "crop=trunc(iw/2)" in text:
+        return
+    bar = "!" * 66
+    print("[talking_gen] " + bar)
+    print("[talking_gen] 警告：上游 MuseTalk 未打「偶数尺寸」补丁")
+    print("[talking_gen]   文件：{}".format(script))
+    print("[talking_gen]   libx264 要求宽高为偶数。若人脸裁框是奇数（如 215x221），")
+    print("[talking_gen]   该页会编码失败 -> temp.mp4 为 0 字节 -> 最终「跑完但没产物」。")
+    print("[talking_gen]   修法：把该文件里的  -vf format=yuv420p")
+    print("[talking_gen]   改为  -vf \\\"format=yuv420p,crop=trunc(iw/2)*2:trunc(ih/2)*2\\\"")
+    print("[talking_gen]   （f-string 定界符是双引号，所以源码里要写转义双引号）")
+    print("[talking_gen]   详见 docs/MuseTalk补丁.md")
+    print("[talking_gen] " + bar)
+
+
 def _run_musetalk_batch(tasks, profile, env_path):
     """用**一个** MuseTalk 进程跑完多页（批量入口 ``scripts.realtime_inference``）。
 
@@ -450,6 +491,7 @@ def _run_musetalk_batch(tasks, profile, env_path):
     用唯一 id 就绕过了那个分支（同时也绕过了它那条 rmtree）。
     """
     paths = resolve_paths(env_path, backend="musetalk")
+    _check_upstream_even_dim_patch(paths)
     gpu_id = tasks[0][4]
     env = _child_env(gpu_id, "musetalk")
 

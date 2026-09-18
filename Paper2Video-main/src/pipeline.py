@@ -46,6 +46,48 @@ from wei_utils import get_agent_config
 # os.environ["GEMINI_API_KEY"] = ""
 # os.environ["OPENAI_API_KEY"] = ""
 
+
+def read_image_size(image_path):
+    """读一张图的尺寸，返回 ``(height, width)``。
+
+    为什么不直接用 ``cv2.imread(...).shape``（原来就是这么写的）——
+    实测 cv2 的 imread 会**偶发返回 None**：OpenCV 自己打一行
+    ``cv2::findDecoder imread_('<路径>')`` 就放弃，而同一条路径换个读取器
+    （PIL / PyMuPDF）能正常打开。原因未完全查明，但这一行位于流水线**最末端**，
+    ``.shape`` 一崩就前功尽弃（本次实测：20 分钟的活儿全废在最后一步）。
+
+    所以这里按 cv2 → PIL → PyMuPDF 依次尝试；全部失败才抛错，
+    并且把每种读取器的失败原因都写进报错信息，便于下次定位。
+    """
+    errors = []
+    try:
+        arr = cv2.imread(image_path)
+        if arr is not None:
+            return int(arr.shape[0]), int(arr.shape[1])
+        errors.append("cv2.imread 返回 None")
+    except Exception as exc:
+        errors.append("cv2: {}".format(type(exc).__name__))
+
+    try:
+        from PIL import Image
+        with Image.open(image_path) as img:
+            width, height = img.size
+        return int(height), int(width)
+    except Exception as exc:
+        errors.append("PIL: {}".format(type(exc).__name__))
+
+    try:
+        import fitz  # PyMuPDF
+        with fitz.open(image_path) as doc:
+            rect = doc[0].rect
+        return int(rect.height), int(rect.width)
+    except Exception as exc:
+        errors.append("PyMuPDF: {}".format(type(exc).__name__))
+
+    raise RuntimeError(
+        "读不出图片尺寸：{}\n  逐种读取器的结果：{}".format(image_path, "；".join(errors)))
+
+
 def copy_folder(src_dir, dst_dir):
     if not os.path.exists(src_dir): raise FileNotFoundError(f"no such dir: {src_dir}")
     os.makedirs(os.path.dirname(dst_dir), exist_ok=True)
@@ -306,9 +348,9 @@ if __name__ == '__main__':
         # 上游调 ./1_merage.bash（Windows 不可执行，且把 list.txt 写在 cwd），改走 Python
         tmp_merage_dir = path.join(args.result_dir, "merage")
         tmp_merage_1 = path.join(args.result_dir, "1_merage.mp4")
-        image_size = cv2.imread(path.join(slide_image_dir, '1.png')).shape
+        image_height, image_width = read_image_size(path.join(slide_image_dir, '1.png'))
         # 数字人嵌在右上角，边长取画面长边的 1/6（沿用上游 hallo2 的取法，保证版式一致）
-        size = max(image_size[0]//6, image_size[1]//6)
+        size = max(image_height // 6, image_width // 6)
         width, height = size, size
         num_slide = len([n for n in os.listdir(slide_image_dir) if n.lower().endswith(".png")])
         ref_stem = path.splitext(path.basename(args.ref_img))[0]

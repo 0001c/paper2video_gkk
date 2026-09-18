@@ -79,6 +79,15 @@ PDF 必须行合并且句末判据同时认中英文标点。**真实 Word 不�
 成本口径：`result/<名字>/token.json`；一篇约 5.6 万 token，**讲稿占 76%**，
 故 `--reuse_script` 是省钱主力。
 
+**数字人必须打 MuseTalk 偶数尺寸补丁**（`docs/MuseTalk补丁.md`）：
+上游 `-vf format=yuv420p` 不处理奇数尺寸，人脸裁框为奇数（如 215x221）时
+libx264 拒绝编码 → temp.mp4 为 0 字节 → **整批 11 页"跑完但无产物"**，
+症状极具误导性（上游照样打印 result is save、总耗时正常）。
+已改 `<MuseTalk>/scripts/{realtime_inference,inference}.py`，加
+`crop=trunc(iw/2)*2:trunc(ih/2)*2`；源码里要用**转义双引号**（f-string 定界符）。
+⚠️ **改的是上游仓库、不在本仓库 Git 里，学校服务器重装后必须重打**；
+自检：`python scripts/verify_musetalk_patch.py`（talking_gen 也会在批量入口提示）。
+
 **日志编码必须统一**：`run.log` 同时是父进程写入目标与子进程 stdout 目标，
 子进程默认按 Windows 控制台编码（GBK）输出 → 混合编码文件任何单一解码器都读不了，
 表现为界面乱码 + **日志解析正则命中 0 条**（不报错）。

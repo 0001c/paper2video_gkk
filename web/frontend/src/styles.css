@@ -317,8 +317,95 @@ html, body {
 
 video { width: 100%; border-radius: var(--td-radius-default); background: #000; margin-top: 10px; }
 
+/* ── TDesign 组件的「学术化」微调 ──
+   前提是 main.tsx 里已引入 tdesign-react/es/style/index.css（token 定义所在）。
+   下面每处都用**字面量**兜底，而不是依赖 var(--td-comp-*)：
+   一旦那份主题文件漏了，TDesign 的变量全部未定义，var() 会让整条声明失效，
+   组件就会退化成「零内边距按钮 + 透明下拉面板」，而且不报任何错。 */
+.t-button {
+  padding-left: 18px;
+  padding-right: 18px;
+  letter-spacing: 0.02em;
+}
+
+/* 下拉面板：必须显式给不透明背景。
+   它渲染在 portal 里、脱离 .sheet 的层叠上下文，
+   背景一旦解析为空就会直接透出页面文字，可读性极差。 */
+.t-popup__content {
+  background: var(--paper-surface);
+  border: 1px solid var(--paper-rule-strong);
+  border-radius: var(--td-radius-medium);
+  box-shadow: 0 8px 24px rgba(26, 26, 26, 0.1);
+}
+.t-select__dropdown,
+.t-select__dropdown-inner {
+  background: var(--paper-surface);
+}
+.t-select-option {
+  font-size: 13px;
+}
+.t-select-option:hover {
+  background: #f4f2ee;
+}
+.t-select-option.t-is-selected {
+  color: var(--paper-accent);
+  font-weight: 500;
+}
+
+/* 表单控件的边框与纸感对齐 */
+.t-input,
+.t-select-input .t-input {
+  border-color: var(--paper-rule-strong);
+}
+.t-input:hover,
+.t-select-input:hover .t-input {
+  border-color: var(--paper-accent-soft);
+}
+
+/* ── 硬件栏：置于页眉下方，用来解释「为什么是这个时长」 ── */
+.hwbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 22px;
+  padding: 9px 12px;
+  margin-top: 16px;
+  background: #f6f5f2;
+  border: 1px solid var(--paper-rule);
+  border-radius: var(--td-radius-default);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--paper-ink-soft);
+}
+.hwbar .k {
+  color: var(--paper-ink-faint);
+  margin-right: 5px;
+}
+.hwbar .warn { color: var(--paper-warn); }
+
+/* 页脚估算：把「预计时长」做成可核对的一句，而不是空泛的区间 */
+.footline {
+  margin-top: 48px;
+  padding-top: 18px;
+  border-top: 1px solid var(--paper-rule);
+  font-size: 11.5px;
+  color: var(--paper-ink-faint);
+  line-height: 1.9;
+}
+.footline .est {
+  color: var(--paper-ink-soft);
+}
+.footline .est b {
+  font-weight: 500;
+  color: var(--paper-accent);
+}
+.footline .basis {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
 /* 小屏放宽版心 */
 @media (max-width: 640px) {
   .sheet { padding: 0 16px 64px; }
   .masthead h1 { font-size: 21px; }
+  .hwbar { font-size: 11px; gap: 4px 14px; }
 }

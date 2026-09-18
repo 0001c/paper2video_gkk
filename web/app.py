@@ -20,6 +20,7 @@ import asyncio
 import io
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -167,16 +168,141 @@ def read_progress(job):
     return info
 
 
-def gpu_status():
-    """显存占用 —— 用于提示"有别的任务在跑"。"""
+# ──────────────────────────────────────────────────────────────
+# 硬件探测 + 耗时标定
+#
+# 界面顶部要显示本机配置，页脚要"按配置估算时长"。
+# 估算这件事很容易变成拍脑袋，所以这里把**依据**一起回报给前端：
+# 标定值全部来自本机两次真实运行的 stage 计时（2026-09-18）。
+# ──────────────────────────────────────────────────────────────
+
+#   gkk_en 15 页（英文讲稿）: TTS 348.8 + 数字人 327.7 + 光标 2.6 + 合片 77.5 + 讲稿 111.3 = 868 s
+#   gkk_zh 11 页（中文讲稿）: TTS 479.9 + 数字人 363.6 + 光标 17.2 + 合片 73.0 + 讲稿 0(复用) = 934 s
+#
+# 拆成「每页」+「固定」两项后，这组常数能同时复现上面两次实测：
+#   15×45.1 + 85 + 110 = 871 s (14.5 min)  ← 实际 868 s
+#   11×76.7 + 85      = 929 s (15.5 min)  ← 实际 934 s
+# 中文每页明显更慢（TTS 43.6s/页 vs 英文 23.3s/页），而且音频更长还会连带拖慢数字人。
+CALIBRATION = {
+    "en_per_slide_s": 45.1,
+    "zh_per_slide_s": 76.7,
+    "fixed_s": 85.0,            # 光标 + 合片
+    "script_api_s": 110.0,      # 讲稿生成（唯一付费步骤；--reuse_script 时为 0）
+    "chars_per_slide": 280,     # 实测：正文 3540 字符 → 11~15 页
+    "anchored_on": "RTX 5070 Ti 16GB",
+    "note": "标定自本机两次真实运行；换硬件只做粗略折算，不是精确预测。",
+}
+
+
+def _cpu_name():
+    if os.name == "nt":
+        try:
+            import winreg
+            with winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE,
+                    r"HARDWARE\DESCRIPTION\System\CentralProcessor\0") as key:
+                return str(winreg.QueryValueEx(key, "ProcessorNameString")[0]).strip()
+        except Exception:
+            pass
+    else:
+        try:
+            with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if line.lower().startswith("model name"):
+                        return line.split(":", 1)[1].strip()
+        except Exception:
+            pass
+    return platform.processor() or platform.machine() or "未知"
+
+
+def _cpu_cores():
+    physical = logical = None
+    try:
+        import psutil
+        physical = psutil.cpu_count(logical=False)
+        logical = psutil.cpu_count(logical=True)
+    except Exception:
+        pass
+    return {"physical": physical, "logical": logical or os.cpu_count()}
+
+
+def _memory():
+    try:
+        import psutil
+        vm = psutil.virtual_memory()
+        return {"total_gb": round(vm.total / 2 ** 30, 1),
+                "available_gb": round(vm.available / 2 ** 30, 1)}
+    except Exception:
+        return {}
+
+
+def _gpus():
     try:
         out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total",
-             "--format=csv,noheader"],
+            ["nvidia-smi",
+             "--query-gpu=name,memory.total,memory.used,utilization.gpu,driver_version",
+             "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=15).stdout.strip()
-        return out
-    except Exception as exc:
-        return "（读取失败：{}）".format(type(exc).__name__)
+    except Exception:
+        return []
+    gpus = []
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 5:
+            continue
+        try:
+            gpus.append({
+                "name": parts[0],
+                "vram_total_mb": int(float(parts[1])),
+                "vram_used_mb": int(float(parts[2])),
+                "util_percent": int(float(parts[3])),
+                "driver": parts[4],
+            })
+        except ValueError:
+            continue
+    return gpus
+
+
+def _perf_factor(vram_total_mb):
+    """按显存档位粗略折算耗时倍率（标定机 16GB = 1.0）。
+
+    ⚠️ 这是**启发式**，不是测出来的：本机只有一块 16GB 卡，
+    没有别的硬件可标定。它只用来把"15~25 分钟"这种空泛区间
+    变成"按当前配置约 X 分钟"，界面上必须标明是粗估。
+    """
+    if not vram_total_mb:
+        return None
+    if vram_total_mb >= 20000:
+        return 0.75
+    if vram_total_mb >= 15000:
+        return 1.0
+    if vram_total_mb >= 11000:
+        return 1.3
+    return 1.8
+
+
+def system_info():
+    gpus = _gpus()
+    vram = gpus[0]["vram_total_mb"] if gpus else None
+    return {
+        "os": "{} {}".format(platform.system(), platform.release()),
+        "python": platform.python_version(),
+        "cpu": dict(_cpu_cores(), name=_cpu_name()),
+        "memory": _memory(),
+        "gpus": gpus,
+        "perf_factor": _perf_factor(vram),
+        "calibration": CALIBRATION,
+    }
+
+
+def gpu_status():
+    """显存占用 —— 用于提示"有别的任务在跑"。"""
+    gpus = _gpus()
+    if not gpus:
+        return "（未检测到 GPU）"
+    g = gpus[0]
+    return "{} %, {} MiB, {} MiB".format(
+        g["util_percent"], g["vram_used_mb"], g["vram_total_mb"])
 
 
 # ──────────────────────────────────────────────────────────────
@@ -527,6 +653,16 @@ async def api_job_file(job_id: str, rel_path: str):
 @app.get("/api/system/gpu")
 async def api_gpu():
     return {"gpu": gpu_status(), "running_job": _CURRENT.get("job_id")}
+
+
+@app.get("/api/system/info")
+async def api_system_info():
+    """本机配置 + 耗时标定值。
+
+    前端用它做两件事：顶部显示硬件、页脚按当前配置给出预计时长。
+    把标定值也一并下发（而不是写死在前端），是为了让"估算依据"只有一处来源。
+    """
+    return system_info()
 
 
 # 前端构建产物（vite build 输出）。没有就退化成纯 API —— 开发时用 vite dev。

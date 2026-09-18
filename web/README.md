@@ -109,14 +109,62 @@ python web/app.py --help             # 看全部选项
 
 ---
 
+## ⚠️ 改前端样式前必读：TDesign 的主题 CSS 必须显式引入
+
+`src/main.tsx` 里这一行**不能删**，而且必须在 `./styles.css` 之前：
+
+```ts
+import "tdesign-react/es/style/index.css";
+```
+
+原因：tdesign-react 的**每个组件**只会引入自己那份 CSS，而那些 CSS 里全是
+`var(--td-bg-color-container)` 这类**引用**；变量真正的**定义**只在上面这个主题文件里。
+漏掉它**不会报任何错**，但所有 `var()` 解析为空，表现为两个看着毫不相关的问题：
+
+| 症状 | 机理 |
+|---|---|
+| Select 下拉面板**背景透明**，与页面文字重叠 | `.t-popup__content` 的 `background-color` 是 `var(...)`，解析为空 |
+| Button **文字贴住边框** | `padding: var(--td-comp-paddingLR-*)` 整条声明失效被丢弃 → padding 归零 |
+
+实测证据：产物 CSS 里 `--td-bg-color-container` 被**引用 20 次、定义 0 次**。
+判断方法：`grep -o 'var(--td-bg-color-container' static/assets/*.css | wc -l`
+与 `grep -o -- '--td-bg-color-container:' static/assets/*.css | wc -l` 应大致相当。
+
+`styles.css` 末尾对按钮内边距与下拉面板背景用了**字面量**（而非 `var(--td-*)`）兜底，
+即使主题文件再次缺失，也不会退化到"看不清"。
+
+---
+
+## 耗时估算的依据
+
+顶部硬件栏与页脚的预计时长都来自 `/api/system/info`，它同时下发**标定值**
+（`CALIBRATION`，见 `app.py`），目的是让"估算依据"只有一处来源。
+
+标定值来自本机两次真实运行的 stage 计时，且能同时复现这两次：
+
+| 本次 | 算得 | 实际 | 误差 |
+|---|---|---|---|
+| `gkk_en` 15 页 · 英文讲稿 | 872 s (14.5 min) | 868 s | +0.4% |
+| `gkk_zh` 11 页 · 中文讲稿 | 929 s (15.5 min) | 934 s | −0.6% |
+
+两点值得记住：**中文每页明显更慢**（TTS 43.6s/页 vs 英文 23.3s/页，
+且音频更长会连带拖慢数字人），所以页数少的中文组合可能比页数多的英文组合更久。
+
+`perf_factor` 是**启发式**（按显存档位折算，标定机 16GB = 1.0），
+本机只有一块卡、没有别的硬件可标定，界面上必须标明是粗估。
+换硬件后若要认真估算，应在目标机器上重跑一次并更新 `CALIBRATION`。
+
+---
+
 ## 目录
 
 ```
 web/
-  app.py          FastAPI 后端（含串行队列、SSE 进度、产物服务）
-  static/         前端构建产物（pnpm build 输出，勿手改）
+  app.py          FastAPI 后端（含串行队列、SSE 进度、产物服务、硬件探测与耗时标定）
+  static/         前端构建产物（vite build 输出，勿手改）
   frontend/       前端源码（React + Vite + TDesign）
-    src/App.tsx       四个区块 + SSE 进度 hook
+    src/main.tsx      ⚠️ 必须引入 TDesign 主题 CSS（见上）
+    src/App.tsx       四个区块 + SSE 进度 hook + 硬件栏与耗时估算
     src/styles.css    学术感主题（覆盖 TDesign 的圆角与配色 token）
 jobs/            运行时产生的任务目录（已在 .gitignore）
   <job_id>/

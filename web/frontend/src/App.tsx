@@ -154,6 +154,7 @@ export default function App() {
   // ① 素材
   const [paperFile, setPaperFile] = useState<File | null>(null);
   const [portraitFile, setPortraitFile] = useState<File | null>(null);
+  const [portraitInfo, setPortraitInfo] = useState<any | null>(null);
   const [ingest, setIngest] = useState<any>(null);
   const [ingesting, setIngesting] = useState(false);
 
@@ -246,12 +247,18 @@ export default function App() {
     if (!portraitFile) return MessagePlugin.warning("请上传人像图（数字人环节必需）");
     if (!apiKey) return MessagePlugin.warning("请填写 API Key（幻灯片与讲稿生成需要）");
 
-    // 人像图先落到后端：/api/ingest 只处理论文，人像单独上传
+    // 人像走**专用接口**。
+    // ⚠️ 不能复用 /api/ingest：那个接口做的是"论文 → 正文提取"，
+    // 拿图片进去必然报「无法识别的文件格式」—— 原先就是这么写的，
+    // 导致人像永远传不上去、任务永远建不起来，界面上只看到"上传失败"。
     const form = new FormData();
     form.append("paper", portraitFile);
-    const up = await api.postForm("/api/ingest", form);   // 复用同一落盘逻辑
-    const portraitPath = up.data?.source_path;
-    if (!portraitPath) return MessagePlugin.error("人像图上传失败");
+    const up = await api.postForm("/api/portrait", form);
+    const portraitPath = up.data?.portrait_path;
+    if (!portraitPath) {
+      return MessagePlugin.error(up.data?.error || "人像图上传失败");
+    }
+    setPortraitInfo(up.data);
 
     const { status, data } = await api.post("/api/jobs", {
       ingest_id: ingest.ingest_id,
@@ -423,6 +430,12 @@ export default function App() {
             accept=".docx,.doc,.pdf,.tex,.zip"
             picked={paperFile?.name ?? null}
             onPick={(f) => {
+              // 图片显然是误放（多半是想传人像）：当场说清，
+              // 而不是传上去再由后端报"无法识别的文件格式"。
+              if (/\.(png|jpe?g|webp|bmp|gif)$/i.test(f.name)) {
+                MessagePlugin.warning("这是图片 —— 请放到右侧「人像图」位置");
+                return;
+              }
               setPaperFile(f);
               setIngest(null);
             }}
@@ -433,11 +446,34 @@ export default function App() {
               hint="正面照，人脸占比大、无遮挡"
               accept="image/*"
               picked={portraitFile?.name ?? null}
-              onPick={setPortraitFile}
+              onPick={(f) => {
+                setPortraitFile(f);
+                setPortraitInfo(null); // 换图后旧的校验结果作废
+              }}
             />
             <div className="hint" style={{ fontSize: 11.5, color: "var(--paper-ink-faint)", marginTop: 6 }}>
               参考音频可留空 —— 会按讲稿语言自动选择音色
             </div>
+            {/* 人像校验结果内联在 Dropzone 下方（不用弹窗，避免遮住刚要确认的东西） */}
+            {portraitInfo && (
+              <div className="notice ok" style={{ marginTop: 8, fontSize: 11.5 }}>
+                <span>
+                  已上传：{portraitInfo.format}
+                  {portraitInfo.width ? ` · ${portraitInfo.width}×${portraitInfo.height}` : ""}
+                  {portraitInfo.size_mb ? ` · ${portraitInfo.size_mb} MB` : ""}
+                </span>
+              </div>
+            )}
+            {portraitInfo?.warnings?.map((text: string) => (
+              <div className="notice warn" key={text} style={{ marginTop: 8, fontSize: 11.5 }}>
+                <span>{text}</span>
+              </div>
+            ))}
+            {portraitInfo?.note && (
+              <div className="hint" style={{ fontSize: 11, marginTop: 6 }}>
+                {portraitInfo.note}
+              </div>
+            )}
           </div>
         </div>
 

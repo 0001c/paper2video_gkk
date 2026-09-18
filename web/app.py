@@ -110,6 +110,29 @@ async def _update_job(job_id, **fields):
         return job
 
 
+# 图片格式按**文件头**判断，不信扩展名（.png 里装 JPEG 的情况很常见）
+_IMAGE_MAGIC = (
+    (b"\x89PNG\r\n\x1a\n", "png"),
+    (b"\xff\xd8\xff", "jpeg"),
+    (b"BM", "bmp"),
+)
+
+
+def _sniff_image(file_path):
+    """返回 png / jpeg / webp / bmp；不是图片则返回 None。"""
+    try:
+        with io.open(file_path, "rb") as handle:
+            head = handle.read(16)
+    except Exception:
+        return None
+    for magic, name in _IMAGE_MAGIC:
+        if head.startswith(magic):
+            return name
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
 def _list_jobs():
     jobs = []
     for name in os.listdir(JOBS_ROOT):
@@ -711,6 +734,9 @@ async def api_ingest(paper: UploadFile = File(...)):
     try:
         text, meta = pi.ingest(src, os.path.join(work, "ingest"))
     except Exception as exc:
+        # 失败就把临时目录删掉：否则每次失败都在 jobs/ 里留一个空壳，
+        # 使用者（和后续排查的人）会以为"上传过但没结果"（实测踩过）。
+        shutil.rmtree(work, ignore_errors=True)
         return JSONResponse(status_code=400, content={
             "ok": False,
             "error": "{}: {}".format(type(exc).__name__, exc),
@@ -730,6 +756,77 @@ async def api_ingest(paper: UploadFile = File(...)):
         "preview_head": (text or "")[:1500],
         "preview_tail": (text or "")[-500:] if text else "",
         "latex_root": meta.get("latex_root"),
+    }
+
+
+@app.post("/api/portrait")
+async def api_portrait(paper: UploadFile = File(...)):
+    """上传人像图（数字人环节的输入）。
+
+    **为什么必须与 `/api/ingest` 分开**：那个接口做的是"论文 → 正文提取"，
+    拿图片进去必然报「无法识别的文件格式」。而前端原先正是复用它上传人像 ——
+    结果是**人像永远传不上去、任务永远建不起来**，界面上只看到"人像图上传失败"。
+    人像只需要"存下来 + 基本校验"，完全不需要解析。
+
+    校验做到什么程度：只验**是不是图片**（按文件头，不看扩展名）与尺寸合理性。
+    **不做人脸检测** —— 本机 OpenCV 5 已移除级联分类器且不带数据文件，
+    要做得下载模型，而学校服务器可能离线。所以返回里写明"未做检测"，
+    并列出人工确认要点，不给虚假的安全感。
+    """
+    tmp_id = "portrait_" + uuid.uuid4().hex[:8]
+    work = os.path.join(JOBS_ROOT, tmp_id)
+    os.makedirs(os.path.join(work, "input"), exist_ok=True)
+
+    safe_name = os.path.basename(paper.filename or "portrait.png")
+    dest = os.path.join(work, "input", safe_name)
+    with io.open(dest, "wb") as handle:
+        while True:                                   # 流式落盘，不整块读进内存
+            chunk = await paper.read(1 << 20)
+            if not chunk:
+                break
+            handle.write(chunk)
+
+    fmt = _sniff_image(dest)
+    if fmt is None:
+        shutil.rmtree(work, ignore_errors=True)       # 失败不留空壳目录
+        return JSONResponse(status_code=400, content={
+            "ok": False,
+            "error": "这不是一张能识别的图片（按文件头判断，不看扩展名）",
+            "hint": "支持 PNG / JPEG / WEBP / BMP",
+        })
+
+    warnings = []
+    width = height = None
+    try:
+        from PIL import Image
+        with Image.open(dest) as image:
+            width, height = image.size
+    except Exception as exc:
+        warnings.append("读取尺寸失败（{}），仍可尝试使用".format(type(exc).__name__))
+
+    if width and height:
+        short_side = min(width, height)
+        long_side = max(width, height)
+        if short_side < 256:
+            warnings.append(
+                "短边仅 {} 像素：数字人只重绘 256×256 的人脸区域，这个尺寸会明显模糊"
+                .format(short_side))
+        elif short_side < 512:
+            warnings.append("短边 {} 像素偏小，建议 512 以上".format(short_side))
+        if long_side > 4096:
+            warnings.append("分辨率 {}×{} 偏大（白耗显存），建议不超过 4096"
+                            .format(width, height))
+
+    return {
+        "ok": True,
+        "portrait_path": dest,
+        "format": fmt,
+        "width": width,
+        "height": height,
+        "size_mb": round(os.path.getsize(dest) / 2 ** 20, 2),
+        "warnings": warnings,
+        "note": "未做人脸检测（本机 OpenCV 已移除级联分类器）。请自行确认："
+                "正脸、单人、无遮挡；侧脸或多人会让数字人环节失败或效果很差。",
     }
 
 

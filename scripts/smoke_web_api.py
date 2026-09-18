@@ -14,6 +14,8 @@
     python scripts/smoke_web_api.py
 """
 import asyncio
+
+from PIL import Image
 import importlib.util
 import io
 import json
@@ -630,6 +632,82 @@ def test_struct_prepare(app):
     return ok
 
 
+# ──────────────────────────────────────────────────────────────
+# ⑥ 人像上传（独立接口）
+# ──────────────────────────────────────────────────────────────
+def test_portrait_upload(app):
+    """人像必须走**专用**接口。
+
+    历史 bug：前端原先复用人像走 `/api/ingest`（那是"论文 → 正文提取"），
+    图片进去必然报「无法识别的文件格式」→ **人像永远传不上去 → 任务永远建不起来**，
+    而界面上只看到一句"人像图上传失败"。所以这里必须守住两个点：
+      1. 图片走 /api/portrait 能成功并回传尺寸；
+      2. 非图片被拒时**不留空壳目录**（否则 jobs/ 里堆一堆空目录，误导排查）。
+    """
+    print()
+    print("=" * 66)
+    print("[6] 人像上传 —— 专用接口 / 尺寸校验 / 失败不留空目录")
+    print("=" * 66)
+    ok = True
+
+    from fastapi.testclient import TestClient
+
+    def png_bytes(width, height):
+        """造一张真 PNG（用 PIL，保证文件头与结构都合法）。"""
+        buf = io.BytesIO()
+        Image.new("RGB", (width, height), (205, 185, 165)).save(buf, format="PNG")
+        buf.seek(0)
+        return buf.getvalue()
+
+    before = set(os.listdir(app.JOBS_ROOT))
+    srv = app.app
+    try:
+        with TestClient(srv) as client:
+            r = client.post("/api/portrait",
+                            files={"paper": ("portrait_ok.png", png_bytes(512, 640),
+                                             "application/octet-stream")})
+            ok &= check("正常图片上传返回 200", r.status_code == 200,
+                        "HTTP %s %s" % (r.status_code, r.text[:90]))
+            data = r.json()
+            ok &= check("回传了落盘路径与尺寸",
+                        os.path.isfile(data.get("portrait_path", ""))
+                        and data.get("width") == 512 and data.get("height") == 640,
+                        "path=%s %sx%s" % (os.path.basename(data.get("portrait_path", "")),
+                                           data.get("width"), data.get("height")))
+            ok &= check("正常尺寸没有告警", not data.get("warnings"),
+                        "%s" % data.get("warnings"))
+            ok &= check("返回里写明未做人脸检测（不给虚假安全感）",
+                        "未做人脸检测" in (data.get("note") or ""),
+                        (data.get("note") or "")[:50])
+
+            r = client.post("/api/portrait",
+                            files={"paper": ("small.png", png_bytes(128, 128),
+                                             "application/octet-stream")})
+            warns = r.json().get("warnings") or []
+            ok &= check("过小图片给出告警", any("短边" in w for w in warns),
+                        "%s" % warns)
+
+            r = client.post("/api/portrait",
+                            files={"paper": ("notimage.png",
+                                             b"definitely not an image at all",
+                                             "application/octet-stream")})
+            ok &= check("非图片返回 400", r.status_code == 400,
+                        "HTTP %s" % r.status_code)
+            ok &= check("拒绝时说清了支持的格式",
+                        "PNG" in (r.json().get("hint") or ""),
+                        "%s" % r.json().get("hint"))
+
+            after = set(os.listdir(app.JOBS_ROOT))
+            created = after - before
+            # 3 次请求里只有 2 次成功 → 只该多出 2 个目录
+            ok &= check("失败那次不留空壳目录", len(created) == 2,
+                        "新建 %d 个目录（期望 2）：%s" % (len(created), sorted(created)))
+    finally:
+        for name in set(os.listdir(app.JOBS_ROOT)) - before:
+            shutil.rmtree(os.path.join(app.JOBS_ROOT, name), ignore_errors=True)
+    return ok
+
+
 def main():
     app = load_app()
     results = [
@@ -638,6 +716,7 @@ def main():
         test_progress_sources(app),
         test_pages_and_rerun(app),
         test_struct_prepare(app),
+        test_portrait_upload(app),
     ]
     print()
     print("=" * 66)

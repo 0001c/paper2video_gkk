@@ -209,3 +209,6 @@ requirements_local.txt
 
 # 人像素材（个人照片，不入库；发布前需脱敏）
 assets/gkk/
+
+# 输入摄取 smoke test 的输出（可随时重跑生成）
+.workbuddy/ingest_smoke/

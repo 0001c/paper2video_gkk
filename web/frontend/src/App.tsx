@@ -47,6 +47,13 @@ type Toggle = {
   cost?: string;
 };
 
+type ScriptPromptProfile = {
+  value: "paper" | "ebook" | "course" | "custom";
+  label: string;
+  desc: string;
+  prompts: Record<string, string>;
+};
+
 type Options = {
   presets: (Opt & { slide_lang: string; script_lang: string })[];
   slide_langs: Opt[];
@@ -57,6 +64,8 @@ type Options = {
   /* 可选：后端老版本没有这个字段（静态前端由后端直接服务，两边短暂不同步是常态），
      所以标成可选并在渲染时 `?? []`，只少不崩。 */
   toggles?: Toggle[];
+  script_prompt_profiles?: ScriptPromptProfile[];
+  script_prompt_max_chars?: number;
   voice: Voices;
 };
 
@@ -173,6 +182,7 @@ type Job = {
   /* 续跑出来的任务：值是原任务 id。产物与原任务**共享**
      （后端不复制 result 目录，只在 config.result_dir 里指过去）。 */
   resumed_from?: string;
+  config?: { generate_talking?: boolean; content_profile?: string };
 };
 
 /** 实时连接的可用状态。断流必须**看得见** ——
@@ -319,6 +329,9 @@ export default function App() {
   const [slideLang, setSlideLang] = useState("en");
   const [scriptLang, setScriptLang] = useState("zh");
   const [paperType, setPaperType] = useState("auto");
+  const [contentProfile, setContentProfile] = useState<ScriptPromptProfile["value"]>("paper");
+  const [scriptPrompt, setScriptPrompt] = useState("");
+  const [generateTalking, setGenerateTalking] = useState(true);
   /* 幻灯片布局微调（树搜索）—— 默认关，与后端 `_build_argv` 的默认值一致。
      两边默认值必须相同：界面显示"未勾选"而后端当成 True 跑，就是在
      使用者不知情的情况下多花钱，且看不出来。 */
@@ -461,7 +474,9 @@ export default function App() {
   const est = useMemo(() => {
     const cal = sys?.calibration;
     if (!cal) return null;
-    const perSlide = scriptLang === "zh" ? cal.zh_per_slide_s : cal.en_per_slide_s;
+    const rawPerSlide = scriptLang === "zh" ? cal.zh_per_slide_s : cal.en_per_slide_s;
+    // 标定中数字人约占每页耗时的 38%；关闭数字人时扣掉这一段。
+    const perSlide = rawPerSlide * (generateTalking && portraitFile ? 1 : 0.62);
     const chars: number | undefined = ingest?.chars;
     const slides = chars
       ? Math.min(24, Math.max(6, Math.round(chars / cal.chars_per_slide)))
@@ -476,7 +491,7 @@ export default function App() {
       factor,
       anchoredOn: cal.anchored_on,
     };
-  }, [sys, scriptLang, ingest]);
+  }, [sys, scriptLang, ingest, generateTalking, portraitFile]);
 
   // 预设变化时同步两个轴 —— 但要保留"单独指定某一轴"的能力，
   // 所以这里只在预设变化的那一刻同步，之后用户手动改的轴不再被覆盖。
@@ -488,8 +503,19 @@ export default function App() {
     }
   }, [preset, opts]);
 
+  // 内容类型和讲稿语言共同决定初始模板。模板只是起点，textarea 中的内容会
+  // 原样随任务保存；“恢复当前模板”也复用同一份后端下发值，避免前后端各维护一套。
+  const promptTemplate = useMemo(() => {
+    const profile = opts?.script_prompt_profiles?.find((x) => x.value === contentProfile);
+    return profile?.prompts?.[scriptLang] ?? "";
+  }, [opts, contentProfile, scriptLang]);
+
+  useEffect(() => {
+    if (promptTemplate) setScriptPrompt(promptTemplate);
+  }, [promptTemplate]);
+
   const doIngest = useCallback(async () => {
-    if (!paperFile) return MessagePlugin.warning("请先选择论文文件");
+    if (!paperFile) return MessagePlugin.warning("请先选择内容文件");
     setIngesting(true);
     setIngest(null);
     const form = new FormData();
@@ -511,9 +537,12 @@ export default function App() {
   }, [apiKey, apiBase]);
 
   const submit = useCallback(async () => {
-    if (!ingest || ingest.error) return MessagePlugin.warning("请先上传论文并完成提取预览");
-    if (!portraitFile) return MessagePlugin.warning("请上传人像图（数字人环节必需）");
+    if (!ingest || ingest.error) return MessagePlugin.warning("请先上传内容文件并完成提取预览");
     if (!apiKey) return MessagePlugin.warning("请填写 API Key（幻灯片与讲稿生成需要）");
+    if (!scriptPrompt.trim()) return MessagePlugin.warning("讲稿提示词不能为空");
+    if (scriptPrompt.length > (opts?.script_prompt_max_chars ?? 20000)) {
+      return MessagePlugin.warning(`讲稿提示词最多 ${opts?.script_prompt_max_chars ?? 20000} 字符`);
+    }
     // 音色没选全就提交，会静默回落到内置音色 —— 使用者只会觉得"我选的音色没生效"。
     // 在这里拦住，比在成片里听出来划算得多。
     if (voiceMode === "preset" && !presetPick) {
@@ -526,18 +555,25 @@ export default function App() {
       return MessagePlugin.warning("请先上传参考音频（或改回「内置默认音色」）");
     }
 
-    // 人像走**专用接口**。
+    // 人像走**专用接口**，但数字人是可选项：未勾选或没选人像时不上传，
+    // 后端也会做同样的兜底，stage 3 改走“幻灯片 + 音频”直接合片。
     // ⚠️ 不能复用 /api/ingest：那个接口做的是"论文 → 正文提取"，
     // 拿图片进去必然报「无法识别的文件格式」—— 原先就是这么写的，
     // 导致人像永远传不上去、任务永远建不起来，界面上只看到"上传失败"。
-    const form = new FormData();
-    form.append("paper", portraitFile);
-    const up = await api.postForm("/api/portrait", form);
-    const portraitPath = up.data?.portrait_path;
-    if (!portraitPath) {
-      return MessagePlugin.error(up.data?.error || "人像图上传失败");
+    const talkingWillRun = generateTalking && !!portraitFile;
+    let portraitPath: string | undefined;
+    if (talkingWillRun && portraitFile) {
+      const form = new FormData();
+      form.append("paper", portraitFile);
+      const up = await api.postForm("/api/portrait", form);
+      portraitPath = up.data?.portrait_path;
+      if (!portraitPath) {
+        return MessagePlugin.error(up.data?.error || "人像图上传失败");
+      }
+      setPortraitInfo(up.data);
+    } else if (generateTalking && !portraitFile) {
+      MessagePlugin.info("未上传人像，本次将自动跳过数字人并生成幻灯片讲解视频");
     }
-    setPortraitInfo(up.data);
 
     const { status, data } = await api.post("/api/jobs", {
       ingest_id: ingest.ingest_id,
@@ -556,6 +592,9 @@ export default function App() {
         slide_lang: slideLang,
         script_lang: scriptLang,
         paper_type: paperType,
+        content_profile: contentProfile,
+        script_prompt: scriptPrompt,
+        generate_talking: talkingWillRun,
         // 幻灯片布局微调（树搜索）。**必须显式传**：后端读不到这个字段时按
         // 默认 False 处理，但把"界面上的勾选状态"原样送到后端，才谈得上
         // "所见即所跑"。它也进了产物指纹，所以关/开产出的幻灯片不会互相命中。
@@ -575,8 +614,9 @@ export default function App() {
       if (data.voice_active) MessagePlugin.success(`已入队 · 音色：${data.voice_note}`);
       else MessagePlugin.info(`已入队 · 音色：${data.voice_note}`);
     }
-  }, [ingest, portraitFile, apiKey, apiBase, slideLang, scriptLang, paperType,
-      ifTreeSearch,
+    if (data.talking_note) MessagePlugin.info(data.talking_note);
+  }, [ingest, portraitFile, generateTalking, apiKey, apiBase, slideLang, scriptLang, paperType,
+      contentProfile, scriptPrompt, opts, ifTreeSearch,
       voiceMode, presetPick, designPrompt, uploadSpec, uploadText, voiceSpecNow]);
 
   // 任务列表：每 5 秒刷新。本地工具，这点开销可以忽略，
@@ -670,7 +710,10 @@ export default function App() {
   // 数字人开工时从 100% 掉回 7%。现在用阶段加权（口径见 app.py 的 _phase_overall_pct）。
   const p = job?.progress;
   const pct = job?.status === "done" ? 100 : p?.overall_pct ?? legacyPct(p);
-  const phases: Phase[] = opts?.phases ?? [];
+  const showTalkingPhase = job?.config?.generate_talking ?? (generateTalking && !!portraitFile);
+  const phases: Phase[] = (opts?.phases ?? []).filter(
+    (phase) => showTalkingPhase || phase.key !== "talking",
+  );
   /* 树搜索开关的文案来自后端。取不到就整块不渲染（老后端），
      而不是用本地硬编码的文案顶上 —— 那样两边会各说各话。 */
   const treeToggle: Toggle | undefined =
@@ -707,9 +750,9 @@ export default function App() {
   return (
     <div className="sheet">
       <header className="masthead">
-        <h1>论文自动讲解视频</h1>
+        <h1>内容自动讲解视频</h1>
         <p className="sub">
-          上传论文与素材，生成带数字人讲解与光标指引的演示视频
+          上传论文、电子书或课程材料，生成带配音、光标指引和可选数字人的讲解视频
         </p>
         <div className="meta">
           <span>Paper2Video</span>
@@ -767,7 +810,7 @@ export default function App() {
         </div>
         <div className="grid grid-2">
           <Dropzone
-            label="论文文件"
+            label="内容文件"
             hint=".docx / .doc / .pdf / .tex / .zip"
             accept=".docx,.doc,.pdf,.tex,.zip"
             picked={paperFile?.name ?? null}
@@ -783,18 +826,32 @@ export default function App() {
             }}
           />
           <div>
-            <Dropzone
-              label="人像图"
-              hint="正面照，人脸占比大、无遮挡"
-              accept="image/*"
-              picked={portraitFile?.name ?? null}
-              onPick={(f) => {
-                setPortraitFile(f);
-                setPortraitInfo(null); // 换图后旧的校验结果作废
-              }}
-            />
+            <label className="checkline" style={{ marginBottom: 8 }}>
+              <input
+                type="checkbox"
+                checked={generateTalking}
+                onChange={(e) => setGenerateTalking(e.target.checked)}
+              />
+              生成数字人（可选）
+            </label>
+            {generateTalking ? (
+              <Dropzone
+                label="人像图"
+                hint="可不上传；未上传会自动跳过数字人"
+                accept="image/*"
+                picked={portraitFile?.name ?? null}
+                onPick={(f) => {
+                  setPortraitFile(f);
+                  setPortraitInfo(null); // 换图后旧的校验结果作废
+                }}
+              />
+            ) : (
+              <div className="notice info compact-notice">
+                <span>本次不生成人像小窗，仍会输出带配音、光标和字幕的完整视频。</span>
+              </div>
+            )}
             <div className="hint" style={{ fontSize: 11.5, color: "var(--paper-ink-faint)", marginTop: 6 }}>
-              人像只用于数字人（画面角落的小窗）。音色见下一节。
+              人像只用于画面角落的数字人小窗，不影响音色。音色见下一节。
             </div>
             {/* 人像校验结果内联在 Dropzone 下方（不用弹窗，避免遮住刚要确认的东西） */}
             {portraitInfo && (
@@ -865,7 +922,7 @@ export default function App() {
       <section className="section">
         <div className="section-head">
           <span className="section-num">2</span>
-          <h2 className="section-title">语言与论文类型</h2>
+          <h2 className="section-title">语言与内容类型</h2>
         </div>
         <div className="grid grid-3">
           <div className="field">
@@ -899,7 +956,53 @@ export default function App() {
         </div>
         <div className="grid" style={{ marginTop: 16 }}>
           <div className="field">
-            <label>论文类型</label>
+            <label>讲解内容类型</label>
+            <Select
+              value={contentProfile}
+              onChange={(v) => setContentProfile(v as ScriptPromptProfile["value"])}
+              options={(opts?.script_prompt_profiles ?? []).map((x) => ({
+                label: x.label,
+                value: x.value,
+              }))}
+              style={{ width: "100%" }}
+            />
+            <div className="hint">
+              {(opts?.script_prompt_profiles ?? []).find((x) => x.value === contentProfile)?.desc}
+            </div>
+          </div>
+        </div>
+        <div className="field" style={{ marginTop: 16 }}>
+          <div className="prompt-head">
+            <label>讲稿生成提示词（可编辑）</label>
+            <span className="prompt-count">
+              {scriptPrompt.length} / {opts?.script_prompt_max_chars ?? 20000}
+            </span>
+          </div>
+          <textarea
+            className="prompt-editor"
+            rows={14}
+            value={scriptPrompt}
+            onChange={(e) => setScriptPrompt(e.target.value)}
+            placeholder="正在加载当前内容类型的提示词模板…"
+          />
+          <div className="actions compact-actions">
+            <Button
+              variant="outline"
+              size="small"
+              disabled={!promptTemplate || scriptPrompt === promptTemplate}
+              onClick={() => setScriptPrompt(promptTemplate)}
+            >
+              恢复当前模板
+            </Button>
+            <span className="hint">
+              可修改角色、语气、详略与受众；请保留 <code>###</code> 页分隔和
+              <code>讲稿 | 光标目标</code> 输出格式，否则后续光标与字幕无法解析。
+            </span>
+          </div>
+        </div>
+        <div className="grid" style={{ marginTop: 16 }}>
+          <div className="field">
+            <label>源内容结构</label>
             <RadioGroup value={paperType} onChange={(v) => setPaperType(v as string)}>
               {(opts?.paper_types ?? []).map((x) => (
                 <Radio key={x.value} value={x.value}>
@@ -1125,7 +1228,7 @@ export default function App() {
         ))}
 
         <div className="hint" style={{ marginTop: 10 }}>
-          音色只影响讲稿的说话人。生成动作每篇论文最多一次（同一个音色之后走缓存），
+          音色只影响讲稿的说话人。生成动作每个内容任务最多一次（同一个音色之后走缓存），
           写在服务端的 <code>MIMO_API_KEY</code> 上，不需要你额外配置。
         </div>
       </section>

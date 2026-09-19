@@ -170,6 +170,27 @@ html, body {
   resize: vertical;
 }
 
+.prompt-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.prompt-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--paper-ink-faint);
+}
+.field .prompt-editor {
+  min-height: 260px;
+  box-sizing: border-box;
+  background: #fbfbfa;
+  line-height: 1.65;
+  tab-size: 2;
+}
+.compact-actions { margin-top: 8px; }
+.compact-notice { margin-top: 0; min-height: 48px; }
+
 /* ── 拖放上传区 ── */
 .dropzone {
   border: 1px dashed var(--paper-rule-strong);

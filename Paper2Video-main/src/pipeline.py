@@ -21,6 +21,17 @@ from os import path
 import pv_env
 import language_config
 
+# 本仓库自研的 scripts/ 模块（论文配图提取等）。
+# ⚠️ 流水线是**子进程**运行的：父进程（web/app.py）往 sys.path 插过 SCRIPTS，
+#    但子进程不继承 —— 这里必须自己插一次，否则 import 直接失败。
+_SCRIPTS_DIR = path.join(pv_env.REPO_ROOT, "scripts")
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+try:
+    import paper_figures
+except Exception:                      # 提图是增强项，import 失败不该拖垮流水线
+    paper_figures = None
+
 # 结构化进度（P1）：给 Web 端阶段边界（讲稿生成这类长等待也需要有阶段可显示）。
 # 默认不生效；导入失败也不能拖垮流水线。
 try:
@@ -128,6 +139,12 @@ if __name__ == '__main__':
                              'longcat 后端另有 local-16g / server-8xa6000')
     parser.add_argument('--paper_latex_root', type=str, default='./assets/demo/latex_proj')
     parser.add_argument('--ref_img', type=str, default='./assets/demo/zeyu.png')
+    # 原始论文文件（.pdf/.docx）。有它就从里面提插图放进工程 —— 上游入口是
+    # **带图的** LaTeX 工程，而我们的前端从 PDF/Word 出发只提正文，不提图的话
+    # 幻灯片里永远没有 `\includegraphics`（实测：有 2 张图的论文，15 张幻灯片里 0 张图）。
+    # 默认 None：老的调用方式（含使用者的 CLI 用法）行为完全不变。
+    parser.add_argument('--paper_source', type=str, default=None,
+                        help='原始论文文件；给了就从它提取插图到工程里')
     # ⚠️ 默认必须是 None 而不是固定路径：否则下面 `args.ref_audio or lang[...]`
     # 永远选中这里写的路径，语言档位里的参考音频就永远生效不了。
     parser.add_argument('--ref_audio', type=str, default=None,
@@ -242,13 +259,44 @@ if __name__ == '__main__':
         # 修法：与 pipeline_light.py 保持一致，只保留一条分支，把开关**透传**给
         # latex_code_gen_upgrade 自己处理（它在内部决定是否跑「每帧 4 候选 + VLM 选优」）。
         # 行为与参数从此一致，也去掉了对未导入名字的引用。
+        # ── 论文配图：提取 + 把清单附进提示词（只在 stage 1 做）──
+        #
+        # **为什么放在这里**（而不是 web 层）：图的消费方是幻灯片生成，而它读的是
+        # `args.paper_latex_root` —— 即**复制后**的 `<result>/latex_proj`。
+        # 而 `copy_folder` 只在目标不存在时才执行，所以"重跑/续跑旧任务"时
+        # 复制后的目录是旧的；若在 web 层往"源工程"写图，副本里就没有图，
+        # 提示词读不到 —— 而日志还会显示"已附清单"（因为它读的是另一份路径）。
+        # 放在这里就只有**一个写入点、一个读取点**，物理上不可能不一致。
+        #
+        # 为什么必须显式给清单：`latex_code_gen_upgrade` 只把工程里的**文件路径**
+        # 写进提示词，而 `figures/fig01_p06.jpg` 这种 ASCII 名（文件名刻意不用中文，
+        # 理由见 paper_figures 的说明）**毫无语义**，模型无从判断哪张图该放哪一页。
+        # 清单把「文件名 → 图题/页码」对上，模型才可能把图用对。
+        #
+        # ⚠️ 没有图时下面是空串 ⇒ 提示词与"还没接提图"时**逐字节一致**，
+        #    所以纯文字论文仍能命中旧的 deck 缓存（指纹里 figures 记为 `none`）。
+        _slide_extra = slide_extra_prompt
+        if paper_figures is not None:
+            _figures, _fig_note = paper_figures.extract(args.paper_source,
+                                                        args.paper_latex_root)
+            if args.paper_source:
+                print("[figures] {}".format(_fig_note))
+            _fig_block = paper_figures.figure_prompt_block(
+                args.paper_latex_root, lang=lang.get("slide_lang", "en"))
+            if _fig_block:
+                _slide_extra = ((_slide_extra + "\n\n") if _slide_extra else "") + _fig_block
+                print("[figures] 已把 {} 张论文配图的清单附给幻灯片生成".format(len(_figures)))
+        else:
+            print("[figures] ⚠️ paper_figures 未导入（scripts/ 不在 sys.path？）"
+                  "—— 本次幻灯片不会有图")
+
         usage_slide, beamer_path = latex_code_gen_upgrade(
             prompt_path=prompt_path, tex_dir=args.paper_latex_root,
             beamer_save_path=slide_latex_path,
             model_config_ll=agent_config_t, model_config_vl=agent_config_v,
             beamer_temp_name=args.beamer_templete_prompt,
             if_tree_search=args.if_tree_search,
-            extra_prompt=slide_extra_prompt)
+            extra_prompt=_slide_extra)
 
         # 上游这里用 pdf2image.convert_from_path，但它依赖 poppler（Windows 上要额外装），
         # 而仓库自带的 pdf2img() 本来就是 PyMuPDF 实现。统一改走 PyMuPDF，免装 poppler。

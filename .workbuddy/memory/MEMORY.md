@@ -95,14 +95,35 @@ GBK stdout 下抛 UnicodeEncodeError 且崩点在**流水线最末端** → `pv_
   **该分支已被我们合并**（symtable 复核 `improve_layout` 调用链无未定义引用）。
   ⚠️ 它改变幻灯片产物 ⇒ **必须在 `artifact_cache.DECK_FIELDS` 里**，且值要归一成 bool。
   开关文案/默认值/成本口径由 `/api/options.toggles` 下发，前端不硬编码。
-  ⚠️ **实测（2026-09-19 11:20）它在本项目里结构性空转**（详见 `docs/树搜索实测.md`）：
+  ⚠️ **它曾在本项目里结构性空转**（成因已修，见下文论文配图提取；原记录见 `docs/树搜索实测.md`）：
   入选门槛是"Overfull 溢出的页 **且** 该 frame 含 `\includegraphics`"，而我们喂给模型的
   工程里**没有任何图片文件**（`paper_ingest → paper_struct` 只提正文，`latex_proj/` 里
   只有 main.tex+main.pdf），中文提示词又明确授权"若没有可用图片就不要写 `\includegraphics`"
   ⇒ 历史上 3 份 slides.tex 的 `\includegraphics` **全是 0** ⇒ `need_improve_list` 恒为空。
   判据不是"产物变没变"：`improve_layout` **总会**重写一份 `slides_refined.tex`（无条件），
   要看 **`result/latex_proj/proposal_imgs/` 是否非空**（空 = 一页都没改进）。
-  ⇒ 想让论文这个核心机制真跑起来，必须先让**图片进入 `paper_latex_root`**。
+  ⇒ 想让论文这个核心机制真跑起来，必须先让**图片进入 `paper_latex_root`** ——
+  **2026-09-19 已实施**（`scripts/paper_figures.py`）。开关仍默认关：
+  真触发后每张溢出页要多 4 编译 / 4 渲染 / 1 次带图 VLM 调用。
+
+## 论文配图提取（`scripts/paper_figures.py`，2026-09-19 实施）
+
+上游入口是「**带图的** LaTeX 工程」，而我们前端从 PDF/Word 出发只提正文 ⇒ 工程里
+永远只有 main.tex ⇒ 幻灯片 0 张 `\includegraphics` ⇒ **树搜索恒为空转**。
+实测：有 2 张内嵌图的论文，15 张幻灯片里 `\includegraphics` 仍是 0 次。
+现在从源文件提图 → `<工程>/figures/` → 清单附进 slides 提示词。
+
+六条硬约束（每条都有实测依据，详见 `docs/论文配图提取.md`）：
+1. **提图只在 `pipeline.py` stage 1 内、`copy_folder` 之后**做一次。写在 web 层会
+   与"模型读的是副本"漂移（`copy_folder` 只在目标不存在时复制）—— 又是两个读取者。
+2. **格式一律转 PNG/JPEG**：期刊 PDF 常见 `.jpx`，XeTeX 的 `\includegraphics`
+   **不支持**它。判据是**文件头**不是扩展名。有损源用 JPEG（161KB jpx → 1134KB PNG vs 377KB JPEG）。
+3. **文件名纯 ASCII**；语义（图题/页号）进 `index.json`。
+4. **没找到图就什么都不留** —— 留了会改变"工程文件清单"，纯文字论文的 deck 指纹变化、白花钱。
+5. **幂等判据含源指纹**（version + source_sha1），否则换源会错误跳过且不报错。
+6. **"工程自带图" = `\includegraphics` 真正引用的文件**，不是"目录里有图片" ——
+   按扩展名扫会把 `main.pdf` 当成图，纯文字论文被误判成有图。
+7. `FIGURES_VERSION` 参与 `DECK_FIELDS`（**不进 STRUCT_FIELDS**）；改阈值/命名/筛选必须 +1。
 
 ## 输入与产物：内容寻址
 

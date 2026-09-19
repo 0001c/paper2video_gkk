@@ -50,7 +50,8 @@ CACHE_VERSION = "1"
 # —— 那些不影响 main.tex，含进来会让"只换个头像"也白花一次结构化的钱。
 STRUCT_FIELDS = ("v", "source_sha1", "paper_type", "llm_model")
 # deck：幻灯片与讲稿看「main.tex + 两种语言 + 论文类型 + 两个模型 + 数字人档位
-# + 是否开树搜索」。同样刻意**不含**人像/音色：换头像换声音不影响这几页幻灯片与讲稿。
+# + 是否开树搜索 + 工程里有哪些图」。同样刻意**不含**人像/音色：
+# 换头像换声音不影响这几页幻灯片与讲稿。
 #
 # `if_tree_search`（幻灯片布局微调）**必须在表里**：它改变 stage 1 的幻灯片产物
 # （每张溢出页生成 4 个候选、由 VLM 选一张，即产物内容真的不同），
@@ -58,8 +59,15 @@ STRUCT_FIELDS = ("v", "source_sha1", "paper_type", "llm_model")
 # ⚠️ 值的**归一化**由调用方负责（app._artifact_facts 统一成 bool）：
 #    否则 True / "True" / 1 会算出三个不同的键 —— 行为一样却互相不命中，
 #    表现是"缓存时灵时不灵"，比彻底不命中更难查。
+#
+# `figures`（论文配图清单指纹，2026-09-19 加）**也必须在表里**：幻灯片里能不能
+# 出现 `\includegraphics` 完全取决于"工程里有哪些图"。上游入口是带图的 LaTeX
+# 工程，而我们的前端从 PDF 提取（scripts/paper_figures.py）—— 哪天提取逻辑升级、
+# 或者同一篇论文先跑于"还没接提图"的版本，漏掉这个字段就会命中"没有图的那一版"，
+# 表现为"幻灯片里怎么还是没有图"，且不报错。
 DECK_FIELDS = ("v", "main_tex_sha1", "slide_lang", "script_lang", "paper_type",
-               "llm_model", "vlm_model", "talking_profile", "if_tree_search")
+               "llm_model", "vlm_model", "talking_profile", "if_tree_search",
+               "figures")
 
 # deck 缓存里复用什么（前两项是 stage 2 读幻灯片的输入，第三项是讲稿）
 DECK_SLIDES_DIR = "slide_imgs"

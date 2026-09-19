@@ -24,6 +24,7 @@ import shutil
 import sys
 import time
 import uuid
+import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -2697,6 +2698,199 @@ def test_upstream_encoding_patches(app):
     return ok
 
 
+
+# ──────────────────────────────────────────────────────────────
+# ⑭ 论文配图提取（2026-09-19）
+#
+# 为什么要有这一组：提图补的是整条链路上**原本缺失的一环** ——
+# 上游入口是"带图的 LaTeX 工程"，我们从 PDF/Word 出发只提正文，
+# 于是幻灯片里永远没有 \includegraphics，**树搜索恒为空转**。
+# 这里的断言全部离线可跑（合成 PDF / 合成 docx），不消耗任何 API。
+# ──────────────────────────────────────────────────────────────
+def test_figure_extraction(app):
+    print()
+    print("[14] 论文配图提取（幻灯片里能不能有图 / 树搜索有没有活干）")
+    ok = True
+    import artifact_cache as ac
+    import paper_figures as pf
+
+    work = os.path.join(app.JOBS_ROOT, "smoke_fig_" + uuid.uuid4().hex[:6])
+    os.makedirs(work, exist_ok=True)
+
+    def _png(path, size, color):
+        from PIL import Image
+        Image.new("RGB", size, color).save(path)
+        return path
+
+    try:
+        # ── A. 图题匹配：单元级（几何条件 + 标号优先级 + 不乱猜）──
+        # 图题在图的正下方，两者 y 区间**必然不相交** —— 所以只能按水平重叠匹配。
+        # （第一版用面积重叠，结果图题全部丢失；这条断言就是防它回归。）
+        bbox = [100.0, 100.0, 400.0, 300.0]
+        blocks = [
+            [100.0, 302.0, 398.0, 316.0, "图1 中文图题", 0, 0],       # 正下方，带标号
+            [40.0, 40.0, 460.0, 54.0, "Fig. 1 English caption", 0, 0],  # 远在上方（超窗口）
+            [102.0, 318.0, 396.0, 330.0, "正文段落，不是图题", 0, 0],
+        ]
+        got = pf._caption_for(None, bbox, blocks)
+        ok &= check("图题能从图片正下方取到（按水平重叠匹配，不是面积重叠）",
+                    got == "图1 中文图题", "取到 %r" % got)
+        above = pf._caption_for(None, [100.0, 100.0, 400.0, 300.0],
+                                [[102.0, 70.0, 398.0, 84.0, "表2 上方图题", 0, 0]])
+        ok &= check("图题在上方（表格式排版）也能取到", above == "表2 上方图题", "取到 %r" % above)
+        ok &= check("图题完全不存在时返回空串（**不编造**）",
+                    pf._caption_for(None, bbox, [[10.0, 700.0, 20.0, 710.0, "无关", 0, 0]]) == "",
+                    "返回空串")
+
+        # ── B. 合成 PDF 端到端：大图留下、小图过滤、重复图去重 ──
+        import pymupdf
+        big = _png(os.path.join(work, "big.png"), (600, 400), (200, 120, 90))
+        tiny = _png(os.path.join(work, "tiny.png"), (24, 24), (10, 10, 10))
+        pdf = os.path.join(work, "paper.pdf")
+        doc = pymupdf.open()
+        page = doc.new_page(width=595, height=842)
+        page.insert_image(pymupdf.Rect(60, 100, 520, 420), filename=big)
+        page.insert_text((60, 440), "Figure 1 Synthetic test figure", fontsize=12)
+        page.insert_image(pymupdf.Rect(60, 600, 84, 624), filename=tiny)   # 太小
+        page2 = doc.new_page(width=595, height=842)
+        page2.insert_image(pymupdf.Rect(60, 100, 520, 420), filename=big)  # 同一张，重复
+        doc.save(pdf)
+        doc.close()
+
+        proj = os.path.join(work, "proj")
+        os.makedirs(proj, exist_ok=True)
+        figures, note = pf.extract(pdf, proj, log=lambda m: None)
+        ok &= check("合成 PDF：只留下大图（小图被过滤、重复图被去重）",
+                    len(figures) == 1, "%s（%s）" % (note, [f["name"] for f in figures]))
+        if figures:
+            f0 = figures[0]
+            path0 = os.path.join(proj, "figures", f0["name"])
+            # 按**文件头**判断，而不是扩展名 —— 否则"jpx 原样写出但名字叫 .jpg"
+            # 这种错会溜过去（期刊 PDF 的内嵌图常见 jpx，而 XeTeX 不支持它）。
+            with io.open(path0, "rb") as _fh:
+                magic = _fh.read(4)
+            ok &= check("输出是 tectonic 能用的真实格式（按文件头：PNG/JPEG，不是 jpx）",
+                        magic[:2] == b"\xff\xd8" or magic == b"\x89PNG",
+                        "%s 头=%s" % (f0["name"], magic.hex(" ")))
+            try:
+                from PIL import Image
+                with Image.open(path0) as im:
+                    size = im.size
+                ok &= check("导出的图能被解码，且尺寸与源一致",
+                            size[0] > 0 and size[1] > 0, "%sx%s" % size)
+            except Exception as exc:
+                ok &= check("导出的图能被解码", False, "%s: %s" % (type(exc).__name__, exc))
+            ok &= check("文件名是纯 ASCII（中文名会在 LaTeX/编码处反复踩坑）",
+                        f0["name"].isascii(), f0["name"])
+            ok &= check("图题进了清单（模型据此判断哪张图放哪页）",
+                        "Figure 1" in (f0.get("caption") or ""), repr(f0.get("caption")))
+            idx = pf.read_index(os.path.join(proj, "figures"))
+            ok &= check("index.json 记了版本与**源指纹**（幂等跳过要判它）",
+                        bool(idx and idx.get("version") and idx.get("source_sha1")),
+                        "version=%s source_sha1=%s" % (
+                            (idx or {}).get("version"), str((idx or {}).get("source_sha1"))[:12]))
+            block = pf.figure_prompt_block(proj, lang="zh")
+            ok &= check("提示词清单里带上了文件名与图题",
+                        f0["rel"] in block and "Figure 1" in block, block.splitlines()[-1][:60])
+        else:
+            ok &= check("合成 PDF 至少提取到 1 张", False, note)
+
+        # ── C. 反向：换源文件后必须**重做**（不能凭版本号就跳过）──
+        nopdf = os.path.join(work, "empty.pdf")
+        doc = pymupdf.open()
+        doc.new_page(width=595, height=842).insert_text((60, 100), "text only", fontsize=12)
+        doc.save(nopdf)
+        doc.close()
+        again, note2 = pf.extract(nopdf, proj, log=lambda m: None)
+        ok &= check("换了源文件（新源无图）→ 重做而不是错误跳过",
+                    again == [] and "没找到" in note2, note2)
+        ok &= check("无图时工程里**什么都不留**（留 index.json 会改变纯文字论文的输入）",
+                    not os.path.isdir(os.path.join(proj, "figures")),
+                    sorted(os.listdir(proj)))
+
+        # ── D. docx 路径（word/media/）──
+        docx = os.path.join(work, "paper.docx")
+        with zipfile.ZipFile(docx, "w") as zf:
+            with io.open(big, "rb") as fh:
+                zf.writestr("word/media/image1.png", fh.read())
+            zf.writestr("word/media/image2.png", b"not an image")
+            zf.writestr("word/document.xml", "<xml/>")
+        proj_docx = os.path.join(work, "proj_docx")
+        os.makedirs(proj_docx, exist_ok=True)
+        dfigs, dnote = pf.extract(docx, proj_docx, log=lambda m: None)
+        ok &= check("docx 能从 word/media/ 提到图，并跳过非图片字节",
+                    len(dfigs) == 1, "%s（%s）" % (dnote, [f["name"] for f in dfigs]))
+
+        # ── E. 反面对照：工程自带图 / main.pdf 不算图 ──
+        own = os.path.join(work, "own")
+        os.makedirs(os.path.join(own, "figs"), exist_ok=True)
+        _png(os.path.join(own, "figs", "real.png"), (400, 300), (30, 90, 150))
+        with io.open(os.path.join(own, "main.tex"), "w", encoding="utf-8") as fh:
+            fh.write("\\documentclass{article}\n\\usepackage{graphicx}\n"
+                     "\\begin{document}\n"
+                     "\\includegraphics[width=0.8\\textwidth]{figs/real.png}\n"
+                     "\\end{document}\n")
+        ofigs, onote = pf.extract(pdf, own, log=lambda m: None)
+        ok &= check("工程自带图（被 \\includegraphics 引用）→ 不提取、不覆盖",
+                    ofigs == [] and "已有" in onote
+                    and not os.path.isdir(os.path.join(own, "figures")), onote)
+
+        fake = os.path.join(work, "fake")
+        os.makedirs(fake, exist_ok=True)
+        with io.open(os.path.join(fake, "main.pdf"), "wb") as fh:
+            fh.write(b"%PDF-1.4 fake")
+        ok &= check("工程里的 main.pdf **不算**自带图（否则纯文字论文会被误判成有图）",
+                    pf.project_image_files(fake) == [],
+                    pf.project_image_files(fake))
+
+        # ── F. 指纹与字段表 ──
+        ok &= check("DECK_FIELDS 含 figures（图集改变幻灯片产物，漏了就是静默错配）",
+                    "figures" in ac.DECK_FIELDS, ac.DECK_FIELDS)
+        fake_job = {"id": "smoke", "paper_latex_root": os.path.join(work, "own"),
+                    "config": {}}
+        sig_own = app._figures_signature(fake_job)
+        ok &= check("工程自带图 → 指纹记 own: 形态（含数量与清单哈希）",
+                    sig_own.startswith("own:v"), sig_own)
+        _png(os.path.join(own, "figs", "second.png"), (300, 200), (200, 200, 60))
+        with io.open(os.path.join(own, "main.tex"), "a", encoding="utf-8") as fh:
+            fh.write("\\includegraphics{figs/second.png}\n")
+        ok &= check("图集变了 → 指纹跟着变（否则会命中「没有这张图」的旧幻灯片）",
+                    app._figures_signature(fake_job) != sig_own,
+                    "%s -> %s" % (sig_own, app._figures_signature(fake_job)))
+        plain = {"id": "smoke", "paper_latex_root": os.path.join(work, "emptyproj"),
+                 "config": {}}
+        os.makedirs(plain["paper_latex_root"], exist_ok=True)
+        sig_plain = app._figures_signature(plain)
+        ok &= check("没有图时指纹是确定的（不是 None —— 否则会与其他任务塌成同一个键）",
+                    isinstance(sig_plain, str) and sig_plain, repr(sig_plain))
+        f_plain = app._artifact_facts(plain)
+        ok &= check("_artifact_facts 提供了 figures 字段", "figures" in f_plain,
+                    repr(f_plain.get("figures")))
+        ok &= check("figures **不在** STRUCT_FIELDS（它不影响 main.tex，进了就白花一次钱）",
+                    "figures" not in ac.STRUCT_FIELDS, ac.STRUCT_FIELDS)
+
+        # ── G. 静态守卫：提图只在一个地方做，且在复制之后 ──
+        pipe = io.open(os.path.join(ROOT, "Paper2Video-main", "src", "pipeline.py"),
+                       encoding="utf-8").read()
+        appsrc = io.open(os.path.join(ROOT, "web", "app.py"), encoding="utf-8").read()
+        pos_copy = pipe.find("args.paper_latex_root = copy_latex_proj_path")
+        pos_extract = pipe.find("paper_figures.extract(")
+        ok &= check("提图在 pipeline 里、且在**复制之后**（副本才是模型真正读的那份）",
+                    0 < pos_copy < pos_extract,
+                    "copy@%d extract@%d" % (pos_copy, pos_extract))
+        ok &= check("web 层不再提图（两个写入点 = 必然漂移）",
+                    "paper_figures.extract(" not in appsrc, "app.py 里无调用")
+        ok &= check("pipeline 的 argparse 有 --paper_source",
+                    "'--paper_source'" in pipe, "--paper_source")
+        ok &= check("_build_argv 会传 --paper_source",
+                    '"--paper_source"' in appsrc, "--paper_source")
+        ok &= check("没有图时清单是空串（提示词与接通前逐字节一致，纯文字论文不白作废缓存）",
+                    pf.figure_prompt_block(os.path.join(work, "emptyproj")) == "", "空串")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    return ok
+
+
 def main():
     app = load_app()
     suite_started = time.time()          # 清理护栏：只删本次测试期间新建的目录
@@ -2714,6 +2908,7 @@ def main():
         test_content_store_and_fingerprint(app),
         test_artifact_cache_and_reuse(app),
         test_upstream_encoding_patches(app),
+        test_figure_extraction(app),
     ]
     orphan = _cleanup_orphan_jobs(app, suite_started)
     if orphan:

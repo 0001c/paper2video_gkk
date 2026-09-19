@@ -54,6 +54,7 @@ sys.path.insert(0, P2V_SRC)
 import progress_report                                    # noqa: E402
 import mimo_voice                                         # noqa: E402
 import artifact_cache                                     # noqa: E402
+import paper_figures                                      # noqa: E402
 
 os.makedirs(JOBS_ROOT, exist_ok=True)
 app = FastAPI(title="Paper2Video Web", version="0.1.0")
@@ -953,6 +954,12 @@ def _build_argv(job):
     ]
     if cfg.get("reuse_script"):
         argv += ["--reuse_script", "True"]
+    # 原始论文文件：流水线会从它提取插图放进工程（幻灯片里才有 \includegraphics，
+    # 树搜索也才可能有活干）。源文件不可用时流水线会给出可读提示、不影响出片。
+    # ⚠️ 刻意**不**把它放进产物指纹 —— 它对应的"图集"由 `figures` 字段表示。
+    source = job.get("source_path")
+    if source and os.path.isfile(source):
+        argv += ["--paper_source", source]
     # 音色：把解析好的参考音频/参考文本透传给流水线（pipeline.py 里
     # `args.ref_audio or lang["ref_audio"]` 会优先用我们给的这份）。
     # ⚠️ 只传 ref_audio、不传 ref_text 时，pipeline 必须保持 ref_text=None，
@@ -1021,7 +1028,42 @@ def _artifact_facts(job):
         # （溢出页多出 4 个宽度候选、由 VLM 选一张），所以**必须在指纹里**。
         # 归一成 bool —— 见 _as_bool 的说明。
         "if_tree_search": _as_bool(cfg.get("if_tree_search"), False),
+        # 论文配图：幻灯片里能不能出现 \includegraphics 完全取决于"工程里有哪些图"。
+        # 所以它改变 stage 1 的产物 ⇒ **必须进指纹**。否则"给同一个工程补上图片"
+        # 之后会命中"没有图的那一版"缓存，产物与预期不符且不报错。
+        "figures": _figures_signature(job),
     }
+
+
+def _figures_signature(job):
+    """图片集的指纹。两种形态，都必须**确定**（不能返回 None）：
+
+      · `own:v<版本>:n<数量>:<清单哈希>` —— 工程**自带**的、被 `\\includegraphics`
+        真正引用的图（上游用法：使用者给的 LaTeX 工程）
+      · `v<版本>`                         —— 其余情况（我们自己从源文件提取，或者没有图）
+
+    ⚠️ 为什么"我们自己提取"这一支只记版本号、**不去读 `figures/index.json`**：
+    图集是 `(源文件, 提取器版本)` 的确定函数，而源文件已经由 `source_sha1` /
+    `main_tex_sha1` 覆盖在键里了，所以只需版本号保证"提取逻辑升级了就失效"。
+    读 index.json 会强行要求"提图必须先于指纹计算"，于是写入点在 web 层、
+    真正用图的人在流水线里（复制后的目录）—— 两个位置必然漂移。
+    实测这个漂移真的会发生：`copy_folder` 只在目标不存在时复制，
+    重跑/续跑时副本是旧的、拿不到 web 层新写的图。现在提图只在流水线里做一次。
+    """
+    root = job.get("paper_latex_root") or ""
+    if os.path.isdir(root):
+        own = [p for p in paper_figures.project_image_files(root)
+               if not p.startswith(paper_figures.FIGURES_DIRNAME + os.sep)]
+        if own:
+            payload = []
+            for rel in own:
+                try:
+                    payload.append("{}:{}".format(rel, os.path.getsize(os.path.join(root, rel))))
+                except OSError:
+                    payload.append(rel)
+            digest = hashlib.sha1("\n".join(payload).encode("utf-8")).hexdigest()[:12]
+            return "own:v{}:n{}:{}".format(paper_figures.FIGURES_VERSION, len(own), digest)
+    return "v{}".format(paper_figures.FIGURES_VERSION)
 
 
 def _log_line(log, message):

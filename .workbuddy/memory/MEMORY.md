@@ -91,7 +91,11 @@
 三条硬约束：
 1. **入口是 LaTeX 源码目录**：`--paper_latex_root` 下必须有 `main.tex`。
 2. **只需一组 API key**：`OPENAI_API_KEY` / `OPENAI_API_BASE`（DeepSeek）。
-3. **`--if_tree_search` 必须写死 False**（默认值 True 会走 `latex_code_gen` → NameError）。
+3. **`--if_tree_search` 默认关闭**：它是"幻灯片布局微调"（每张溢出页生成 4 个缩放候选
+   拼成 2×2 图，由 VLM 选一个 → 宽度 4、深度 1 的束搜索）。关它是**成本**考虑，不是
+   "会崩"：早先记的 NameError 来自上游 `pipeline.py` 的 `else` 分支引用了被注释掉的
+   `latex_code_gen`，**那个分支已被我们合并掉**（2026-09-19 用 symtable 复核，
+   `improve_layout` 调用链无未定义引用）。
 
 转换层：不用 Office/WPS 的 COM（会连到使用者的 WPS 并挂死）；`.doc` 走 olefile（**有损**）；
 PDF 必须行合并且句末判据同时认中英文标点。**真实 Word 不用标题样式（heading=0）**，

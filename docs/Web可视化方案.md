@@ -197,17 +197,45 @@ H5 如果只是"上传文件"的壳，使用者传个 Word 或 PDF 进去会直�
 | 数字人后端 | `--model_name_talking` | 固定 `musetalk`（本机唯一可用） |
 | 数字人档位 | `--talking_profile` | 固定 `musetalk-local`（本机单卡） |
 | GPU | `--gpu_list 0` | 单卡写死 |
-| **树搜索** | `--if_tree_search False` | ⚠️ **必须写死 False**，见下 |
+| **树搜索** | `--if_tree_search False` | 默认关闭；**不是"会崩"而是成本考虑**，见下 |
 
-**`--if_tree_search` 必须写死 `False`，且不要暴露到界面上。**
+**`--if_tree_search` 目前写死 `False`（不在界面上暴露）。**
 
-理由（这次核实后纠正了我原先的记录）：`pipeline.py:31` 的
-`# from slide_code_gen import latex_code_gen` 是**注释掉的**，而 `if_tree_search=True`（默认值）时
-会走到 `latex_code_gen` → 直接 `NameError`。也就是说**默认值 True 是坏的，必须显式传 False**。
-之前几次"跑通"都是用 `pipeline_light.py`，掩盖了这一点。
+**它是做什么的**（上游 README 的措辞：*tree search for slide layout refinement*）——
+幻灯片生成并编译成功之后的**布局微调**，实现在
+`slide_code_gen_select_improvement.py` 的 `improve_layout()`：
 
-这是个隐蔽的坑：不传就崩，而报错是 `NameError`，看不出跟"树搜索"有关。
-H5 里把它固定掉，用户永远不会踩到；同时它也不该作为一个选项出现 —— **一个必然崩溃的开关没有暴露的意义**。
+1. 从编译反馈里取出 `warning: Overfull` 行，按行号映射回它所在的 frame，
+   只保留含 `\includegraphics` 的那些页；
+2. 每一页生成 **4 个候选**：把图片宽度按 `1 / 0.75 / 0.5 / 0.25` 缩放，
+   各编译一次、各渲染一张图，再拼成一张 **2×2 带 A/B/C/D 标签的对比图**；
+3. 把这张对比图交给 **VLM 选一个**，用被选中的那份代码替换该页，重排版重编译，
+   写出 `*_refined.tex` 并返回它的 PDF。
+
+也就是「**宽度 4、深度 1 的束搜索，用 VLM 当评估函数**」——这正是论文里
+layout refinement 那一步。
+
+**为什么默认关**（2026-09-19 重新核实，**更正本文档早先的说法**）：
+
+- 早先记的是「`if_tree_search=True`（默认值）会走 `latex_code_gen` → NameError」。
+  现在能确定的事实是：上游 `pipeline.py` 那条 `if/else` 的 **else 分支**引用了
+  **被注释掉的 import** `# from slide_code_gen import latex_code_gen`
+  （该函数在整个仓库中**只出现在这一行注释里**，从未被定义），走那条分支必 `NameError`。
+  而**我们的 `pipeline.py` 已经把这条 `if/else` 合并成单分支、并把开关透传下去**
+  （`pipeline.py:245-251`），所以**那个崩溃点已经不存在了**。
+- 现在写死 `False` 的真实理由是**成本 + 未经验证**：每张有溢出的幻灯片要多
+  4 次 LaTeX 编译、4 次渲染，以及 **1 次带图的 VLM 调用**（这一步是要花钱的、
+  而且是唯一会额外花钱的地方）。关掉它**不影响出片** —— 幻灯片照常生成，
+  只是不做事后的布局微调。
+- 静态复核（`symtable`，比手写 AST 遍历可靠）：`improve_layout` 及其调用链
+  **没有未定义引用**，可以安全打开。模块里另有一处真正的未定义名
+  `beamer_save_path`，但它在 `improve_per_slide` 里，而那个函数的调用点
+  （第 197 行）**是注释掉的** —— 死代码，不在链路上。
+
+⇒ 结论：**不是"必然崩溃的开关"，而是"收益没验证、成本确定"**。
+要放出来做成选项的话，先在一篇**已有产物**的论文上只重跑 stage 1（走 stage 3
+缓存可以避免重复花钱的部分），对比 `token.json` 增量、耗时与幻灯片观感，
+再决定默认值。
 
 ---
 

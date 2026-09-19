@@ -63,67 +63,67 @@ app = FastAPI(title="Paper2Video Web", version="0.1.0")
 # 讲稿提示词模板：前端可编辑，但后端保留模板与安全边界
 # ──────────────────────────────────────────────────────────────
 SCRIPT_PROMPT_MAX_CHARS = 20000
+_PROMPT_DIR = os.path.join(P2V_SRC, "prompts")
 _SCRIPT_PROMPT_FILES = {
-    "zh": os.path.join(P2V_SRC, "prompts", "slide_subtitle_cursor_prompt_zh.txt"),
-    "en": os.path.join(P2V_SRC, "prompts", "slide_subtitle_cursor_prompt.txt"),
+    "paper": {
+        "zh": os.path.join(_PROMPT_DIR, "slide_subtitle_cursor_prompt_zh.txt"),
+        "en": os.path.join(_PROMPT_DIR, "slide_subtitle_cursor_prompt.txt"),
+    },
+    "textbook": {
+        "zh": os.path.join(_PROMPT_DIR, "slide_subtitle_cursor_prompt_textbook_zh.txt"),
+        "en": os.path.join(_PROMPT_DIR, "slide_subtitle_cursor_prompt_textbook.txt"),
+    },
+    "story": {
+        "zh": os.path.join(_PROMPT_DIR, "slide_subtitle_cursor_prompt_story_zh.txt"),
+        "en": os.path.join(_PROMPT_DIR, "slide_subtitle_cursor_prompt_story.txt"),
+    },
+    "fiction_comic": {
+        "zh": os.path.join(_PROMPT_DIR, "slide_subtitle_cursor_prompt_fiction_comic_zh.txt"),
+        "en": os.path.join(_PROMPT_DIR, "slide_subtitle_cursor_prompt_fiction_comic.txt"),
+    },
+    "custom": {
+        "zh": os.path.join(_PROMPT_DIR, "slide_subtitle_cursor_prompt_general_zh.txt"),
+        "en": os.path.join(_PROMPT_DIR, "slide_subtitle_cursor_prompt_general.txt"),
+    },
 }
 _SCRIPT_PROMPT_PROFILES = {
     "paper": {
         "label": "学术论文讲解",
         "desc": "保留当前学术会议风格，突出研究问题、方法、实验与结论",
-        "zh": "",
-        "en": "",
     },
-    "ebook": {
-        "label": "电子书 / 读物讲解",
-        "desc": "按章节脉络解释概念、人物、论点与上下文，避免虚构论文实验",
-        "zh": ("【内容类型覆盖指令】这次输入是电子书、读物或章节内容，不是学术论文。"
-               "请以知识讲解者的身份，围绕章节脉络、核心概念、人物或论点展开；"
-               "不要使用‘我们的论文/实验/方法’等学术论文口吻，也不要虚构实验数据。"
-               "本指令优先于上方关于学术会议或论文身份的描述。"),
-        "en": ("[Content-type override] The input is an ebook, book, or chapter, not a research paper. "
-               "Explain its narrative, concepts, people, arguments, and context as a knowledgeable guide. "
-               "Do not speak as the paper's author or invent methods, experiments, or results. "
-               "This instruction overrides any academic-conference role above."),
+    "textbook": {
+        "label": "教材 / 课程讲解",
+        "desc": "教师授课风格，按知识递进解释概念、例子、公式与阶段小结",
     },
-    "course": {
-        "label": "课程讲解视频",
-        "desc": "采用教师授课口吻，强调学习目标、概念递进、例子与小结",
-        "zh": ("【内容类型覆盖指令】这次输入是课程或教学材料。请以教师授课口吻组织讲稿，"
-               "说明学习目标，按由浅入深的顺序解释概念，并在合适处给出直观例子或阶段小结。"
-               "不要把内容称为‘我们的论文’，也不要虚构材料中不存在的实验或结论。"
-               "本指令优先于上方关于学术会议或论文身份的描述。"),
-        "en": ("[Content-type override] The input is course or teaching material. Speak as an instructor: "
-               "state learning goals, explain concepts progressively, and add concise examples or recaps when useful. "
-               "Do not call it our paper or invent experiments or conclusions. "
-               "This instruction overrides any academic-conference role above."),
+    "story": {
+        "label": "故事讲述",
+        "desc": "围绕情节、人物动机与转折进行连贯叙述，保留故事感和悬念",
+    },
+    "fiction_comic": {
+        "label": "小说 / 漫画解说",
+        "desc": "结合场景、角色、对白与画面节奏进行生动解说，不虚构原作事实",
     },
     "custom": {
         "label": "通用 / 自定义",
         "desc": "使用中性的内容讲解口吻，并在下方提示词中自由调整角色与风格",
-        "zh": ("【内容类型覆盖指令】不要预设输入一定是论文。请以中性的专业讲解者身份，"
-               "只根据幻灯片可见内容组织清晰、连贯的讲解，不虚构原材料中不存在的事实。"
-               "本指令优先于上方关于学术会议或论文身份的描述。"),
-        "en": ("[Content-type override] Do not assume the input is a research paper. "
-               "Act as a neutral professional narrator and explain only what is supported by the visible slides. "
-               "Do not invent facts. This instruction overrides any academic-conference role above."),
     },
 }
+_SCRIPT_PROMPT_ALIASES = {"ebook": "textbook", "course": "textbook"}
 
 
 def _script_prompt_text(profile, lang):
-    """返回某内容类型的完整讲稿提示词；严格格式约束始终来自上游模板。"""
+    """读取某内容类型独立的完整讲稿提示词。"""
+    profile = _SCRIPT_PROMPT_ALIASES.get(profile, profile)
     profile = profile if profile in _SCRIPT_PROMPT_PROFILES else "custom"
-    lang = lang if lang in _SCRIPT_PROMPT_FILES else "en"
-    with io.open(_SCRIPT_PROMPT_FILES[lang], encoding="utf-8") as handle:
-        base = handle.read().strip()
-    directive = _SCRIPT_PROMPT_PROFILES[profile].get(lang) or ""
-    return base if not directive else base + "\n\n" + directive
+    lang = lang if lang in ("zh", "en") else "en"
+    with io.open(_SCRIPT_PROMPT_FILES[profile][lang], encoding="utf-8") as handle:
+        return handle.read().strip()
 
 
 def _normalize_script_prompt(config):
     """校验并补全讲稿提示词，返回 ``(profile, prompt)``。"""
     profile = str(config.get("content_profile") or "paper").strip().lower()
+    profile = _SCRIPT_PROMPT_ALIASES.get(profile, profile)
     if profile not in _SCRIPT_PROMPT_PROFILES:
         raise HTTPException(status_code=400, detail="不支持的内容类型：{}".format(profile))
     lang = str(config.get("script_lang") or "en").strip().lower()

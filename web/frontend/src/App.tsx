@@ -48,7 +48,7 @@ type Toggle = {
 };
 
 type ScriptPromptProfile = {
-  value: "paper" | "ebook" | "course" | "custom";
+  value: "paper" | "textbook" | "story" | "fiction_comic" | "custom";
   label: string;
   desc: string;
   prompts: Record<string, string>;
@@ -267,7 +267,7 @@ function useJobStream(jobId: string | null) {
 
 /* 拖放上传区 */
 function Dropzone(props: {
-  label: string;
+  label?: string;
   hint: string;
   accept?: string;
   picked: string | null;
@@ -277,9 +277,11 @@ function Dropzone(props: {
   const inputRef = useRef<HTMLInputElement>(null);
   return (
     <div>
-      <label style={{ display: "block", fontSize: 12, color: "var(--paper-ink-soft)", marginBottom: 5 }}>
-        {props.label}
-      </label>
+      {props.label && (
+        <label style={{ display: "block", fontSize: 12, color: "var(--paper-ink-soft)", marginBottom: 5 }}>
+          {props.label}
+        </label>
+      )}
       <div
         className={"dropzone" + (over ? " over" : "")}
         onClick={() => inputRef.current?.click()}
@@ -808,36 +810,44 @@ export default function App() {
           <h2 className="section-title">素材</h2>
           <span className="section-note">支持 Word / PDF / LaTeX</span>
         </div>
-        <div className="grid grid-2">
-          <Dropzone
-            label="内容文件"
-            hint=".docx / .doc / .pdf / .tex / .zip"
-            accept=".docx,.doc,.pdf,.tex,.zip"
-            picked={paperFile?.name ?? null}
-            onPick={(f) => {
-              // 图片显然是误放（多半是想传人像）：当场说清，
-              // 而不是传上去再由后端报"无法识别的文件格式"。
-              if (/\.(png|jpe?g|webp|bmp|gif)$/i.test(f.name)) {
-                MessagePlugin.warning("这是图片 —— 请放到右侧「人像图」位置");
-                return;
-              }
-              setPaperFile(f);
-              setIngest(null);
-            }}
-          />
-          <div>
-            <label className="checkline" style={{ marginBottom: 8 }}>
-              <input
-                type="checkbox"
-                checked={generateTalking}
-                onChange={(e) => setGenerateTalking(e.target.checked)}
-              />
-              生成数字人（可选）
-            </label>
+        <div className="grid grid-2 material-grid">
+          <div className="material-panel">
+            <div className="material-heading">
+              <span>内容文件</span>
+              <span className="material-badge required">必需</span>
+            </div>
+            <Dropzone
+              hint=".docx / .doc / .pdf / .tex / .zip"
+              accept=".docx,.doc,.pdf,.tex,.zip"
+              picked={paperFile?.name ?? null}
+              onPick={(f) => {
+                // 图片显然是误放（多半是想传人像）：当场说清，
+                // 而不是传上去再由后端报"无法识别的文件格式"。
+                if (/\.(png|jpe?g|webp|bmp|gif)$/i.test(f.name)) {
+                  MessagePlugin.warning("这是图片 —— 请放到右侧「人像图」位置");
+                  return;
+                }
+                setPaperFile(f);
+                setIngest(null);
+              }}
+            />
+            <div className="material-note">用于生成幻灯片、讲稿、配音与字幕。</div>
+          </div>
+          <div className="material-panel">
+            <div className="material-heading">
+              <span>数字人小窗</span>
+              <label className="checkline material-toggle">
+                <input
+                  type="checkbox"
+                  checked={generateTalking}
+                  onChange={(e) => setGenerateTalking(e.target.checked)}
+                />
+                启用
+              </label>
+            </div>
             {generateTalking ? (
               <Dropzone
-                label="人像图"
-                hint="可不上传；未上传会自动跳过数字人"
+                hint="上传正面人像图；留空会自动跳过数字人"
                 accept="image/*"
                 picked={portraitFile?.name ?? null}
                 onPick={(f) => {
@@ -846,12 +856,13 @@ export default function App() {
                 }}
               />
             ) : (
-              <div className="notice info compact-notice">
-                <span>本次不生成人像小窗，仍会输出带配音、光标和字幕的完整视频。</span>
+              <div className="material-skip">
+                <strong>已关闭数字人</strong>
+                <span>仍会输出带配音、光标和字幕的完整视频</span>
               </div>
             )}
-            <div className="hint" style={{ fontSize: 11.5, color: "var(--paper-ink-faint)", marginTop: 6 }}>
-              人像只用于画面角落的数字人小窗，不影响音色。音色见下一节。
+            <div className="material-note">
+              人像仅用于画面角落的小窗，与配音音色无关；音色可在下一节设置。
             </div>
             {/* 人像校验结果内联在 Dropzone 下方（不用弹窗，避免遮住刚要确认的东西） */}
             {portraitInfo && (

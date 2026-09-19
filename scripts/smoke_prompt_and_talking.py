@@ -43,11 +43,15 @@ async def main_async():
     try:
         options = await web.api_options()
         profiles = options.get("script_prompt_profiles") or []
-        check("下发四种讲稿内容模板",
-              [p["value"] for p in profiles] == ["paper", "ebook", "course", "custom"])
+        check("下发五种独立讲稿内容模板",
+              [p["value"] for p in profiles]
+              == ["paper", "textbook", "story", "fiction_comic", "custom"])
         check("每种模板都有中英文完整提示词",
               all("###" in p["prompts"]["zh"] and "|" in p["prompts"]["en"]
                   for p in profiles))
+        check("各预制提示词不是论文模板追加覆盖指令",
+              len({p["prompts"]["zh"] for p in profiles}) == len(profiles)
+              and all("内容类型覆盖指令" not in p["prompts"]["zh"] for p in profiles))
 
         custom_prompt = (
             "你是一位课程教师，请用通俗语言讲解每页内容。\n"
@@ -62,7 +66,7 @@ async def main_async():
                 "slide_lang": "en",
                 "script_lang": "zh",
                 "paper_type": "auto",
-                "content_profile": "course",
+                "content_profile": "textbook",
                 "script_prompt": custom_prompt,
                 "generate_talking": True,
                 "voice": {"kind": "default"},

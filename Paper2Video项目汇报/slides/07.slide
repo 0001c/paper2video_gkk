@@ -1,0 +1,65 @@
+<Slide style={{ width: 1280, height: 720, display: 'flex', flexDirection: 'column', background: '#FFFFFF', fontFamily: "'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif", padding: 0 }}>
+    <Box style={{ height: 72, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '0 40px' }}>
+        <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#FFFFFF' }}>Paper2Video 项目汇报</Text>
+        <Text style={{ fontSize: 16, color: '#8FB6E8', letterSpacing: 2 }}>核心功能 2 / 3</Text>
+    </Box>
+
+    <Box style={{ flex: 1, flexDirection: 'column', padding: '24px 40px', gap: 16 }}>
+        <Box style={{ height: 44, flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+            <Box style={{ width: 5, height: 34, background: '#1E4FA8', borderRadius: 2 }} />
+            <Text style={{ fontSize: 36, fontWeight: 'bold', color: '#0E3F8C' }}>幻灯片里终于有图了</Text>
+            <Text style={{ fontSize: 17, color: '#8B97A8', marginLeft: 6 }}>这张图是从论文 PDF 里提出来的，不是画的</Text>
+        </Box>
+
+        <Box style={{ height: 492, flexDirection: 'row', gap: 24 }}>
+            <Box style={{ width: 640, height: 492, flexDirection: 'column', gap: 12 }}>
+                <Box style={{ width: 640, height: 428, background: '#F7F9FC', border: '1px solid #D6DCE5', borderRadius: 6, padding: 8 }}>
+                    <Image src='assets/fig_extract_01.jpg' style={{ width: 624, height: 412, objectFit: 'contain' }} />
+                </Box>
+                <Text style={{ fontSize: 14, color: '#8B97A8', lineHeight: 1.4 }}>提取结果：论文第 6 页的插图，1984 × 1542，输出为 JPEG 落入工程 figures/ 目录</Text>
+            </Box>
+
+            <Box style={{ width: 536, height: 492, flexDirection: 'column', gap: 12 }}>
+                <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1A2230', lineHeight: 1.45 }}>模型一张图都没引用，这不是它偷懒——它按提示词做对了</Text>
+
+                <Box style={{ height: 88, flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+                    <Box style={{ width: 72, height: 26, background: '#E8EFF8', borderRadius: 13, alignItems: 'center', justifyContent: 'center' }}>
+                        <Text style={{ fontSize: 14, fontWeight: 'bold', color: '#0E3F8C' }}>问题</Text>
+                    </Box>
+                    <Text style={{ flex: 1, fontSize: 16, color: '#4A5568', lineHeight: 1.45 }}>我们从前端只提取正文，所以工程里就只有一个 main.tex，没有任何图片文件可以被引用。</Text>
+                </Box>
+
+                <Box style={{ height: 88, flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+                    <Box style={{ width: 72, height: 26, background: '#E8EFF8', borderRadius: 13, alignItems: 'center', justifyContent: 'center' }}>
+                        <Text style={{ fontSize: 14, fontWeight: 'bold', color: '#0E3F8C' }}>线索</Text>
+                    </Box>
+                    <Text style={{ flex: 1, fontSize: 16, color: '#4A5568', lineHeight: 1.45 }}>中文提示词里写着一句话：若没有可用图片，不要写任何图片引用。所以零张图是正确输出。</Text>
+                </Box>
+
+                <Box style={{ height: 88, flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+                    <Box style={{ width: 72, height: 26, background: '#F7C1C1', borderRadius: 13, alignItems: 'center', justifyContent: 'center' }}>
+                        <Text style={{ fontSize: 14, fontWeight: 'bold', color: '#791F1F' }}>后果</Text>
+                    </Box>
+                    <Text style={{ flex: 1, fontSize: 16, color: '#4A5568', lineHeight: 1.45 }}>树搜索只会缩放图片宽度。没有图，论文这条核心机制就没有任何可做的事——下一页细说。</Text>
+                </Box>
+
+                <Box style={{ flex: 1, background: '#E8EFF8', borderLeft: '4px solid #1E4FA8', borderRadius: 4, padding: '14px 18px', flexDirection: 'row', alignItems: 'center', gap: 28 }}>
+                    <Box style={{ flexDirection: 'column', gap: 2 }}>
+                        <Text style={{ fontSize: 48, fontWeight: 'bold', color: '#0E3F8C', lineHeight: 1.05 }}>2 张</Text>
+                        <Text style={{ fontSize: 14, color: '#4A5568', lineHeight: 1.4 }}>从论文里提出来的插图</Text>
+                    </Box>
+                    <Box style={{ width: 1, height: 62, background: '#B5D4F4' }} />
+                    <Box style={{ flexDirection: 'column', gap: 2 }}>
+                        <Text style={{ fontSize: 48, fontWeight: 'bold', color: '#0E3F8C', lineHeight: 1.05 }}>2 次</Text>
+                        <Text style={{ fontSize: 14, color: '#4A5568', lineHeight: 1.4 }}>幻灯片源码里对应的图片引用</Text>
+                    </Box>
+                </Box>
+            </Box>
+        </Box>
+    </Box>
+
+    <Box style={{ height: 48, padding: '0 40px', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text style={{ fontSize: 14, color: '#8B97A8' }}>日志原文：[figures] 提取 2 张（pdf）→ 已把清单附给幻灯片生成</Text>
+        <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#0E3F8C' }}>07 / 15</Text>
+    </Box>
+</Slide>

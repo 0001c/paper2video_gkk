@@ -1,0 +1,83 @@
+<Slide style={{ width: 1280, height: 720, display: 'flex', flexDirection: 'column', background: '#FFFFFF', fontFamily: "'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif", padding: 0 }}>
+    <Box style={{ height: 72, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '0 40px' }}>
+        <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#FFFFFF' }}>Paper2Video 项目汇报</Text>
+        <Text style={{ fontSize: 16, color: '#8FB6E8', letterSpacing: 2 }}>目标</Text>
+    </Box>
+
+    <Box style={{ flex: 1, flexDirection: 'column', padding: '24px 40px', gap: 16 }}>
+        <Box style={{ height: 44, flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+            <Box style={{ width: 5, height: 34, background: '#1E4FA8', borderRadius: 2 }} />
+            <Text style={{ fontSize: 36, fontWeight: 'bold', color: '#0E3F8C' }}>三个约束，把方案钉死了</Text>
+            <Text style={{ fontSize: 17, color: '#8B97A8', marginLeft: 6 }}>论文跑在 8 张 A6000 上，我只有一张消费级卡</Text>
+        </Box>
+
+        <Box style={{ height: 492, flexDirection: 'row', gap: 24 }}>
+            <Box style={{ width: 400, height: 492, background: '#0E3F8C', borderRadius: 8, padding: '34px 30px', flexDirection: 'column', justifyContent: 'space-between' }}>
+                <Box style={{ flexDirection: 'column', gap: 10 }}>
+                    <Text style={{ fontSize: 16, color: '#8FB6E8', letterSpacing: 3 }}>我手上的卡</Text>
+                    <Text style={{ fontSize: 104, fontWeight: 'bold', color: '#FFFFFF', lineHeight: 1.05 }}>16GB</Text>
+                    <Text style={{ fontSize: 18, color: '#B5D4F4', lineHeight: 1.5 }}>RTX 5070 Ti 单卡<br />Blackwell 架构（sm_120）</Text>
+                </Box>
+
+                <Box style={{ flexDirection: 'column', gap: 8 }}>
+                    <Box style={{ height: 1, background: '#3D7BD9' }} />
+                    <Text style={{ fontSize: 16, color: '#8FB6E8', lineHeight: 1.6 }}>论文的配置：8 × A6000 48GB<br />单卡 48GB，合计 384GB</Text>
+                    <Text style={{ fontSize: 19, fontWeight: 'bold', color: '#FFC107' }}>差了 24 倍</Text>
+                </Box>
+            </Box>
+
+            <Box style={{ width: 776, height: 492, flexDirection: 'column', gap: 12 }}>
+                <Text style={{ fontSize: 18, color: '#1A2230', lineHeight: 1.5 }}>我给自己定了三个目标，后面每一个技术选择都是它们逼出来的：先能在单卡上跑通，模型全部换成国产开源，许可证必须干净到能交付。</Text>
+
+                <Box style={{ height: 188, background: '#F7F9FC', border: '1px solid #D6DCE5', borderRadius: 6, padding: '8px 12px' }}>
+                    <Chart
+                        style={{ width: '100%', height: 172 }}
+                        chartType='barChart'
+                        barDirection='bar'
+                        title='显存规模对比（GB）'
+                        titleColor='#0E3F8C'
+                        showLegend={false}
+                        showDataLabels={true}
+                        axisColor='#8B97A8'
+                        dataLabelColor='#1A2230'
+                        colors={['#1E4FA8']}
+                        data={[
+                            ['配置', '显存'],
+                            ['论文 8×A6000 合计', 384],
+                            ['本机单卡', 16],
+                        ]}
+                    />
+                </Box>
+
+                <Box style={{ height: 60, flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+                    <Box style={{ width: 5, height: 40, background: '#D9534F', borderRadius: 2, marginTop: 4 }} />
+                    <Box style={{ flex: 1, flexDirection: 'column', gap: 2 }}>
+                        <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1A2230' }}>显存 16GB，而且架构很新</Text>
+                        <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.4 }}>预编译好的算子经常用不了，现场编译又容易失败——几个模型就是死在这一步</Text>
+                    </Box>
+                </Box>
+
+                <Box style={{ height: 60, flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+                    <Box style={{ width: 5, height: 40, background: '#1E4FA8', borderRadius: 2, marginTop: 4 }} />
+                    <Box style={{ flex: 1, flexDirection: 'column', gap: 2 }}>
+                        <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1A2230' }}>许可证要能交付</Text>
+                        <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.4 }}>论文原方案里的语音模型是 CC-BY-NC，非商用——这类一律不碰</Text>
+                    </Box>
+                </Box>
+
+                <Box style={{ height: 60, flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+                    <Box style={{ width: 5, height: 40, background: '#1E4FA8', borderRadius: 2, marginTop: 4 }} />
+                    <Box style={{ flex: 1, flexDirection: 'column', gap: 2 }}>
+                        <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1A2230' }}>"能跑"排在"最好"前面</Text>
+                        <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.4 }}>效果榜上排第一但装不上的模型，对我等于零</Text>
+                    </Box>
+                </Box>
+            </Box>
+        </Box>
+    </Box>
+
+    <Box style={{ height: 48, padding: '0 40px', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text style={{ fontSize: 14, color: '#8B97A8' }}>A6000 显存与数量取自论文实验设置；本机为 RTX 5070 Ti 16GB</Text>
+        <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#0E3F8C' }}>03 / 15</Text>
+    </Box>
+</Slide>

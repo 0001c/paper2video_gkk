@@ -1,0 +1,31 @@
+<Slide style={{ width: 1280, height: 720, display: 'flex', flexDirection: 'column', background: '#0E3F8C', fontFamily: "'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif", padding: 0 }}>
+    <Box style={{ height: 6, background: '#3D7BD9' }} />
+
+    <Box style={{ flex: 1, flexDirection: 'column', padding: '52px 64px 0 64px', gap: 18 }}>
+        <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+            <Box style={{ width: 46, height: 3, background: '#3D7BD9' }} />
+            <Text style={{ fontSize: 17, color: '#8FB6E8', letterSpacing: 3 }}>课程项目汇报 · 2026</Text>
+        </Box>
+
+        <Text style={{ fontSize: 58, fontWeight: 'bold', color: '#FFFFFF', lineHeight: 1.22 }}>
+            把一篇论文，<br />变成一段会讲课的视频
+        </Text>
+
+        <Text style={{ fontSize: 24, color: '#B5D4F4', fontFamily: "'Times New Roman', Times, serif", letterSpacing: 0.5 }}>
+            Automatic Video Generation from Scientific Papers
+        </Text>
+
+        <Text style={{ fontSize: 20, color: '#7FA9DE' }}>
+            基于 Paper2Video 的国产化替换与工程化改造 · 单卡 RTX 5070 Ti 16GB
+        </Text>
+
+        <Box style={{ width: 1152, height: 226, background: '#FFFFFF', borderRadius: 4, marginTop: 8 }}>
+            <Image src='assets/paper_teaser.png' style={{ width: 1152, height: 226, objectFit: 'contain' }} />
+        </Box>
+    </Box>
+
+    <Box style={{ height: 86, padding: '0 64px', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text style={{ fontSize: 16, color: '#8FB6E8' }}>姓名：＿＿＿＿　　学号：＿＿＿＿　　指导教师：＿＿＿＿　　日期：＿＿＿＿</Text>
+        <Text style={{ fontSize: 15, color: '#5C86BE' }}>图：论文 Fig.1（showlab/Paper2Video）</Text>
+    </Box>
+</Slide>

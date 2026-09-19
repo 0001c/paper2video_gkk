@@ -1,0 +1,52 @@
+<Slide style={{ width: 1280, height: 720, display: 'flex', flexDirection: 'column', background: '#FFFFFF', fontFamily: "'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif", padding: 0 }}>
+    <Box style={{ height: 72, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '0 40px' }}>
+        <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#FFFFFF' }}>Paper2Video 项目汇报</Text>
+        <Text style={{ fontSize: 16, color: '#8FB6E8', letterSpacing: 2 }}>成果</Text>
+    </Box>
+
+    <Box style={{ flex: 1, flexDirection: 'column', padding: '24px 40px', gap: 14 }}>
+        <Box style={{ height: 44, flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+            <Box style={{ width: 5, height: 34, background: '#1E4FA8', borderRadius: 2 }} />
+            <Text style={{ fontSize: 36, fontWeight: 'bold', color: '#0E3F8C' }}>拿得出来的东西</Text>
+            <Text style={{ fontSize: 17, color: '#8B97A8', marginLeft: 6 }}>这一页不放示意图，下面这一栏是跑出来的帧</Text>
+        </Box>
+
+        <Box style={{ height: 292, background: '#F7F9FC', border: '1px solid #D6DCE5', borderRadius: 6, padding: 4, flexDirection: 'column', justifyContent: 'center' }}>
+            <Image src='assets/dh_filmstrip.png' style={{ width: 1192, height: 284, objectFit: 'contain' }} />
+        </Box>
+
+        <Box style={{ height: 184, flexDirection: 'row', gap: 20 }}>
+            <Box style={{ width: 386, height: 184, background: '#F7F9FC', border: '1px solid #D6DCE5', borderRadius: 6, padding: '16px 18px', flexDirection: 'column', justifyContent: 'space-between' }}>
+                <Box style={{ flexDirection: 'column', gap: 2 }}>
+                    <Text style={{ fontSize: 18, color: '#4A5568', letterSpacing: 1 }}>自动化断言</Text>
+                    <Text style={{ fontSize: 42, fontWeight: 'bold', color: '#1E4FA8', lineHeight: 1.05 }}>310 项</Text>
+                    <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.4 }}>分 14 组覆盖接口与流程，跑一次不消耗 API 额度</Text>
+                </Box>
+                <Text style={{ fontSize: 14, color: '#8B97A8' }}>其中含专门的反面对照组</Text>
+            </Box>
+
+            <Box style={{ width: 386, height: 184, background: '#F7F9FC', border: '1px solid #D6DCE5', borderRadius: 6, padding: '16px 18px', flexDirection: 'column', justifyContent: 'space-between' }}>
+                <Box style={{ flexDirection: 'column', gap: 2 }}>
+                    <Text style={{ fontSize: 18, color: '#4A5568', letterSpacing: 1 }}>生成出来的视频文件</Text>
+                    <Text style={{ fontSize: 42, fontWeight: 'bold', color: '#1E4FA8', lineHeight: 1.05 }}>189 个</Text>
+                    <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.4 }}>含 15 段数字人逐页片段，成片由它们拼接而成</Text>
+                </Box>
+                <Text style={{ fontSize: 14, color: '#8B97A8' }}>另有 7 张真实渲染的幻灯片</Text>
+            </Box>
+
+            <Box style={{ width: 388, height: 184, background: '#E8EFF8', border: '1px dashed #1E4FA8', borderRadius: 6, padding: '16px 18px', flexDirection: 'column', justifyContent: 'space-between' }}>
+                <Box style={{ flexDirection: 'column', gap: 4 }}>
+                    <Text style={{ fontSize: 18, color: '#1E4FA8', letterSpacing: 1 }}>完整成片</Text>
+                    <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#0E3F8C' }}>待放入</Text>
+                    <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.45 }}>把拼好的视频放进项目目录后，替换这一格并放一张封面帧</Text>
+                </Box>
+                <Text style={{ fontSize: 14, color: '#1E4FA8' }}>目前只有逐页片段，尚未整体拼接</Text>
+            </Box>
+        </Box>
+    </Box>
+
+    <Box style={{ height: 48, padding: '0 40px', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text style={{ fontSize: 14, color: '#8B97A8' }}>数字人帧抽自本机产出的逐页片段（第 1、4、7、10、13、15 页）</Text>
+        <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#0E3F8C' }}>13 / 15</Text>
+    </Box>
+</Slide>

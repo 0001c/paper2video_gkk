@@ -1,0 +1,83 @@
+<Slide style={{ width: 1280, height: 720, display: 'flex', flexDirection: 'column', background: '#FFFFFF', fontFamily: "'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif", padding: 0 }}>
+    <Box style={{ height: 72, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '0 40px' }}>
+        <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#FFFFFF' }}>Paper2Video 项目汇报</Text>
+        <Text style={{ fontSize: 16, color: '#8FB6E8', letterSpacing: 2 }}>方案</Text>
+    </Box>
+
+    <Box style={{ flex: 1, flexDirection: 'column', padding: '24px 40px', gap: 16 }}>
+        <Box style={{ height: 44, flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+            <Box style={{ width: 5, height: 34, background: '#1E4FA8', borderRadius: 2 }} />
+            <Text style={{ fontSize: 36, fontWeight: 'bold', color: '#0E3F8C' }}>六个位置，全部换掉</Text>
+            <Text style={{ fontSize: 17, color: '#8B97A8', marginLeft: 6 }}>不是为了效果更好，是为了先能在这张卡上跑起来</Text>
+        </Box>
+
+        <Box style={{ height: 412 }}>
+            <Table
+                style={{ width: '100%', height: '100%' }}
+                defaultTextStyle={{ fontSize: 17, textAlign: 'left', color: '#1A2230' }}
+                defaultCellStyle={{
+                    border: {
+                        left: { width: 1, color: '#D6DCE5' },
+                        right: { width: 1, color: '#D6DCE5' },
+                        top: { width: 1, color: '#D6DCE5' },
+                        bottom: { width: 1, color: '#D6DCE5' },
+                    },
+                }}
+                cells={[
+                    [
+                        { text: '位置', textStyle: { bold: true, color: '#FFFFFF', fontSize: 18 }, cellStyle: { background: { color: '#0E3F8C' } } },
+                        { text: '论文用的模型', textStyle: { bold: true, color: '#FFFFFF', fontSize: 18 }, cellStyle: { background: { color: '#0E3F8C' } } },
+                        { text: '换成', textStyle: { bold: true, color: '#FFFFFF', fontSize: 18 }, cellStyle: { background: { color: '#0E3F8C' } } },
+                        { text: '为什么必须换', textStyle: { bold: true, color: '#FFFFFF', fontSize: 18 }, cellStyle: { background: { color: '#0E3F8C' } } },
+                    ],
+                    [
+                        '语音合成',
+                        'F5-TTS 0.34B',
+                        { text: 'Qwen3-TTS-1.7B', textStyle: { bold: true, color: '#1E4FA8' } },
+                        '原模型是 CC-BY-NC 非商用，不能交付',
+                    ],
+                    [
+                        { text: '光标定位', cellStyle: { background: { color: '#F7F9FC' } } },
+                        { text: 'UI-TARS-1.5-7B', cellStyle: { background: { color: '#F7F9FC' } } },
+                        { text: 'GUI-Owl-1.5-4B', textStyle: { bold: true, color: '#1E4FA8' }, cellStyle: { background: { color: '#F7F9FC' } } },
+                        { text: '7B 的 bf16 要 15GB 以上，开箱就爆显存', cellStyle: { background: { color: '#F7F9FC' } } },
+                    ],
+                    [
+                        '转写对齐',
+                        'WhisperX large-v3',
+                        { text: 'Qwen3-ASR + ForcedAligner', textStyle: { bold: true, color: '#1E4FA8' } },
+                        '依赖链更短，和光标那边共用一套模型家族',
+                    ],
+                    [
+                        { text: '数字人', cellStyle: { background: { color: '#F7F9FC' } } },
+                        { text: 'Hallo2', cellStyle: { background: { color: '#F7F9FC' } } },
+                        { text: 'MuseTalk', textStyle: { bold: true, color: '#1E4FA8' }, cellStyle: { background: { color: '#F7F9FC' } } },
+                        { text: '原模型锁 CUDA 11.8，不含这台卡的编译目标', cellStyle: { background: { color: '#F7F9FC' } } },
+                    ],
+                    [
+                        '语言 + 视觉',
+                        'GPT-4.1',
+                        { text: 'DeepSeek-V4.1-Flash', textStyle: { bold: true, color: '#1E4FA8' } },
+                        '支持原生图像输入，代码几乎不用改',
+                    ],
+                    [
+                        { text: '视频理解', cellStyle: { background: { color: '#F7F9FC' } } },
+                        { text: 'Gemini-2.5-Flash', cellStyle: { background: { color: '#F7F9FC' } } },
+                        { text: 'Qwen3.5-Omni-Plus', textStyle: { bold: true, color: '#1E4FA8' }, cellStyle: { background: { color: '#F7F9FC' } } },
+                        { text: 'DeepSeek 不支持视频，这一段只能换一家', cellStyle: { background: { color: '#F7F9FC' } } },
+                    ],
+                ]}
+            />
+        </Box>
+
+        <Box style={{ height: 64, background: '#E8EFF8', borderLeft: '4px solid #1E4FA8', borderRadius: 4, padding: '0 20px', flexDirection: 'row', alignItems: 'center', gap: 18 }}>
+            <Text style={{ fontSize: 15, fontWeight: 'bold', color: '#0E3F8C', letterSpacing: 1 }}>换完的结果</Text>
+            <Text style={{ fontSize: 18, color: '#1A2230', lineHeight: 1.4 }}>本地侧从 5 个模型、3 套环境收敛成 2 个模型家族，显存峰值从 24GB 以上压到约 10GB。API 侧几乎没动代码：上游本来就带兜底分支，传个参数就切过去了。</Text>
+        </Box>
+    </Box>
+
+    <Box style={{ height: 48, padding: '0 40px', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text style={{ fontSize: 14, color: '#8B97A8' }}>许可证：Qwen3 系列 Apache-2.0 · GUI-Owl 与 MuseTalk 为 MIT</Text>
+        <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#0E3F8C' }}>04 / 15</Text>
+    </Box>
+</Slide>

@@ -1,0 +1,68 @@
+<Slide style={{ width: 1280, height: 720, display: 'flex', flexDirection: 'column', background: '#FFFFFF', fontFamily: "'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif", padding: 0 }}>
+    <Box style={{ height: 72, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '0 40px' }}>
+        <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#FFFFFF' }}>Paper2Video 项目汇报</Text>
+        <Text style={{ fontSize: 16, color: '#8FB6E8', letterSpacing: 2 }}>难点 2 / 4</Text>
+    </Box>
+
+    <Box style={{ flex: 1, flexDirection: 'column', padding: '24px 40px', gap: 16 }}>
+        <Box style={{ height: 44, flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+            <Box style={{ width: 5, height: 34, background: '#1E4FA8', borderRadius: 2 }} />
+            <Text style={{ fontSize: 36, fontWeight: 'bold', color: '#0E3F8C' }}>论文的核心机制，在我这儿空转了</Text>
+        </Box>
+
+        <Box style={{ height: 492, flexDirection: 'row', gap: 24 }}>
+            <Box style={{ width: 700, height: 492, flexDirection: 'column', gap: 12 }}>
+                <Box style={{ height: 340, flexDirection: 'row', gap: 20 }}>
+                    <Box style={{ width: 340, height: 340, background: '#F7F9FC', border: '1px solid #D6DCE5', borderRadius: 6, padding: 8 }}>
+                        <Image src='assets/tree_merged.png' style={{ width: 324, height: 324, objectFit: 'contain' }} />
+                    </Box>
+                    <Box style={{ width: 340, height: 340, flexDirection: 'column', gap: 10, justifyContent: 'center' }}>
+                        <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#1E4FA8' }}>VLM 看到的就是这张图</Text>
+                        <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.45 }}>四个象限是同一页的四个版本：图片宽度分别是 0.25、0.5、0.75、1.0。规则负责生成候选，模型只负责挑一个。</Text>
+                        <Box style={{ background: '#F7F9FC', border: '1px solid #D6DCE5', borderRadius: 4, padding: '10px 12px' }}>
+                            <Text style={{ fontSize: 14, color: '#0E3F8C', lineHeight: 1.45, fontFamily: "'Consolas', 'Courier New', monospace" }}>reason: 「A、B 把右侧轴裁掉了；C 的标签顶到边缘出现截断；D 把所有元素和图注都完整保留」  choice: 「D」</Text>
+                        </Box>
+                        <Text style={{ fontSize: 13, color: '#8B97A8' }}>论文里 VLM 返回的判定，格式就是这样的 JSON</Text>
+                    </Box>
+                </Box>
+
+                <Box style={{ flex: 1, flexDirection: 'column', gap: 6 }}>
+                    <Box style={{ width: 700, height: 110, background: '#F7F9FC', border: '1px solid #D6DCE5', borderRadius: 6, padding: 6 }}>
+                        <Image src='assets/tree_candidates_strip.png' style={{ width: 688, height: 98, objectFit: 'contain' }} />
+                    </Box>
+                    <Text style={{ fontSize: 13, color: '#8B97A8' }}>四个宽度候选的原始渲染（0.25 / 0.5 / 0.75 / 1.0），本机跑出来的真实文件</Text>
+                </Box>
+            </Box>
+
+            <Box style={{ width: 476, height: 492, flexDirection: 'column', gap: 12 }}>
+                <Text style={{ fontSize: 17, color: '#1A2230', lineHeight: 1.5 }}>我在界面上打开了这个开关，觉得出片很快，就去后台查它到底有没有干活。结论是：开关生效了，代码也执行了，但一页都没改进过。</Text>
+
+                <Box style={{ height: 154, background: '#FCEBEB', borderLeft: '4px solid #D9534F', borderRadius: 4, padding: '14px 16px', flexDirection: 'column', gap: 6 }}>
+                    <Text style={{ fontSize: 15, fontWeight: 'bold', color: '#A32D2D', letterSpacing: 1 }}>差点被骗过去的地方</Text>
+                    <Text style={{ fontSize: 15, color: '#1A2230', lineHeight: 1.45 }}>这个函数会无条件重写一份改进版的幻灯片源码。所以"产物变了""出现了新文件"都不能当证据。可靠的判据只有一个：它工作时产生的那个目录空不空。</Text>
+                </Box>
+
+                <Box style={{ flex: 1, background: '#F7F9FC', border: '1px solid #D6DCE5', borderRadius: 6, padding: '16px 18px', flexDirection: 'column', justifyContent: 'space-between' }}>
+                    <Text style={{ fontSize: 15, fontWeight: 'bold', color: '#1E4FA8', letterSpacing: 1 }}>同一个机制，两个结果</Text>
+                    <Box style={{ flexDirection: 'row', alignItems: 'center', gap: 24 }}>
+                        <Box style={{ flexDirection: 'column', gap: 2 }}>
+                            <Text style={{ fontSize: 46, fontWeight: 'bold', color: '#1E4FA8', lineHeight: 1.05 }}>7 次</Text>
+                            <Text style={{ fontSize: 14, color: '#4A5568', lineHeight: 1.4 }}>跑论文自带的工程时<br />真实发生的 VLM 调用</Text>
+                        </Box>
+                        <Box style={{ width: 1, height: 76, background: '#B5D4F4' }} />
+                        <Box style={{ flexDirection: 'column', gap: 2 }}>
+                            <Text style={{ fontSize: 46, fontWeight: 'bold', color: '#8B97A8', lineHeight: 1.05 }}>0 次</Text>
+                            <Text style={{ fontSize: 14, color: '#4A5568', lineHeight: 1.4 }}>换成只看正文的<br />PDF 链路之后</Text>
+                        </Box>
+                    </Box>
+                    <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.45 }}>它的入选门槛是"排版溢出的页，而且那一页得有图片"。我们的工程里一张图都没有，所以它一次都没被触发。</Text>
+                </Box>
+            </Box>
+        </Box>
+    </Box>
+
+    <Box style={{ height: 48, padding: '0 40px', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text style={{ fontSize: 14, color: '#8B97A8' }}>所以上一页那件事不是锦上添花，是这条机制能不能存在的前提</Text>
+        <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#0E3F8C' }}>10 / 15</Text>
+    </Box>
+</Slide>

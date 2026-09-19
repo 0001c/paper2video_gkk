@@ -1,0 +1,42 @@
+<Slide style={{ width: 1280, height: 720, display: 'flex', flexDirection: 'column', background: '#0E3F8C', fontFamily: "'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif", padding: 0 }}>
+    <Box style={{ height: 6, background: '#3D7BD9' }} />
+
+    <Box style={{ flex: 1, flexDirection: 'column', padding: '46px 64px 0 64px', gap: 12 }}>
+        <Text style={{ fontSize: 50, fontWeight: 'bold', color: '#FFFFFF', lineHeight: 1.15 }}>还没做的</Text>
+        <Text style={{ fontSize: 19, color: '#8FB6E8' }}>下面四条都是能验证的，不是"继续优化"这种话</Text>
+
+        <Box style={{ height: 306, flexDirection: 'row', gap: 18, marginTop: 10 }}>
+            <Box style={{ width: 567, height: 306, flexDirection: 'column', gap: 18 }}>
+                <Box style={{ flex: 1, background: '#1E4FA8', borderRadius: 6, padding: '14px 18px', flexDirection: 'column', gap: 5, justifyContent: 'center' }}>
+                    <Text style={{ fontSize: 19, fontWeight: 'bold', color: '#FFFFFF' }}>矢量图的阈值还没标定</Text>
+                    <Text style={{ fontSize: 15, color: '#CFE0F5', lineHeight: 1.4 }}>手头两篇论文里一个矢量簇都没聚出来，所以规则定得偏保守，遇到 matplotlib 直出的论文要重新测。</Text>
+                </Box>
+                <Box style={{ flex: 1, background: '#1E4FA8', borderRadius: 6, padding: '14px 18px', flexDirection: 'column', gap: 5, justifyContent: 'center' }}>
+                    <Text style={{ fontSize: 19, fontWeight: 'bold', color: '#FFFFFF' }}>论文那四项评测指标一条都没跑</Text>
+                    <Text style={{ fontSize: 15, color: '#CFE0F5', lineHeight: 1.4 }}>要复现论文里报的数字，必须换回它的原始模型组合。也就是说，做出来的东西还没有跟原论文对齐着量过。</Text>
+                </Box>
+            </Box>
+
+            <Box style={{ width: 567, height: 306, flexDirection: 'column', gap: 18 }}>
+                <Box style={{ flex: 1, background: '#1E4FA8', borderRadius: 6, padding: '14px 18px', flexDirection: 'column', gap: 5, justifyContent: 'center' }}>
+                    <Text style={{ fontSize: 19, fontWeight: 'bold', color: '#FFFFFF' }}>本机 GPU 上的产物还没进缓存</Text>
+                    <Text style={{ fontSize: 15, color: '#CFE0F5', lineHeight: 1.4 }}>现在只有联网的两步能靠指纹跳过。语音、光标、数字人这三段每次都要重跑，占了一条片子 24 分钟里的绝大部分。</Text>
+                </Box>
+                <Box style={{ flex: 1, background: '#1E4FA8', borderRadius: 6, padding: '14px 18px', flexDirection: 'column', gap: 5, justifyContent: 'center' }}>
+                    <Text style={{ fontSize: 19, fontWeight: 'bold', color: '#FFFFFF' }}>多人使用还缺三件事</Text>
+                    <Text style={{ fontSize: 15, color: '#CFE0F5', lineHeight: 1.4 }}>按人统计用量、排队可见、内网访问。现在只监听本机回环地址，凭据倒是已经按任务隔离了。</Text>
+                </Box>
+            </Box>
+        </Box>
+
+        <Box style={{ flex: 1, background: '#15529E', borderLeft: '4px solid #3D7BD9', borderRadius: 4, padding: '14px 20px', flexDirection: 'column', justifyContent: 'center', gap: 5, marginTop: 4 }}>
+            <Text style={{ fontSize: 15, fontWeight: 'bold', color: '#8FB6E8', letterSpacing: 1 }}>最后一条不是待办，是结论</Text>
+            <Text style={{ fontSize: 18, color: '#FFFFFF', lineHeight: 1.45 }}>模型全部换过之后，论文报告的那些数字不能当成这套系统的成绩——它们来自另一套模型组合。我做的是一次在单卡约束下的重新选型。</Text>
+        </Box>
+    </Box>
+
+    <Box style={{ height: 76, padding: '0 64px', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text style={{ fontSize: 15, color: '#8FB6E8' }}>致谢 / 联系方式 / 仓库地址：＿＿＿＿＿＿＿＿＿＿</Text>
+        <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#FFFFFF' }}>15 / 15</Text>
+    </Box>
+</Slide>

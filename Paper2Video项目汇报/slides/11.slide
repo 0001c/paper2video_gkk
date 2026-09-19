@@ -1,0 +1,62 @@
+<Slide style={{ width: 1280, height: 720, display: 'flex', flexDirection: 'column', background: '#FFFFFF', fontFamily: "'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif", padding: 0 }}>
+    <Box style={{ height: 72, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '0 40px' }}>
+        <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#FFFFFF' }}>Paper2Video 项目汇报</Text>
+        <Text style={{ fontSize: 16, color: '#8FB6E8', letterSpacing: 2 }}>难点 3 / 4</Text>
+    </Box>
+
+    <Box style={{ flex: 1, flexDirection: 'column', padding: '24px 40px', gap: 14 }}>
+        <Box style={{ height: 44, flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+            <Box style={{ width: 5, height: 34, background: '#1E4FA8', borderRadius: 2 }} />
+            <Text style={{ fontSize: 36, fontWeight: 'bold', color: '#0E3F8C' }}>单卡 16GB 的连锁反应</Text>
+        </Box>
+
+        <Box style={{ height: 56, background: '#E8EFF8', borderLeft: '4px solid #1E4FA8', borderRadius: 4, padding: '0 20px', flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+            <Text style={{ fontSize: 15, fontWeight: 'bold', color: '#1E4FA8', letterSpacing: 1 }}>先问一句</Text>
+            <Text style={{ fontSize: 19, color: '#1A2230' }}>一条论文从结构化到出片，本机实测 27.2 分钟。时间到底花在哪一步？</Text>
+        </Box>
+
+        <Box style={{ height: 290, background: '#F7F9FC', border: '1px solid #D6DCE5', borderRadius: 6, padding: '6px 12px' }}>
+            <Chart
+                style={{ width: '100%', height: 278 }}
+                chartType='barChart'
+                barDirection='bar'
+                title='各阶段真实耗时（分钟）'
+                titleColor='#0E3F8C'
+                showLegend={false}
+                showDataLabels={true}
+                axisColor='#8B97A8'
+                dataLabelColor='#1A2230'
+                colors={['#1E4FA8']}
+                data={[
+                    ['阶段', '耗时（分钟）'],
+                    ['数字人生成', 10.2],
+                    ['语音合成', 7.6],
+                    ['光标定位', 3.8],
+                    ['合成视频', 1.7],
+                    ['结构化正文', 1.4],
+                    ['生成幻灯片', 1.3],
+                    ['生成讲稿与光标描述', 1.1],
+                ]}
+            />
+        </Box>
+
+        <Box style={{ height: 118, background: '#F7F9FC', border: '1px solid #D6DCE5', borderRadius: 6, padding: '14px 20px', flexDirection: 'row', gap: 24, alignItems: 'center' }}>
+            <Box style={{ flexDirection: 'column', gap: 3 }}>
+                <Text style={{ fontSize: 40, fontWeight: 'bold', color: '#1E4FA8', lineHeight: 1.05 }}>3.8</Text>
+                <Text style={{ fontSize: 14, color: '#4A5568', lineHeight: 1.35 }}>联网的<br />分钟数</Text>
+            </Box>
+            <Box style={{ width: 1, height: 66, background: '#D6DCE5' }} />
+            <Box style={{ flexDirection: 'column', gap: 3 }}>
+                <Text style={{ fontSize: 40, fontWeight: 'bold', color: '#8B97A8', lineHeight: 1.05 }}>23.3</Text>
+                <Text style={{ fontSize: 14, color: '#4A5568', lineHeight: 1.35 }}>本机 GPU 的<br />分钟数</Text>
+            </Box>
+            <Box style={{ width: 1, height: 66, background: '#D6DCE5' }} />
+            <Text style={{ flex: 1, fontSize: 16, color: '#1A2230', lineHeight: 1.45 }}>论文用多进程池把各页摊到 8 张卡上并行，每个进程各持一份完整权重——这在单卡上必然爆显存，只能改成串行、按阶段加载再卸载。峰值显存从 24GB 以上压到约 10GB，代价就是那个 6 倍加速我拿不到。搬到多卡服务器上，这个并行应该加回来。</Text>
+        </Box>
+    </Box>
+
+    <Box style={{ height: 48, padding: '0 40px', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text style={{ fontSize: 14, color: '#8B97A8' }}>数据来源：一次完整跑通的任务日志（result 与 job 记录一致）</Text>
+        <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#0E3F8C' }}>11 / 15</Text>
+    </Box>
+</Slide>

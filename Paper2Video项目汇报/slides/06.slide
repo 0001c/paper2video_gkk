@@ -1,0 +1,88 @@
+<Slide style={{ width: 1280, height: 720, display: 'flex', flexDirection: 'column', background: '#FFFFFF', fontFamily: "'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif", padding: 0 }}>
+    <Box style={{ height: 72, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '0 40px' }}>
+        <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#FFFFFF' }}>Paper2Video 项目汇报</Text>
+        <Text style={{ fontSize: 16, color: '#8FB6E8', letterSpacing: 2 }}>核心功能 1 / 3</Text>
+    </Box>
+
+    <Box style={{ flex: 1, flexDirection: 'column', padding: '24px 40px', gap: 16 }}>
+        <Box style={{ height: 44, flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+            <Box style={{ width: 5, height: 34, background: '#1E4FA8', borderRadius: 2 }} />
+            <Text style={{ fontSize: 36, fontWeight: 'bold', color: '#0E3F8C' }}>让输入没有门槛</Text>
+            <Text style={{ fontSize: 17, color: '#8B97A8', marginLeft: 6 }}>论文要求交一个 LaTeX 工程，可使用者手上只有 PDF 或 Word</Text>
+        </Box>
+
+        <Box style={{ height: 492, flexDirection: 'row', gap: 24 }}>
+            <Box style={{ width: 772, height: 492, flexDirection: 'column', gap: 16 }}>
+                <Box style={{ height: 104, background: '#F7F9FC', border: '1px solid #D6DCE5', borderRadius: 6, padding: 10 }}>
+                    <svg width={752} height={84} viewBox='0 0 752 84'>
+                        <rect x='0' y='12' width='220' height='60' rx='6' fill='#E8EFF8' stroke='#1E4FA8' strokeWidth='1' />
+                        <text x='110' y='34' fontSize='17' fill='#0E3F8C' textAnchor='middle' dominantBaseline='central'>PDF / Word / .zip</text>
+                        <text x='110' y='53' fontSize='14' fill='#4A5568' textAnchor='middle' dominantBaseline='central'>使用者真实拿得出来的东西</text>
+
+                        <line x1='226' y1='42' x2='262' y2='42' stroke='#1E4FA8' strokeWidth='1.5' />
+                        <path d='M262 42 L256 38 L256 46 Z' fill='#1E4FA8' />
+
+                        <rect x='270' y='12' width='210' height='60' rx='6' fill='#E8EFF8' stroke='#1E4FA8' strokeWidth='1' />
+                        <text x='375' y='34' fontSize='17' fill='#0E3F8C' textAnchor='middle' dominantBaseline='central'>提取正文</text>
+                        <text x='375' y='53' fontSize='14' fill='#4A5568' textAnchor='middle' dominantBaseline='central'>本地跑，不花 API 钱</text>
+
+                        <line x1='486' y1='42' x2='522' y2='42' stroke='#1E4FA8' strokeWidth='1.5' />
+                        <path d='M522 42 L516 38 L516 46 Z' fill='#1E4FA8' />
+
+                        <rect x='530' y='12' width='222' height='60' rx='6' fill='#E8EFF8' stroke='#1E4FA8' strokeWidth='1' />
+                        <text x='641' y='34' fontSize='17' fill='#0E3F8C' textAnchor='middle' dominantBaseline='central'>结构化成 main.tex</text>
+                        <text x='641' y='53' fontSize='14' fill='#4A5568' textAnchor='middle' dominantBaseline='central'>一次 API 调用，唯一花钱的一步</text>
+                    </svg>
+                </Box>
+
+                <Box style={{ height: 240, flexDirection: 'column', gap: 12 }}>
+                    <Box style={{ flex: 1, flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+                        <Box style={{ width: 5, height: 36, background: '#1E4FA8', borderRadius: 2, marginTop: 3 }} />
+                        <Box style={{ flex: 1, flexDirection: 'column', gap: 2 }}>
+                            <Text style={{ fontSize: 19, fontWeight: 'bold', color: '#1A2230' }}>不用 Office / WPS 的自动化接口</Text>
+                            <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.4 }}>它会连上你正开着的 WPS，然后挂死两分半钟——一律改成纯 Python 处理</Text>
+                        </Box>
+                    </Box>
+
+                    <Box style={{ flex: 1, flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+                        <Box style={{ width: 5, height: 36, background: '#1E4FA8', borderRadius: 2, marginTop: 3 }} />
+                        <Box style={{ flex: 1, flexDirection: 'column', gap: 2 }}>
+                            <Text style={{ fontSize: 19, fontWeight: 'bold', color: '#1A2230' }}>PDF 提取必须做"行合并"</Text>
+                            <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.4 }}>PDF 按列宽把一句话硬切成半句，不合并的话交给模型的是碎片</Text>
+                        </Box>
+                    </Box>
+
+                    <Box style={{ flex: 1, flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+                        <Box style={{ width: 5, height: 36, background: '#D9534F', borderRadius: 2, marginTop: 3 }} />
+                        <Box style={{ flex: 1, flexDirection: 'column', gap: 2 }}>
+                            <Text style={{ fontSize: 19, fontWeight: 'bold', color: '#1A2230' }}>三种格式里，PDF 反而最好用</Text>
+                            <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.4 }}>真实 Word 根本不用标题样式，docx 在结构上没有便宜可占</Text>
+                        </Box>
+                    </Box>
+                </Box>
+
+                <Box style={{ height: 116, background: '#E8EFF8', borderLeft: '4px solid #1E4FA8', borderRadius: 4, padding: '14px 18px', flexDirection: 'column', justifyContent: 'center', gap: 6 }}>
+                    <Text style={{ fontSize: 15, fontWeight: 'bold', color: '#0E3F8C', letterSpacing: 1 }}>判断</Text>
+                    <Text style={{ fontSize: 18, color: '#1A2230', lineHeight: 1.5 }}>第三个结论和直觉相反。我一开始也以为结构更规整的 docx 会更好，实测之后才发现 PDF 的噪声最少，所以现在默认优先用 PDF。</Text>
+                </Box>
+            </Box>
+
+            <Box style={{ width: 404, height: 492, flexDirection: 'column', gap: 10 }}>
+                <Box style={{ width: 404, height: 264, background: '#F7F9FC', border: '1px solid #D6DCE5', borderRadius: 6, padding: 8 }}>
+                    <Image src='assets/slide_real_02.png' style={{ width: 388, height: 248, objectFit: 'contain' }} />
+                </Box>
+                <Text style={{ fontSize: 13, color: '#8B97A8', lineHeight: 1.4 }}>本机流水线真实渲染出来的幻灯片（第 2 页），位于转换层下游</Text>
+
+                <Box style={{ flex: 1, background: '#F7F9FC', border: '1px solid #D6DCE5', borderRadius: 6, padding: '12px 16px', flexDirection: 'column', justifyContent: 'center', gap: 4 }}>
+                    <Text style={{ fontSize: 58, fontWeight: 'bold', color: '#1E4FA8', lineHeight: 1.05 }}>1.3%</Text>
+                    <Text style={{ fontSize: 14, color: '#4A5568', lineHeight: 1.45 }}>结构化撞到输出上限时被截掉的正文比例（本机实测）。截断点选在最后一个环境配平的位置，补上结束标记后照样编译通过。</Text>
+                </Box>
+            </Box>
+        </Box>
+    </Box>
+
+    <Box style={{ height: 48, padding: '0 40px', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text style={{ fontSize: 14, color: '#8B97A8' }}>结构化输出上限 65536 token，超限先续写最多 3 轮，仍不全才截断</Text>
+        <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#0E3F8C' }}>06 / 15</Text>
+    </Box>
+</Slide>

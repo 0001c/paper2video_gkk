@@ -1,0 +1,100 @@
+<Slide style={{ width: 1280, height: 720, display: 'flex', flexDirection: 'column', background: '#FFFFFF', fontFamily: "'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif", padding: 0 }}>
+    <Box style={{ height: 72, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '0 40px' }}>
+        <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#FFFFFF' }}>Paper2Video 项目汇报</Text>
+        <Text style={{ fontSize: 16, color: '#8FB6E8', letterSpacing: 2 }}>难点 1 / 4</Text>
+    </Box>
+
+    <Box style={{ flex: 1, flexDirection: 'column', padding: '24px 40px', gap: 16 }}>
+        <Box style={{ height: 44, flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+            <Box style={{ width: 5, height: 34, background: '#1E4FA8', borderRadius: 2 }} />
+            <Text style={{ fontSize: 36, fontWeight: 'bold', color: '#0E3F8C' }}>数字人换了三次</Text>
+            <Text style={{ fontSize: 17, color: '#8B97A8', marginLeft: 6 }}>论文用的那个，在这张卡上一步都走不动</Text>
+        </Box>
+
+        <Box style={{ height: 492, flexDirection: 'row', gap: 24 }}>
+            <Box style={{ width: 660, height: 492, flexDirection: 'column', gap: 12 }}>
+                <Box style={{ width: 660, height: 316, flexDirection: 'row', gap: 22 }}>
+                    <Box style={{ width: 205, height: 316, background: '#F7F9FC', border: '1px solid #D6DCE5', borderRadius: 6, padding: 4 }}>
+                        <Image src='assets/dh_frame_00.png' style={{ width: 195, height: 306, objectFit: 'cover' }} />
+                    </Box>
+                    <Box style={{ width: 205, height: 316, background: '#F7F9FC', border: '1px solid #D6DCE5', borderRadius: 6, padding: 4 }}>
+                        <Image src='assets/dh_frame_06.png' style={{ width: 195, height: 306, objectFit: 'cover' }} />
+                    </Box>
+                    <Box style={{ width: 205, height: 316, background: '#F7F9FC', border: '1px solid #D6DCE5', borderRadius: 6, padding: 4 }}>
+                        <Image src='assets/dh_frame_14.png' style={{ width: 195, height: 306, objectFit: 'cover' }} />
+                    </Box>
+                </Box>
+
+                <Text style={{ fontSize: 14, color: '#8B97A8', lineHeight: 1.4 }}>从本机跑出来的数字人片段里抽的帧：第 1 页、第 7 页、第 15 页。是产物，不是效果图。</Text>
+
+                <Box style={{ flex: 1, background: '#E8EFF8', borderLeft: '4px solid #1E4FA8', borderRadius: 4, padding: '14px 18px', flexDirection: 'row', alignItems: 'center', gap: 26 }}>
+                    <Box style={{ flexDirection: 'column', gap: 2 }}>
+                        <Text style={{ fontSize: 44, fontWeight: 'bold', color: '#0E3F8C', lineHeight: 1.05 }}>3.8GB</Text>
+                        <Text style={{ fontSize: 14, color: '#4A5568' }}>最终模型的权重体积</Text>
+                    </Box>
+                    <Box style={{ width: 1, height: 58, background: '#B5D4F4' }} />
+                    <Box style={{ flexDirection: 'column', gap: 2 }}>
+                        <Text style={{ fontSize: 44, fontWeight: 'bold', color: '#0E3F8C', lineHeight: 1.05 }}>1024</Text>
+                        <Text style={{ fontSize: 14, color: '#4A5568' }}>注意力序列长度，比上一代小约 1270 倍</Text>
+                    </Box>
+                </Box>
+            </Box>
+
+            <Box style={{ width: 516, height: 492, flexDirection: 'column', gap: 12 }}>
+                <Text style={{ fontSize: 18, color: '#1A2230', lineHeight: 1.45 }}>为了把数字人跑起来，我换过三次模型。每一次都是被一个具体的障碍挡下来的。</Text>
+
+                <Box style={{ height: 306, flexDirection: 'column', gap: 8 }}>
+                    <Box style={{ flex: 1, flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+                        <Box style={{ width: 24, height: 24, background: '#8B97A8', borderRadius: 4, alignItems: 'center', justifyContent: 'center' }}>
+                            <Text style={{ fontSize: 14, fontWeight: 'bold', color: '#FFFFFF' }}>1</Text>
+                        </Box>
+                        <Box style={{ flex: 1, flexDirection: 'column', gap: 2 }}>
+                            <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1A2230' }}>Hallo2 · 论文原方案</Text>
+                            <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.4 }}>锁死 CUDA 11.8，编译目标里根本没有这台卡，直接出局</Text>
+                        </Box>
+                    </Box>
+
+                    <Box style={{ flex: 1, flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+                        <Box style={{ width: 24, height: 24, background: '#8B97A8', borderRadius: 4, alignItems: 'center', justifyContent: 'center' }}>
+                            <Text style={{ fontSize: 14, fontWeight: 'bold', color: '#FFFFFF' }}>2</Text>
+                        </Box>
+                        <Box style={{ flex: 1, flexDirection: 'column', gap: 2 }}>
+                            <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1A2230' }}>InfiniteTalk</Text>
+                            <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.4 }}>用 fp8 加载会触发算子现场编译，而本机编译器不认识新的计算能力代号</Text>
+                        </Box>
+                    </Box>
+
+                    <Box style={{ flex: 1, flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+                        <Box style={{ width: 24, height: 24, background: '#8B97A8', borderRadius: 4, alignItems: 'center', justifyContent: 'center' }}>
+                            <Text style={{ fontSize: 14, fontWeight: 'bold', color: '#FFFFFF' }}>3</Text>
+                        </Box>
+                        <Box style={{ flex: 1, flexDirection: 'column', gap: 2 }}>
+                            <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1A2230' }}>LongCat-Video-Avatar</Text>
+                            <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.4 }}>不用现场编译了，但权重 41.7GB、依赖一个装不上的注意力库，单卡放不下</Text>
+                        </Box>
+                    </Box>
+
+                    <Box style={{ flex: 1, flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+                        <Box style={{ width: 24, height: 24, background: '#1E4FA8', borderRadius: 4, alignItems: 'center', justifyContent: 'center' }}>
+                            <Text style={{ fontSize: 14, fontWeight: 'bold', color: '#FFFFFF' }}>4</Text>
+                        </Box>
+                        <Box style={{ flex: 1, flexDirection: 'column', gap: 2 }}>
+                            <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#0E3F8C' }}>MuseTalk · 现在用的</Text>
+                            <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.4 }}>只做人脸那 256×256 一块，注意力序列短了三个数量级，用标准实现就够</Text>
+                        </Box>
+                    </Box>
+                </Box>
+
+                <Box style={{ flex: 1, background: '#F7F9FC', border: '1px solid #D6DCE5', borderRadius: 6, padding: '12px 16px', flexDirection: 'column', justifyContent: 'center', gap: 4 }}>
+                    <Text style={{ fontSize: 15, fontWeight: 'bold', color: '#1E4FA8', letterSpacing: 1 }}>代价说清楚</Text>
+                    <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.45 }}>这三次不是反复试错，是障碍一个一个被排除。MuseTalk 只做头部，画质不如论文原来那个——这是换来的代价。</Text>
+                </Box>
+            </Box>
+        </Box>
+    </Box>
+
+    <Box style={{ height: 48, padding: '0 40px', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text style={{ fontSize: 14, color: '#8B97A8' }}>序列长度对比：LongCat 36480 → MuseTalk 1024</Text>
+        <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#0E3F8C' }}>09 / 15</Text>
+    </Box>
+</Slide>

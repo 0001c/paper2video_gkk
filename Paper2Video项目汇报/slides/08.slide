@@ -1,0 +1,66 @@
+<Slide style={{ width: 1280, height: 720, display: 'flex', flexDirection: 'column', background: '#FFFFFF', fontFamily: "'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif", padding: 0 }}>
+    <Box style={{ height: 72, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '0 40px' }}>
+        <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#FFFFFF' }}>Paper2Video 项目汇报</Text>
+        <Text style={{ fontSize: 16, color: '#8FB6E8', letterSpacing: 2 }}>核心功能 3 / 3</Text>
+    </Box>
+
+    <Box style={{ flex: 1, flexDirection: 'column', padding: '24px 40px', gap: 16 }}>
+        <Box style={{ height: 44, flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+            <Box style={{ width: 5, height: 34, background: '#1E4FA8', borderRadius: 2 }} />
+            <Text style={{ fontSize: 36, fontWeight: 'bold', color: '#0E3F8C' }}>网页能点，钱花得明白</Text>
+            <Text style={{ fontSize: 17, color: '#8B97A8', marginLeft: 6 }}>命令行没人会用，所以包了一层网页；同时把花钱的两步缓存起来</Text>
+        </Box>
+
+        <Box style={{ height: 492, flexDirection: 'row', gap: 24 }}>
+            <Box style={{ width: 372, height: 492, background: '#E8EFF8', borderLeft: '5px solid #1E4FA8', borderRadius: 6, padding: '30px 26px', flexDirection: 'column', justifyContent: 'space-between' }}>
+                <Box style={{ flexDirection: 'column', gap: 8 }}>
+                    <Text style={{ fontSize: 15, color: '#1E4FA8', letterSpacing: 2 }}>讲稿在总花费里的占比</Text>
+                    <Text style={{ fontSize: 76, fontWeight: 'bold', color: '#0E3F8C', lineHeight: 1.05 }}>37–76%</Text>
+                    <Text style={{ fontSize: 16, color: '#4A5568', lineHeight: 1.5 }}>幻灯片返工越多，这个比例越低——钱转移到了幻灯片那一侧</Text>
+                </Box>
+
+                <Box style={{ flexDirection: 'column', gap: 8 }}>
+                    <Box style={{ height: 1, background: '#B5D4F4' }} />
+                    <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.5 }}>一篇论文的 API token 总量</Text>
+                    <Text style={{ fontSize: 26, fontWeight: 'bold', color: '#0E3F8C' }}>4.8 万 – 10.9 万</Text>
+                </Box>
+            </Box>
+
+            <Box style={{ width: 780, height: 492, flexDirection: 'column', gap: 14 }}>
+                <Text style={{ fontSize: 18, color: '#1A2230', lineHeight: 1.5 }}>整条链路只有两步要联网花钱：把正文结构化成 LaTeX 工程，以及看幻灯片写讲稿。这两步的产物都按输入指纹存下来了，同一份论文同参数重跑，API 费用为零。</Text>
+
+                <Box style={{ height: 240, background: '#F7F9FC', border: '1px solid #D6DCE5', borderRadius: 6, padding: '8px 12px' }}>
+                    <Chart
+                        style={{ width: '100%', height: 224 }}
+                        chartType='barChart'
+                        grouping='stacked'
+                        title='三个真实样本的 token 构成'
+                        titleColor='#0E3F8C'
+                        showLegend={true}
+                        showDataLabels={true}
+                        legendColor='#4A5568'
+                        axisColor='#8B97A8'
+                        dataLabelColor='#1A2230'
+                        colors={['#1E4FA8', '#85B7EB']}
+                        data={[
+                            ['样本', '幻灯片桶', '讲稿桶'],
+                            ['英文论文 · 无返工', 13265, 42343],
+                            ['中文论文 · 1 次返工', 38391, 31569],
+                            ['中文论文 · 多次返工', 68409, 40241],
+                        ]}
+                    />
+                </Box>
+
+                <Box style={{ flex: 1, background: '#F7F9FC', border: '1px solid #D6DCE5', borderRadius: 6, padding: '14px 18px', flexDirection: 'column', justifyContent: 'center', gap: 6 }}>
+                    <Text style={{ fontSize: 15, fontWeight: 'bold', color: '#1E4FA8', letterSpacing: 1 }}>为什么要把区间写出来</Text>
+                    <Text style={{ fontSize: 16, color: '#4A5568', lineHeight: 1.45 }}>我早期的笔记里只有一个数：约 5.6 万 token，讲稿占 76%。后来把全部样本统计了一遍才发现，那只是一个幻灯片一次都没返工的样本。幻灯片一旦要改，总花费接近翻倍，占比结构也跟着变。所以我把它改成了区间。</Text>
+                </Box>
+            </Box>
+        </Box>
+    </Box>
+
+    <Box style={{ height: 48, padding: '0 40px', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text style={{ fontSize: 14, color: '#8B97A8' }}>数据来源：各任务的 token.json，按"幻灯片桶 + 讲稿桶"统计</Text>
+        <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#0E3F8C' }}>08 / 15</Text>
+    </Box>
+</Slide>

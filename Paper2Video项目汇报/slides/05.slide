@@ -1,0 +1,93 @@
+<Slide style={{ width: 1280, height: 720, display: 'flex', flexDirection: 'column', background: '#FFFFFF', fontFamily: "'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif", padding: 0 }}>
+    <Box style={{ height: 72, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '0 40px' }}>
+        <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#FFFFFF' }}>Paper2Video 项目汇报</Text>
+        <Text style={{ fontSize: 16, color: '#8FB6E8', letterSpacing: 2 }}>架构</Text>
+    </Box>
+
+    <Box style={{ flex: 1, flexDirection: 'column', padding: '24px 40px', gap: 16 }}>
+        <Box style={{ height: 44, flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+            <Box style={{ width: 5, height: 34, background: '#1E4FA8', borderRadius: 2 }} />
+            <Text style={{ fontSize: 36, fontWeight: 'bold', color: '#0E3F8C' }}>改在哪一层</Text>
+            <Text style={{ fontSize: 17, color: '#8B97A8', marginLeft: 6 }}>分三层看：哪一层是我们加的，哪一层原样不动</Text>
+        </Box>
+
+        <Box style={{ height: 300, background: '#F7F9FC', border: '1px solid #D6DCE5', borderRadius: 6, padding: 10 }}>
+            <svg width={1180} height={280} viewBox='0 0 1180 280'>
+                <text x='0' y='13' fontSize='15' fill='#8B97A8'>① 我们自己加的输入层 —— 论文里没有这一层，因为论文的输入就是它自带的 LaTeX 工程</text>
+                <rect x='0' y='22' width='265' height='52' rx='6' fill='#E8EFF8' stroke='#1E4FA8' strokeWidth='1' />
+                <text x='132' y='45' fontSize='17' fill='#0E3F8C' textAnchor='middle' dominantBaseline='central'>PDF / Word / .zip</text>
+                <text x='132' y='62' fontSize='14' fill='#4A5568' textAnchor='middle' dominantBaseline='central'>使用者手上真实有的东西</text>
+
+                <rect x='305' y='22' width='265' height='52' rx='6' fill='#E8EFF8' stroke='#1E4FA8' strokeWidth='1' />
+                <text x='437' y='45' fontSize='17' fill='#0E3F8C' textAnchor='middle' dominantBaseline='central'>paper_ingest</text>
+                <text x='437' y='62' fontSize='14' fill='#4A5568' textAnchor='middle' dominantBaseline='central'>提正文 · 本地跑，不花钱</text>
+
+                <rect x='610' y='22' width='265' height='52' rx='6' fill='#E8EFF8' stroke='#1E4FA8' strokeWidth='1' />
+                <text x='742' y='45' fontSize='17' fill='#0E3F8C' textAnchor='middle' dominantBaseline='central'>paper_struct</text>
+                <text x='742' y='62' fontSize='14' fill='#4A5568' textAnchor='middle' dominantBaseline='central'>结构化成 main.tex · 唯一花钱</text>
+
+                <rect x='915' y='22' width='265' height='52' rx='6' fill='#E8EFF8' stroke='#1E4FA8' strokeWidth='1' />
+                <text x='1047' y='45' fontSize='17' fill='#0E3F8C' textAnchor='middle' dominantBaseline='central'>LaTeX 工程</text>
+                <text x='1047' y='62' fontSize='14' fill='#4A5568' textAnchor='middle' dominantBaseline='central'>main.tex + figures/</text>
+
+                <text x='0' y='104' fontSize='15' fill='#8B97A8'>② 上游 PaperTalker 的四个 builder —— 分工和算法我们一个字没改</text>
+                <rect x='0' y='112' width='280' height='48' rx='6' fill='#FFFFFF' stroke='#D6DCE5' strokeWidth='1' />
+                <text x='140' y='136' fontSize='17' fill='#4A5568' textAnchor='middle' dominantBaseline='central'>Slide builder</text>
+
+                <rect x='300' y='112' width='280' height='48' rx='6' fill='#FFFFFF' stroke='#D6DCE5' strokeWidth='1' />
+                <text x='440' y='136' fontSize='17' fill='#4A5568' textAnchor='middle' dominantBaseline='central'>Subtitle builder</text>
+
+                <rect x='600' y='112' width='280' height='48' rx='6' fill='#FFFFFF' stroke='#D6DCE5' strokeWidth='1' />
+                <text x='740' y='136' fontSize='17' fill='#4A5568' textAnchor='middle' dominantBaseline='central'>Cursor builder</text>
+
+                <rect x='900' y='112' width='280' height='48' rx='6' fill='#FFFFFF' stroke='#D6DCE5' strokeWidth='1' />
+                <text x='1040' y='136' fontSize='17' fill='#4A5568' textAnchor='middle' dominantBaseline='central'>Talker builder</text>
+
+                <line x1='140' y1='160' x2='140' y2='178' stroke='#8B97A8' strokeWidth='1' strokeDasharray='3 3' />
+                <line x1='440' y1='160' x2='440' y2='178' stroke='#8B97A8' strokeWidth='1' strokeDasharray='3 3' />
+                <line x1='740' y1='160' x2='740' y2='178' stroke='#8B97A8' strokeWidth='1' strokeDasharray='3 3' />
+                <line x1='1040' y1='160' x2='1040' y2='178' stroke='#8B97A8' strokeWidth='1' strokeDasharray='3 3' />
+
+                <text x='0' y='194' fontSize='15' fill='#8B97A8'>③ 我们贴在各模块上的改动 —— 按模块对号入座</text>
+                <rect x='0' y='202' width='280' height='56' rx='6' fill='#E8EFF8' stroke='#1E4FA8' strokeWidth='1' />
+                <text x='140' y='222' fontSize='16' fill='#0E3F8C' textAnchor='middle' dominantBaseline='central'>修 5 处编码</text>
+                <text x='140' y='242' fontSize='14' fill='#4A5568' textAnchor='middle' dominantBaseline='central'>接线论文配图清单</text>
+
+                <rect x='300' y='202' width='280' height='56' rx='6' fill='#E8EFF8' stroke='#1E4FA8' strokeWidth='1' />
+                <text x='440' y='222' fontSize='16' fill='#0E3F8C' textAnchor='middle' dominantBaseline='central'>退化护栏</text>
+                <text x='440' y='242' fontSize='14' fill='#4A5568' textAnchor='middle' dominantBaseline='central'>重试 + 判空 + 判完整性</text>
+
+                <rect x='600' y='202' width='280' height='56' rx='6' fill='#E8EFF8' stroke='#1E4FA8' strokeWidth='1' />
+                <text x='740' y='222' fontSize='16' fill='#0E3F8C' textAnchor='middle' dominantBaseline='central'>换 GUI-Owl</text>
+                <text x='740' y='242' fontSize='14' fill='#4A5568' textAnchor='middle' dominantBaseline='central'>逐条上报进度</text>
+
+                <rect x='900' y='202' width='280' height='56' rx='6' fill='#E8EFF8' stroke='#1E4FA8' strokeWidth='1' />
+                <text x='1040' y='222' fontSize='16' fill='#0E3F8C' textAnchor='middle' dominantBaseline='central'>换 MuseTalk</text>
+                <text x='1040' y='242' fontSize='14' fill='#4A5568' textAnchor='middle' dominantBaseline='central'>偶数尺寸补丁 + 音频指纹</text>
+            </svg>
+        </Box>
+
+        <Box style={{ height: 176, flexDirection: 'row', gap: 20 }}>
+            <Box style={{ width: 590, height: 176, background: '#F7F9FC', border: '1px solid #D6DCE5', borderRadius: 6, padding: '16px 20px', flexDirection: 'column', justifyContent: 'space-between' }}>
+                <Box style={{ flexDirection: 'column', gap: 6 }}>
+                    <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#0E3F8C' }}>改动的规模</Text>
+                    <Text style={{ fontSize: 16, color: '#4A5568', lineHeight: 1.5 }}>对上游目录一共 20 个文件：12 个是修改，8 个是新增。改动集中在输入层、平台适配和静默失败修复，算法主干原样保留——动了主干，就不好说自己在复现论文了。</Text>
+                </Box>
+                <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#1E4FA8' }}>+3552 行 / -260 行</Text>
+            </Box>
+
+            <Box style={{ width: 590, height: 176, background: '#F7F9FC', border: '1px solid #D6DCE5', borderRadius: 6, padding: '16px 20px', flexDirection: 'column', justifyContent: 'space-between' }}>
+                <Box style={{ flexDirection: 'column', gap: 6 }}>
+                    <Text style={{ fontSize: 22, fontWeight: 'bold', color: '#0E3F8C' }}>刻意没动的部分</Text>
+                    <Text style={{ fontSize: 16, color: '#4A5568', lineHeight: 1.5 }}>四个 builder 的分工、树搜索的算法、按页独立生成的思路都保持原样。对上游的补丁随本仓库版本库一起走，搬到服务器上不用手工重打一遍。</Text>
+                </Box>
+                <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#1E4FA8' }}>算法主干 0 处改动</Text>
+            </Box>
+        </Box>
+    </Box>
+
+    <Box style={{ height: 48, padding: '0 40px', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text style={{ fontSize: 14, color: '#8B97A8' }}>改动量统计口径：首次引入上游代码的提交到当前版本</Text>
+        <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#0E3F8C' }}>05 / 15</Text>
+    </Box>
+</Slide>

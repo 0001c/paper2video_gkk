@@ -1,0 +1,81 @@
+<Slide style={{ width: 1280, height: 720, display: 'flex', flexDirection: 'column', background: '#FFFFFF', fontFamily: "'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif", padding: 0 }}>
+    <Box style={{ height: 72, background: '#0E3F8C', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: '0 40px' }}>
+        <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#FFFFFF' }}>Paper2Video 项目汇报</Text>
+        <Text style={{ fontSize: 16, color: '#8FB6E8', letterSpacing: 2 }}>背景</Text>
+    </Box>
+
+    <Box style={{ flex: 1, flexDirection: 'column', padding: '24px 40px', gap: 16 }}>
+        <Box style={{ height: 44, flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+            <Box style={{ width: 5, height: 34, background: '#1E4FA8', borderRadius: 2 }} />
+            <Text style={{ fontSize: 36, fontWeight: 'bold', color: '#0E3F8C' }}>这件事难在哪</Text>
+            <Text style={{ fontSize: 17, color: '#8B97A8', marginLeft: 6 }}>学术会议要求作者交 2 到 10 分钟的演讲视频，手工做一条要几个小时</Text>
+        </Box>
+
+        <Box style={{ height: 412, flexDirection: 'row', gap: 28 }}>
+            <Box style={{ width: 688, height: 412, flexDirection: 'column', gap: 10 }}>
+                <Box style={{ width: 688, height: 378, background: '#F7F9FC', border: '1px solid #D6DCE5', borderRadius: 6, padding: 8 }}>
+                    <Image src='assets/paper_method.png' style={{ width: 672, height: 362, objectFit: 'contain' }} />
+                </Box>
+                <Text style={{ fontSize: 14, color: '#8B97A8' }}>论文 PaperTalker 的方法总览：四个 builder 串成一条链（截自论文原图）</Text>
+            </Box>
+
+            <Box style={{ width: 444, height: 412, flexDirection: 'column', gap: 10 }}>
+                <Text style={{ fontSize: 24, fontWeight: 'bold', color: '#1E4FA8' }}>四件事必须同时对</Text>
+
+                <Box style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+                    <Box style={{ width: 28, height: 28, background: '#1E4FA8', borderRadius: 4, alignItems: 'center', justifyContent: 'center' }}>
+                        <Text style={{ fontSize: 15, fontWeight: 'bold', color: '#FFFFFF' }}>1</Text>
+                    </Box>
+                    <Box style={{ flex: 1, flexDirection: 'column', gap: 2 }}>
+                        <Text style={{ fontSize: 19, fontWeight: 'bold', color: '#1A2230' }}>幻灯片</Text>
+                        <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.4 }}>要有能看的图表和标题，不是把正文搬上去</Text>
+                    </Box>
+                </Box>
+
+                <Box style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+                    <Box style={{ width: 28, height: 28, background: '#1E4FA8', borderRadius: 4, alignItems: 'center', justifyContent: 'center' }}>
+                        <Text style={{ fontSize: 15, fontWeight: 'bold', color: '#FFFFFF' }}>2</Text>
+                    </Box>
+                    <Box style={{ flex: 1, flexDirection: 'column', gap: 2 }}>
+                        <Text style={{ fontSize: 19, fontWeight: 'bold', color: '#1A2230' }}>字幕</Text>
+                        <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.4 }}>每一句都要跟当前这张幻灯片对得上</Text>
+                    </Box>
+                </Box>
+
+                <Box style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+                    <Box style={{ width: 28, height: 28, background: '#1E4FA8', borderRadius: 4, alignItems: 'center', justifyContent: 'center' }}>
+                        <Text style={{ fontSize: 15, fontWeight: 'bold', color: '#FFFFFF' }}>3</Text>
+                    </Box>
+                    <Box style={{ flex: 1, flexDirection: 'column', gap: 2 }}>
+                        <Text style={{ fontSize: 19, fontWeight: 'bold', color: '#1A2230' }}>光标</Text>
+                        <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.4 }}>跟着正在讲的那句话，指向画面里正确的位置</Text>
+                    </Box>
+                </Box>
+
+                <Box style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+                    <Box style={{ width: 28, height: 28, background: '#1E4FA8', borderRadius: 4, alignItems: 'center', justifyContent: 'center' }}>
+                        <Text style={{ fontSize: 15, fontWeight: 'bold', color: '#FFFFFF' }}>4</Text>
+                    </Box>
+                    <Box style={{ flex: 1, flexDirection: 'column', gap: 2 }}>
+                        <Text style={{ fontSize: 19, fontWeight: 'bold', color: '#1A2230' }}>数字人</Text>
+                        <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.4 }}>用作者的头像和声音讲，口型还得对</Text>
+                    </Box>
+                </Box>
+
+                <Box style={{ flex: 1, background: '#E8EFF8', borderLeft: '4px solid #1E4FA8', borderRadius: 4, padding: '12px 16px', justifyContent: 'center' }}>
+                    <Text style={{ fontSize: 17, color: '#1A2230', lineHeight: 1.5 }}>难的不是"生成一段视频"，是让这四个通道互相对齐。论文的实测里，端到端模型只能出 8 秒，文字还是糊的。</Text>
+                </Box>
+            </Box>
+        </Box>
+
+        <Box style={{ height: 64, background: '#0E3F8C', borderRadius: 6, padding: '0 22px', flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+            <Text style={{ fontSize: 15, fontWeight: 'bold', color: '#8FB6E8' }}>论文给的答案</Text>
+            <Text style={{ fontSize: 19, color: '#FFFFFF' }}>PaperTalker 四个 builder + 101 篇论文的评测基准，四项指标衡量"讲得怎么样"</Text>
+        </Box>
+    </Box>
+
+    <Box style={{ height: 48, padding: '0 40px', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text style={{ fontSize: 14, color: '#8B97A8' }}>论文：arXiv 2510.05096v2（Show Lab, NUS）</Text>
+        <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#0E3F8C' }}>02 / 15</Text>
+    </Box>
+</Slide>

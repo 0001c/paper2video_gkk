@@ -925,10 +925,15 @@ export default function App() {
                   checked={ifTreeSearch}
                   onChange={(e) => setIfTreeSearch(e.target.checked)}
                 />
-                <span>
-                  开启{treeToggle.note ? `（${treeToggle.note}）` : ""}
-                </span>
+                {/* "开启"是界面动作词（前端的事）；开关的**语义**（它是什么、默认如何、
+                    花多少）全部来自后端 —— 那才是会随实现漂的部分。 */}
+                <span>开启</span>
               </label>
+              {treeToggle.note && (
+                <span className="section-note" style={{ marginLeft: 10 }}>
+                  {treeToggle.note}
+                </span>
+              )}
               {treeToggle.hint && <div className="hint">{treeToggle.hint}</div>}
               {/* 成本只在开启时用强调色说出来：关着的时候反复念成本是噪音。 */}
               {ifTreeSearch && treeToggle.cost && (

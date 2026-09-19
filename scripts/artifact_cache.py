@@ -51,6 +51,9 @@ CACHE_VERSION = "1"
 STRUCT_FIELDS = ("v", "source_sha1", "paper_type", "llm_model")
 # deck：幻灯片与讲稿看「main.tex + 两种语言 + 论文类型 + 两个模型 + 数字人档位」。
 # 同样刻意**不含**人像/音色：换头像换声音不影响这几页幻灯片与讲稿。
+# ⚠️ `--if_tree_search`（幻灯片布局微调）目前被 `_build_argv` 写死 False，所以是常量、
+#    不必进字段表。**哪天把它做成可配置项，就必须加进 DECK_FIELDS** ——
+#    它改变 stage 1 的幻灯片产物，漏加就是"输入不同却命中"的静默错误。
 DECK_FIELDS = ("v", "main_tex_sha1", "slide_lang", "script_lang", "paper_type",
                "llm_model", "vlm_model", "talking_profile")
 

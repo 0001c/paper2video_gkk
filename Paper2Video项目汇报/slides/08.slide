@@ -7,60 +7,60 @@
     <Box style={{ flex: 1, flexDirection: 'column', padding: '24px 40px', gap: 16 }}>
         <Box style={{ height: 44, flexDirection: 'row', alignItems: 'center', gap: 16 }}>
             <Box style={{ width: 5, height: 34, background: '#1E4FA8', borderRadius: 2 }} />
-            <Text style={{ fontSize: 36, fontWeight: 'bold', color: '#0E3F8C' }}>网页能点，钱花得明白</Text>
-            <Text style={{ fontSize: 17, color: '#8B97A8', marginLeft: 6 }}>命令行没人会用，所以包了一层网页；同时把花钱的两步缓存起来</Text>
+            <Text style={{ fontSize: 36, fontWeight: 'bold', color: '#0E3F8C' }}>网页能点，钱花在明处</Text>
+            <Text style={{ fontSize: 17, color: '#8B97A8', marginLeft: 6 }}>要联网的只有三步，产物按输入指纹存下来</Text>
         </Box>
 
         <Box style={{ height: 492, flexDirection: 'row', gap: 24 }}>
             <Box style={{ width: 372, height: 492, background: '#E8EFF8', borderLeft: '5px solid #1E4FA8', borderRadius: 6, padding: '30px 26px', flexDirection: 'column', justifyContent: 'space-between' }}>
                 <Box style={{ flexDirection: 'column', gap: 8 }}>
-                    <Text style={{ fontSize: 15, color: '#1E4FA8', letterSpacing: 2 }}>讲稿在总花费里的占比</Text>
-                    <Text style={{ fontSize: 76, fontWeight: 'bold', color: '#0E3F8C', lineHeight: 1.05 }}>37–76%</Text>
-                    <Text style={{ fontSize: 16, color: '#4A5568', lineHeight: 1.5 }}>幻灯片返工越多，这个比例越低——钱转移到了幻灯片那一侧</Text>
+                    <Text style={{ fontSize: 15, color: '#1E4FA8', letterSpacing: 2 }}>同一篇论文 · 一次生成</Text>
+                    <Text style={{ fontSize: 76, fontWeight: 'bold', color: '#0E3F8C', lineHeight: 1.05 }}>6.9万</Text>
+                    <Text style={{ fontSize: 16, color: '#4A5568', lineHeight: 1.5 }}>幻灯片与讲稿这两步合计的 token，全部来自同一篇、同一次运行</Text>
                 </Box>
 
                 <Box style={{ flexDirection: 'column', gap: 8 }}>
                     <Box style={{ height: 1, background: '#B5D4F4' }} />
-                    <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.5 }}>一篇论文的 API token 总量</Text>
-                    <Text style={{ fontSize: 26, fontWeight: 'bold', color: '#0E3F8C' }}>4.8 万 – 10.9 万</Text>
+                    <Text style={{ fontSize: 15, color: '#4A5568', lineHeight: 1.5 }}>命中缓存后，同参数再跑一次</Text>
+                    <Text style={{ fontSize: 30, fontWeight: 'bold', color: '#0E3F8C' }}>0 次联网调用</Text>
                 </Box>
             </Box>
 
             <Box style={{ width: 780, height: 492, flexDirection: 'column', gap: 14 }}>
-                <Text style={{ fontSize: 18, color: '#1A2230', lineHeight: 1.5 }}>整条链路只有两步要联网花钱：把正文结构化成 LaTeX 工程，以及看幻灯片写讲稿。这两步的产物都按输入指纹存下来了，同一份论文同参数重跑，API 费用为零。</Text>
+                <Text style={{ fontSize: 18, color: '#1A2230', lineHeight: 1.5 }}>要调云端的是这三步：把正文结构化成 LaTeX 工程、生成幻灯片、写讲稿与光标描述。它们的产物各按输入指纹存一份，命中就整段跳过，不重复计费。</Text>
 
                 <Box style={{ height: 240, background: '#F7F9FC', border: '1px solid #D6DCE5', borderRadius: 6, padding: '8px 12px' }}>
                     <Chart
                         style={{ width: '100%', height: 224 }}
                         chartType='barChart'
-                        grouping='stacked'
-                        title='三个真实样本的 token 构成'
+                        barDirection='column'
+                        grouping='clustered'
+                        title='这一篇论文，钱花在哪（token）'
                         titleColor='#0E3F8C'
-                        showLegend={true}
+                        showLegend={false}
                         showDataLabels={true}
-                        legendColor='#4A5568'
                         axisColor='#8B97A8'
                         dataLabelColor='#1A2230'
-                        colors={['#1E4FA8', '#85B7EB']}
+                        colors={['#1E4FA8']}
                         data={[
-                            ['样本', '幻灯片桶', '讲稿桶'],
-                            ['英文论文 · 无返工', 13265, 42343],
-                            ['中文论文 · 1 次返工', 38391, 31569],
-                            ['中文论文 · 多次返工', 68409, 40241],
+                            ['环节', 'token'],
+                            ['生成幻灯片 · 首次', 28525],
+                            ['生成幻灯片 · 返工 1 次', 9866],
+                            ['讲稿与光标描述', 31569],
                         ]}
                     />
                 </Box>
 
                 <Box style={{ flex: 1, background: '#F7F9FC', border: '1px solid #D6DCE5', borderRadius: 6, padding: '14px 18px', flexDirection: 'column', justifyContent: 'center', gap: 6 }}>
-                    <Text style={{ fontSize: 15, fontWeight: 'bold', color: '#1E4FA8', letterSpacing: 1 }}>为什么要把区间写出来</Text>
-                    <Text style={{ fontSize: 16, color: '#4A5568', lineHeight: 1.45 }}>我早期的笔记里只有一个数：约 5.6 万 token，讲稿占 76%。后来把全部样本统计了一遍才发现，那只是一个幻灯片一次都没返工的样本。幻灯片一旦要改，总花费接近翻倍，占比结构也跟着变。所以我把它改成了区间。</Text>
+                    <Text style={{ fontSize: 15, fontWeight: 'bold', color: '#1E4FA8', letterSpacing: 1 }}>为什么只放同一篇的数据</Text>
+                    <Text style={{ fontSize: 16, color: '#4A5568', lineHeight: 1.45 }}>换一篇论文，token 数立刻被两件事改写：论文有多长，以及幻灯片要返工几次。所以不同论文之间的数字没法互相比较——这一页只给同一篇内部的构成，那才是能对齐着看的。</Text>
                 </Box>
             </Box>
         </Box>
     </Box>
 
     <Box style={{ height: 48, padding: '0 40px', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-        <Text style={{ fontSize: 14, color: '#8B97A8' }}>数据来源：各任务的 token.json，按"幻灯片桶 + 讲稿桶"统计</Text>
+        <Text style={{ fontSize: 14, color: '#8B97A8' }}>数据来源：一次完整跑通的任务，token.json 按"幻灯片桶 + 讲稿桶"拆分</Text>
         <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#0E3F8C' }}>08 / 15</Text>
     </Box>
 </Slide>

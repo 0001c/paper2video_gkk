@@ -58,7 +58,6 @@ type Options = {
   presets: (Opt & { slide_lang: string; script_lang: string })[];
   slide_langs: Opt[];
   script_langs: Opt[];
-  paper_types: Opt[];
   accept_formats: string[];
   phases: Phase[];
   /* 可选：后端老版本没有这个字段（静态前端由后端直接服务，两边短暂不同步是常态），
@@ -66,6 +65,9 @@ type Options = {
   toggles?: Toggle[];
   script_prompt_profiles?: ScriptPromptProfile[];
   script_prompt_max_chars?: number;
+  slide_prompts?: Record<string, string>;
+  slide_prompt_max_chars?: number;
+  slide_count?: { default: number; min: number; max: number };
   voice: Voices;
 };
 
@@ -330,9 +332,10 @@ export default function App() {
   const [preset, setPreset] = useState("zh");
   const [slideLang, setSlideLang] = useState("en");
   const [scriptLang, setScriptLang] = useState("zh");
-  const [paperType, setPaperType] = useState("auto");
   const [contentProfile, setContentProfile] = useState<ScriptPromptProfile["value"]>("paper");
   const [scriptPrompt, setScriptPrompt] = useState("");
+  const [slidePrompt, setSlidePrompt] = useState("");
+  const [slideCount, setSlideCount] = useState(12);
   const [generateTalking, setGenerateTalking] = useState(true);
   /* 幻灯片布局微调（树搜索）—— 默认关，与后端 `_build_argv` 的默认值一致。
      两边默认值必须相同：界面显示"未勾选"而后端当成 True 跑，就是在
@@ -516,6 +519,15 @@ export default function App() {
     if (promptTemplate) setScriptPrompt(promptTemplate);
   }, [promptTemplate]);
 
+  const slidePromptTemplate = useMemo(
+    () => opts?.slide_prompts?.[slideLang] ?? "",
+    [opts, slideLang],
+  );
+
+  useEffect(() => {
+    if (slidePromptTemplate) setSlidePrompt(slidePromptTemplate);
+  }, [slidePromptTemplate]);
+
   const doIngest = useCallback(async () => {
     if (!paperFile) return MessagePlugin.warning("请先选择内容文件");
     setIngesting(true);
@@ -593,7 +605,9 @@ export default function App() {
         stages: ["1", "2", "3"],
         slide_lang: slideLang,
         script_lang: scriptLang,
-        paper_type: paperType,
+        paper_type: "auto",
+        slide_count: slideCount,
+        slide_prompt: slidePrompt,
         content_profile: contentProfile,
         script_prompt: scriptPrompt,
         generate_talking: talkingWillRun,
@@ -617,8 +631,8 @@ export default function App() {
       else MessagePlugin.info(`已入队 · 音色：${data.voice_note}`);
     }
     if (data.talking_note) MessagePlugin.info(data.talking_note);
-  }, [ingest, portraitFile, generateTalking, apiKey, apiBase, slideLang, scriptLang, paperType,
-      contentProfile, scriptPrompt, opts, ifTreeSearch,
+  }, [ingest, portraitFile, generateTalking, apiKey, apiBase, slideLang, scriptLang,
+      contentProfile, scriptPrompt, slidePrompt, slideCount, opts, ifTreeSearch,
       voiceMode, presetPick, designPrompt, uploadSpec, uploadText, voiceSpecNow]);
 
   // 任务列表：每 5 秒刷新。本地工具，这点开销可以忽略，
@@ -754,7 +768,7 @@ export default function App() {
       <header className="masthead">
         <h1>内容自动讲解视频</h1>
         <p className="sub">
-          上传论文、电子书或课程材料，生成带配音、光标指引和可选数字人的讲解视频
+          上传文档、电子书、教材或故事内容，生成带配音、光标指引和可选数字人的讲解视频
         </p>
         <div className="meta">
           <span>Paper2Video</span>
@@ -965,7 +979,7 @@ export default function App() {
             />
           </div>
         </div>
-        <div className="grid" style={{ marginTop: 16 }}>
+        <div className="grid grid-2" style={{ marginTop: 16 }}>
           <div className="field">
             <label>讲解内容类型</label>
             <Select
@@ -980,6 +994,51 @@ export default function App() {
             <div className="hint">
               {(opts?.script_prompt_profiles ?? []).find((x) => x.value === contentProfile)?.desc}
             </div>
+          </div>
+          <div className="field">
+            <label>幻灯片页数</label>
+            <input
+              className="number-input"
+              type="number"
+              min={opts?.slide_count?.min ?? 4}
+              max={opts?.slide_count?.max ?? 40}
+              value={slideCount}
+              onChange={(e) => setSlideCount(Number(e.target.value) || 12)}
+              onBlur={() => setSlideCount(Math.min(
+                opts?.slide_count?.max ?? 40,
+                Math.max(opts?.slide_count?.min ?? 4, slideCount || 12),
+              ))}
+            />
+            <div className="hint">包含封面和结束页，可设置 4～40 页</div>
+          </div>
+        </div>
+        <div className="field" style={{ marginTop: 16 }}>
+          <div className="prompt-head">
+            <label>幻灯片生成提示词（可编辑）</label>
+            <span className="prompt-count">
+              {slidePrompt.length} / {opts?.slide_prompt_max_chars ?? 30000}
+            </span>
+          </div>
+          <textarea
+            className="prompt-editor slide-prompt-editor"
+            rows={12}
+            value={slidePrompt}
+            onChange={(e) => setSlidePrompt(e.target.value)}
+            placeholder="正在加载当前幻灯片语言的提示词模板…"
+          />
+          <div className="actions compact-actions">
+            <Button
+              variant="outline"
+              size="small"
+              disabled={!slidePromptTemplate || slidePrompt === slidePromptTemplate}
+              onClick={() => setSlidePrompt(slidePromptTemplate)}
+            >
+              恢复当前模板
+            </Button>
+            <span className="hint">
+              可修改内容结构、视觉风格和信息密度；页数会作为强约束自动附加。
+              请保留 LaTeX Beamer 的 <code>documentclass</code> 与 <code>frame</code> 输出要求。
+            </span>
           </div>
         </div>
         <div className="field" style={{ marginTop: 16 }}>
@@ -1011,62 +1070,28 @@ export default function App() {
             </span>
           </div>
         </div>
-        <div className="grid" style={{ marginTop: 16 }}>
-          <div className="field">
-            <label>源内容结构</label>
-            <RadioGroup value={paperType} onChange={(v) => setPaperType(v as string)}>
-              {(opts?.paper_types ?? []).map((x) => (
-                <Radio key={x.value} value={x.value}>
-                  {x.label}
-                </Radio>
-              ))}
-            </RadioGroup>
-            <div className="hint">
-              显式指定会覆盖模型的自主判断。人文社科论文若被误判成实验型，
-              会凭空生成实验数据 —— 这类错误事后很难补救，建议明确指定。
-            </div>
-          </div>
-        </div>
-        {/* 幻灯片布局微调（树搜索）：论文的核心机制之一，但默认关。
-            文案、默认值、成本口径全部来自 /api/options.toggles —— 见 Toggle 的说明。 */}
+        {/* 布局微调说明折叠进问号提示，避免一个复选框占据大段页面。 */}
         {treeToggle && (
-          <div className="grid" style={{ marginTop: 16 }}>
-            <div className="field">
-              <label>{treeToggle.label}</label>
-              <label className="checkline">
+          <div className="option-line" style={{ marginTop: 16 }}>
+              <label className="checkline option-check">
                 <input
                   type="checkbox"
                   checked={ifTreeSearch}
                   onChange={(e) => setIfTreeSearch(e.target.checked)}
                 />
-                {/* "开启"是界面动作词（前端的事）；开关的**语义**（它是什么、默认如何、
-                    花多少）全部来自后端 —— 那才是会随实现漂的部分。 */}
-                <span>开启</span>
+                <span>{treeToggle.label}</span>
               </label>
-              {treeToggle.note && (
-                <span className="section-note" style={{ marginLeft: 10 }}>
-                  {treeToggle.note}
+              <span className="help-tip" tabIndex={0} aria-label="查看布局微调说明">
+                ?
+                <span className="help-tip-content" role="tooltip">
+                  <b>{treeToggle.note}</b>
+                  {treeToggle.hint && <span>{treeToggle.hint}</span>}
+                  {treeToggle.cost && <span>额外消耗：{treeToggle.cost}</span>}
                 </span>
-              )}
-              {treeToggle.hint && <div className="hint">{treeToggle.hint}</div>}
-              {/* 成本只在开启时用强调色说出来：关着的时候反复念成本是噪音。 */}
-              {ifTreeSearch && treeToggle.cost && (
-                <div className="notice warn" style={{ marginTop: 8 }}>
-                  <span>
-                    <b>本次会额外消耗</b>　{treeToggle.cost}。
-                    耗时与费用都会明显高于默认设置，且只在<b>内容溢出</b>的幻灯片上发生
-                    （没有溢出就没有额外调用）。
-                  </span>
-                </div>
-              )}
-            </div>
+              </span>
+              {ifTreeSearch && <span className="option-active">已开启，将增加生成时间</span>}
           </div>
         )}
-        <div className="notice info">
-          <span>
-            注意：预设「英文幻灯片 + 中文讲解」中，<b>幻灯片仍是英文</b>，只有讲稿与字幕是中文。
-          </span>
-        </div>
       </section>
 
       {/* ③ 音色 —— 四种来源最终都归结为"一份参考音频 + 它的参考文本"。

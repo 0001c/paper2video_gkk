@@ -43,6 +43,13 @@ async def main_async():
     try:
         options = await web.api_options()
         profiles = options.get("script_prompt_profiles") or []
+        check("语言预设包含全中文",
+              any(p["slide_lang"] == "zh" and p["script_lang"] == "zh"
+                  for p in options.get("presets") or []))
+        check("下发中英文幻灯片提示词和页数范围",
+              all("\\documentclass" in text and "frame" in text
+                  for text in (options.get("slide_prompts") or {}).values())
+              and options.get("slide_count") == {"default": 12, "min": 4, "max": 40})
         check("下发五种独立讲稿内容模板",
               [p["value"] for p in profiles]
               == ["paper", "textbook", "story", "fiction_comic", "custom"])
@@ -68,6 +75,7 @@ async def main_async():
                 "paper_type": "auto",
                 "content_profile": "textbook",
                 "script_prompt": custom_prompt,
+                "slide_count": 9,
                 "generate_talking": True,
                 "voice": {"kind": "default"},
             },
@@ -89,6 +97,10 @@ async def main_async():
               os.path.basename(prompt_path or ""))
         check("任务只记录提示词路径与哈希，不在 job.json 重复全文",
               "script_prompt" not in cfg and bool(cfg.get("script_prompt_sha1")))
+        check("幻灯片提示词和页数按任务保存",
+              cfg.get("slide_count") == 9
+              and os.path.isfile(cfg.get("slide_prompt_path") or "")
+              and bool(cfg.get("slide_prompt_sha1")))
 
         argv = web._build_argv(job)
         check("命令行关闭数字人但仍保留 stage 3",
@@ -97,6 +109,9 @@ async def main_async():
         check("命令行传提示词文件且不传空人像",
               argv[argv.index("--script_prompt_file") + 1] == prompt_path
               and "--ref_img" not in argv)
+        check("命令行传幻灯片提示词与页数",
+              argv[argv.index("--slide_prompt_file") + 1] == cfg["slide_prompt_path"]
+              and argv[argv.index("--slide_count") + 1] == "9")
 
         progress_job = dict(job, status="running", phase_key="merge", phase="合成视频")
         progress = web.read_progress(progress_job)

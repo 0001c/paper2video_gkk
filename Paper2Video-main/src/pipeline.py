@@ -172,6 +172,10 @@ if __name__ == '__main__':
                         help='只指定讲稿/TTS/字幕语言（覆盖 --video_lang 的该轴）')
     parser.add_argument('--script_prompt_file', type=str, default=None,
                         help='自定义讲稿提示词文件（UTF-8）；不填则使用语言档位默认模板')
+    parser.add_argument('--slide_prompt_file', type=str, default=None,
+                        help='自定义幻灯片提示词文件（UTF-8）；不填则使用语言档位默认模板')
+    parser.add_argument('--slide_count', type=int, default=12,
+                        help='目标幻灯片页数（含封面与结束页）')
     parser.add_argument('--gpu_list', type=str2list, default="")
     parser.add_argument('--if_tree_search', type=str2bool, default=True)
     parser.add_argument('--reuse_script', type=str2bool, default=False,
@@ -250,7 +254,7 @@ if __name__ == '__main__':
     
     start_time = time.time() # start time
     if "1" in stage or  "0" in stage:
-        prompt_path = lang["slide_prompt"]
+        prompt_path = args.slide_prompt_file or lang["slide_prompt"]
         if progress_report:
             progress_report.report("slides", stage=1)
         # ⚠️ 上游这里的 if/else 有一条**永远会崩的分支**：else 里调用的
@@ -281,6 +285,15 @@ if __name__ == '__main__':
         # ⚠️ 没有图时下面是空串 ⇒ 提示词与"还没接提图"时**逐字节一致**，
         #    所以纯文字论文仍能命中旧的 deck 缓存（指纹里 figures 记为 `none`）。
         _slide_extra = slide_extra_prompt
+        _count_directive = (
+            "请生成恰好 {0} 页幻灯片（包含封面页与结束页）。在不虚构内容的前提下，"
+            "通过合并或拆分主题来满足页数；每个 frame 环境计为一页。".format(args.slide_count)
+            if lang.get("slide_lang") == "zh" else
+            "Generate exactly {0} slides, including the opening and closing slides. "
+            "Meet the count by combining or splitting supported topics without inventing content; "
+            "each frame environment counts as one slide.".format(args.slide_count)
+        )
+        _slide_extra = ((_slide_extra + "\n\n") if _slide_extra else "") + _count_directive
         if paper_figures is not None:
             _figures, _fig_note = paper_figures.extract(args.paper_source,
                                                         args.paper_latex_root)

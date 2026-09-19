@@ -147,6 +147,7 @@ html, body {
 /* 输入类控件的观感与 TDesign 对齐但更"扁" */
 .field input[type="text"],
 .field input[type="password"],
+.field input[type="number"],
 .field select,
 .field textarea {
   width: 100%;
@@ -188,6 +189,8 @@ html, body {
   line-height: 1.65;
   tab-size: 2;
 }
+.field .slide-prompt-editor { min-height: 220px; }
+.number-input { min-height: 34px; }
 .compact-actions { margin-top: 8px; }
 .compact-notice { margin-top: 0; min-height: 48px; }
 
@@ -235,6 +238,56 @@ html, body {
   font-size: 11.5px;
 }
 .material-skip strong { color: var(--paper-ink); font-size: 13.5px; font-weight: 500; }
+
+/* 紧凑的高级选项：说明按需悬浮展示，不再让一个复选框带着数行常驻文字。 */
+.option-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+}
+.option-check { color: var(--paper-ink); }
+.option-active { font-size: 11.5px; color: var(--paper-warn); }
+.help-tip {
+  position: relative;
+  width: 17px;
+  height: 17px;
+  border: 1px solid var(--paper-rule-strong);
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--paper-ink-soft);
+  font: 11px/1 var(--font-sans);
+  cursor: help;
+  outline: none;
+}
+.help-tip-content {
+  position: absolute;
+  z-index: 20;
+  left: 24px;
+  top: -10px;
+  width: min(420px, calc(100vw - 80px));
+  padding: 10px 12px;
+  border: 1px solid var(--paper-rule-strong);
+  background: var(--paper-surface);
+  color: var(--paper-ink-soft);
+  box-shadow: 0 5px 18px rgba(27, 39, 51, 0.12);
+  font-size: 11.5px;
+  line-height: 1.55;
+  visibility: hidden;
+  opacity: 0;
+  transform: translateY(3px);
+  transition: opacity 0.12s, transform 0.12s, visibility 0.12s;
+  pointer-events: none;
+}
+.help-tip-content > span { display: block; margin-top: 5px; }
+.help-tip:hover .help-tip-content,
+.help-tip:focus .help-tip-content {
+  visibility: visible;
+  opacity: 1;
+  transform: translateY(0);
+}
 
 /* ── 拖放上传区 ── */
 .dropzone {

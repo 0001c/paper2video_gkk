@@ -143,6 +143,11 @@ VIDEO_PRESETS = {
         "script_lang": "zh",
         "desc": "英文幻灯片 + 中文讲解（国内组会 / 中文答辩）",
     },
+    "zh_all": {
+        "slide_lang": "zh",
+        "script_lang": "zh",
+        "desc": "全中文（中文幻灯片 + 中文讲解）",
+    },
 }
 
 

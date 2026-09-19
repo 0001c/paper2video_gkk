@@ -63,6 +63,9 @@ app = FastAPI(title="Paper2Video Web", version="0.1.0")
 # 讲稿提示词模板：前端可编辑，但后端保留模板与安全边界
 # ──────────────────────────────────────────────────────────────
 SCRIPT_PROMPT_MAX_CHARS = 20000
+SLIDE_PROMPT_MAX_CHARS = 30000
+SLIDE_COUNT_MIN = 4
+SLIDE_COUNT_MAX = 40
 _PROMPT_DIR = os.path.join(P2V_SRC, "prompts")
 _SCRIPT_PROMPT_FILES = {
     "paper": {
@@ -144,6 +147,39 @@ def _normalize_script_prompt(config):
             status_code=400,
             detail="讲稿提示词必须保留页分隔符 ### 和‘讲稿 | 光标目标’输出格式")
     return profile, prompt
+
+
+def _normalize_slide_prompt(config):
+    """校验幻灯片提示词与目标页数，返回 ``(prompt, count)``。"""
+    lang = str(config.get("slide_lang") or "en").strip().lower()
+    default_path = os.path.join(
+        _PROMPT_DIR,
+        "slide_beamer_prompt_zh.txt" if lang == "zh" else "slide_beamer_prompt.txt")
+    prompt = config.get("slide_prompt")
+    if prompt is None or not str(prompt).strip():
+        with io.open(default_path, encoding="utf-8") as handle:
+            prompt = handle.read().strip()
+    elif not isinstance(prompt, str):
+        raise HTTPException(status_code=400, detail="幻灯片提示词必须是文本")
+    prompt = prompt.strip()
+    if len(prompt) > SLIDE_PROMPT_MAX_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail="幻灯片提示词过长（最多 {} 字符）".format(SLIDE_PROMPT_MAX_CHARS))
+    if "\\documentclass" not in prompt or "frame" not in prompt:
+        raise HTTPException(
+            status_code=400,
+            detail="幻灯片提示词必须保留 LaTeX Beamer 的 documentclass 与 frame 输出要求")
+    try:
+        count = int(config.get("slide_count", 12))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="幻灯片页数必须是整数")
+    if count < SLIDE_COUNT_MIN or count > SLIDE_COUNT_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail="幻灯片页数必须在 {}～{} 页之间".format(
+                SLIDE_COUNT_MIN, SLIDE_COUNT_MAX))
+    return prompt, count
 
 # ──────────────────────────────────────────────────────────────
 # 接口凭据：**按任务**存进程内存，不落盘
@@ -530,7 +566,7 @@ PHASES = (
     # 而回退到 GUI-Owl 的指令每条约 30 秒（实测 18 条 ≈ 9 分钟，且其中一条异常到 6 分半）。
     # 所以给 0.05 并配合"第 k/N 条"的计数显示：静态权重表达不了这种方差，
     # 界面上的"第 k / N 条 + 已用 X 分钟"才是可信的那部分。
-    ("extract",  "分析论文",     0.02, False, "",   180),
+    ("extract",  "分析内容",     0.02, False, "",   180),
     ("struct",   "结构化正文",   0.10, False, "",   300),
     ("slides",   "生成幻灯片",   0.09, False, "",   300),
     ("script",   "生成讲稿",     0.05, False, "",   300),
@@ -1051,7 +1087,8 @@ def _build_argv(job):
         "--paper_latex_root", job["paper_latex_root"],
         "--slide_lang", cfg["slide_lang"],
         "--script_lang", cfg["script_lang"],
-        "--paper_type", cfg["paper_type"],
+        "--paper_type", "auto",
+        "--slide_count", str(cfg.get("slide_count", 12)),
         "--talking_profile", cfg.get("talking_profile", "musetalk-local"),
         "--gpu_list", "0",
         # 必须显式传：上游 argparse 的默认值是 True，不传就等于每篇都开。
@@ -1065,6 +1102,9 @@ def _build_argv(job):
     prompt_file = cfg.get("script_prompt_path")
     if prompt_file:
         argv += ["--script_prompt_file", prompt_file]
+    slide_prompt_file = cfg.get("slide_prompt_path")
+    if slide_prompt_file:
+        argv += ["--slide_prompt_file", slide_prompt_file]
     if cfg.get("reuse_script"):
         argv += ["--reuse_script", "True"]
     # 原始论文文件：流水线会从它提取插图放进工程（幻灯片里才有 \includegraphics，
@@ -1127,7 +1167,7 @@ def _artifact_facts(job):
                         or artifact_cache.digest_file(main_tex)),
         # 幻灯片与讲稿看的是「结构化产出的 main.tex」
         "main_tex_sha1": artifact_cache.digest_file(main_tex),
-        "paper_type": cfg.get("paper_type", "auto"),
+        "paper_type": "auto",
         "slide_lang": cfg.get("slide_lang"),
         "script_lang": cfg.get("script_lang"),
         # 自定义讲稿提示词会直接改变 subtitle_w_cursor.txt，必须进入 deck 指纹。
@@ -1135,6 +1175,10 @@ def _artifact_facts(job):
         "script_prompt_sha1": (cfg.get("script_prompt_sha1")
                                 or artifact_cache.digest_file(
                                     cfg.get("script_prompt_path"))),
+        "slide_prompt_sha1": (cfg.get("slide_prompt_sha1")
+                               or artifact_cache.digest_file(
+                                   cfg.get("slide_prompt_path"))),
+        "slide_count": int(cfg.get("slide_count", 12)),
         "llm_model": os.environ.get("PAPER2VIDEO_LLM_MODEL", "deepseek-flash"),
         # ⚠️ VLM 实际用的是 pipeline.py 里的 argparse 默认值。仓库根 `.env` 那行
         #    `PAPER2VIDEO_VLM_MODEL` **没有任何代码读它**（全仓库搜过，已核实）——
@@ -1222,7 +1266,7 @@ async def _prepare_latex(job, job_dir, log, env):
     source = job.get("source_path")
     if not source or not os.path.isfile(source):
         _log_line(log, "[struct] 需要结构化，但源文件不可用：{}".format(source))
-        _log_line(log, "[struct] （续跑旧任务时若素材已被清理，请重新上传论文）")
+        _log_line(log, "[struct] （续跑旧任务时若素材已被清理，请重新上传内容文件）")
         return False
 
     argv = [VENV_PY, "-u", os.path.join(SCRIPTS, "paper_struct.py"),
@@ -1513,14 +1557,17 @@ async def api_options():
     presets = [{"value": k, "label": v["desc"],
                 "slide_lang": v["slide_lang"], "script_lang": v["script_lang"]}
                for k, v in lc.VIDEO_PRESETS.items()]
-    paper_types = [{"value": k, "label": v["desc"]}
-                   for k, v in lc.PAPER_TYPES.items()]
     return {
         "presets": presets,
         "slide_langs": [{"value": k, "label": v["desc"]} for k, v in lc.SLIDE_LANGS.items()],
         "script_langs": [{"value": k, "label": v["desc"]} for k, v in lc.SCRIPT_LANGS.items()],
-        "paper_types": paper_types,
         "accept_formats": [".tex", ".zip", ".docx", ".doc", ".pdf"],
+        "slide_prompts": {
+            key: io.open(value["prompt"], encoding="utf-8").read().strip()
+            for key, value in lc.SLIDE_LANGS.items()
+        },
+        "slide_prompt_max_chars": SLIDE_PROMPT_MAX_CHARS,
+        "slide_count": {"default": 12, "min": SLIDE_COUNT_MIN, "max": SLIDE_COUNT_MAX},
         # 内容类型只决定“怎么讲”，不会改变输入格式。每个模板都把完整提示词
         # 下发给前端，使用者可以在保持机器可读输出格式的前提下继续编辑。
         "script_prompt_profiles": [
@@ -1556,7 +1603,7 @@ async def api_options():
                 "key": "if_tree_search",
                 "label": "幻灯片布局微调（树搜索）",
                 "default": False,
-                "note": "论文的核心机制之一，但默认关闭",
+                "note": "可选的版面优化步骤，默认关闭",
                 "hint": "编译后用 Overfull 警告定位内容溢出的页，为每页生成 4 个图片宽度"
                         "候选（×1 / 0.75 / 0.5 / 0.25），由视觉模型挑一张再重排版。"
                         "会明显多花时间与调用：每张溢出页 4 次 LaTeX 编译 + 4 次渲染 "
@@ -1614,7 +1661,7 @@ async def api_key_verify(payload: dict):
 
 @app.post("/api/ingest")
 async def api_ingest(paper: UploadFile = File(...)):
-    """上传论文 → 提取正文 → 返回预览。
+    """上传内容文件 → 提取正文 → 返回预览。
 
     这是「转换预览」这一步的后端：把 main.tex 的章节结构 + 正文开头
     给使用者确认，确认无误再开跑 —— 因为转换错了下游无法补救。
@@ -1924,7 +1971,7 @@ async def api_create_job(payload: dict):
     # 目录还在、老任务也还指着），并挡住 `../` 这类穿越（使用者传的字段不可信）。
     work = _upload_work(ingest_id)
     if not work or not os.path.isdir(work):
-        raise HTTPException(status_code=400, detail="先上传论文（缺少有效的 ingest_id）")
+        raise HTTPException(status_code=400, detail="请先上传内容文件（缺少有效的 ingest_id）")
 
     # 创建任务时也接受凭据（使用者可能没点"自检"就直接开跑）。
     # 凭据挂到**本次任务的 id** 上（见下面 _remember_keys），不是全局会话 ——
@@ -1950,6 +1997,8 @@ async def api_create_job(payload: dict):
     # 先校验再创建任务目录/记凭据：无效输入必须是零副作用的 400，
     # 不能留下一个永远不会入队的 job_<时间> 孤儿目录。
     content_profile, script_prompt = _normalize_script_prompt(config)
+    slide_prompt, slide_count = _normalize_slide_prompt(config)
+    config["paper_type"] = "auto"
 
     job_id = "job_" + time.strftime("%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:4]
     _remember_keys(job_id, payload)          # 凭据跟着任务走，不是全局一份
@@ -1965,6 +2014,13 @@ async def api_create_job(payload: dict):
     config["script_prompt_path"] = script_prompt_path
     config["script_prompt_sha1"] = artifact_cache.digest_text(script_prompt)
     config.pop("script_prompt", None)
+    slide_prompt_path = os.path.join(job_dir, "slide_prompt.txt")
+    with io.open(slide_prompt_path, "w", encoding="utf-8", newline="") as handle:
+        handle.write(slide_prompt + "\n")
+    config["slide_prompt_path"] = slide_prompt_path
+    config["slide_prompt_sha1"] = artifact_cache.digest_text(slide_prompt)
+    config["slide_count"] = slide_count
+    config.pop("slide_prompt", None)
 
     # 音色：把界面上的选择解析成「参考音频 + 参考文本」。
     # **任何失败都回落到内置音色**，绝不因为音色问题拦住任务 —— 音色是增强，

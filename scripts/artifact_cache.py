@@ -65,7 +65,8 @@ STRUCT_FIELDS = ("v", "source_sha1", "paper_type", "llm_model")
 # 工程，而我们的前端从 PDF 提取（scripts/paper_figures.py）—— 哪天提取逻辑升级、
 # 或者同一篇论文先跑于"还没接提图"的版本，漏掉这个字段就会命中"没有图的那一版"，
 # 表现为"幻灯片里怎么还是没有图"，且不报错。
-DECK_FIELDS = ("v", "main_tex_sha1", "slide_lang", "script_lang", "paper_type",
+DECK_FIELDS = ("v", "main_tex_sha1", "slide_lang", "script_lang",
+               "script_prompt_sha1", "paper_type",
                "llm_model", "vlm_model", "talking_profile", "if_tree_search",
                "figures")
 

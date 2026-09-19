@@ -44,6 +44,7 @@ from speech_gen import tts_per_slide
 from subtitle_render import add_subtitles
 from talking_gen import talking_gen_per_slide
 from merge_talking import merge_slides_and_talking
+from merge_video import merge_slides_and_audio
 from talking_config import describe_profile, resolve_profile
 from cursor_gen import cursor_gen_per_sentence
 # from slide_code_gen import latex_code_gen
@@ -169,6 +170,8 @@ if __name__ == '__main__':
     parser.add_argument('--script_lang', type=str, default=None,
                         choices=sorted(language_config.SCRIPT_LANGS),
                         help='只指定讲稿/TTS/字幕语言（覆盖 --video_lang 的该轴）')
+    parser.add_argument('--script_prompt_file', type=str, default=None,
+                        help='自定义讲稿提示词文件（UTF-8）；不填则使用语言档位默认模板')
     parser.add_argument('--gpu_list', type=str2list, default="")
     parser.add_argument('--if_tree_search', type=str2bool, default=True)
     parser.add_argument('--reuse_script', type=str2bool, default=False,
@@ -176,6 +179,8 @@ if __name__ == '__main__':
     parser.add_argument('--beamer_templete_prompt', type=str, default=None)
     parser.add_argument('--stage', type=str, default="[\"0\"]") 
     parser.add_argument('--talking_head_env', type=str, default="") 
+    parser.add_argument('--generate_talking', type=str2bool, default=True,
+                        help='是否生成数字人；False 时 stage 3 改为幻灯片+音频直接合片')
     # slide+subtitle: 1; 
     # tts+cusor: 2; 
     # talking-head: 3: 
@@ -320,7 +325,9 @@ if __name__ == '__main__':
 
     speech_save_dir = path.join(args.result_dir, 'audio')
     if "2" in stage or  "0" in stage:
-        prompt_path = lang["script_prompt"]
+        prompt_path = args.script_prompt_file or lang["script_prompt"]
+        if not path.isfile(prompt_path):
+            raise FileNotFoundError("讲稿提示词文件不存在：{}".format(prompt_path))
         # ── --reuse_script：讲稿已存在且校验通过时，跳过 VLM 调用 ──
         # 讲稿生成是整条链路里**唯一必须联网付费**的一步（VLM 要读全部幻灯片）；
         # TTS / 光标定位 / 数字人 / 合片全是本地计算。所以「后续阶段失败、只重跑
@@ -378,41 +385,60 @@ if __name__ == '__main__':
         time_second["cursor_gen"] = [step3_2_time-step3_1_time]
         print("Cursor Generation", step3_2_time-step3_1_time)
     
-    ## Step 4: Talking Video Generation（数字人）
+    ## Step 4: Talking Video Generation（数字人，可关闭）
     start_time = time.time() # start time
     if "3" in stage or  "0" in stage:
-        print("[数字人] 档位：{}".format(describe_profile(
-            resolve_profile(args.talking_profile, backend=args.model_name_talking))))
-        talking_save_dir = path.join(args.result_dir, 'talking_{}'.format(args.model_name_talking))
-        talking_inference_input = []
-        # ⚠️ 必须按**数字**排序：文件名是 0.wav..11.wav，而 os.listdir 顺序不保证，
-        # 且字典序会把 10.wav / 11.wav 排到 2.wav 前面。一旦顺序错位，数字人就会
-        # 对错音频，而症状是「口型与语音不符」——很难联想到是排序问题。
-        audio_names = [n for n in os.listdir(speech_save_dir) if n.lower().endswith(".wav")]
-        audio_names = sorted(audio_names, key=lambda x: int(re.search(r"\d+", x).group()))
-        for name in audio_names:
-            talking_inference_input.append([args.ref_img, path.join(speech_save_dir, name)])
-        talking_gen_per_slide(args.model_name_talking, talking_inference_input, talking_save_dir,
-                              args.gpu_list, env_path=args.talking_head_env,
-                              profile=args.talking_profile)
-        step4_time =  time.time()
-        time_second["talking_gen"] = [step4_time-start_time]
-        print("Talking Generation", step4_time-start_time)
-    
-        ## Step5: Merage
-        # 上游调 ./1_merage.bash（Windows 不可执行，且把 list.txt 写在 cwd），改走 Python
         tmp_merage_dir = path.join(args.result_dir, "merage")
         tmp_merage_1 = path.join(args.result_dir, "1_merage.mp4")
         image_height, image_width = read_image_size(path.join(slide_image_dir, '1.png'))
-        # 数字人嵌在右上角，边长取画面长边的 1/6（沿用上游 hallo2 的取法，保证版式一致）
         size = max(image_height // 6, image_width // 6)
-        width, height = size, size
         num_slide = len([n for n in os.listdir(slide_image_dir) if n.lower().endswith(".png")])
-        ref_stem = path.splitext(path.basename(args.ref_img))[0]
-        merge_slides_and_talking(
-            slide_dir=slide_image_dir, talking_dir=talking_save_dir,
-            output_dir=tmp_merage_dir, video_path=tmp_merage_1,
-            num_video=num_slide, ref_img=ref_stem, width=width, height=height)
+
+        if args.generate_talking:
+            if not args.ref_img or not path.isfile(args.ref_img):
+                raise FileNotFoundError("已要求生成数字人，但人像图不存在：{}".format(
+                    args.ref_img or "<未提供>"))
+            print("[数字人] 档位：{}".format(describe_profile(
+                resolve_profile(args.talking_profile, backend=args.model_name_talking))))
+            talking_save_dir = path.join(
+                args.result_dir, 'talking_{}'.format(args.model_name_talking))
+            talking_inference_input = []
+            # ⚠️ 必须按**数字**排序：文件名是 0.wav..11.wav，而 os.listdir 顺序不保证，
+            # 且字典序会把 10.wav / 11.wav 排到 2.wav 前面。一旦顺序错位，数字人就会
+            # 对错音频，而症状是「口型与语音不符」——很难联想到是排序问题。
+            audio_names = [n for n in os.listdir(speech_save_dir)
+                           if n.lower().endswith(".wav")]
+            audio_names = sorted(
+                audio_names, key=lambda x: int(re.search(r"\d+", x).group()))
+            for name in audio_names:
+                talking_inference_input.append(
+                    [args.ref_img, path.join(speech_save_dir, name)])
+            talking_gen_per_slide(
+                args.model_name_talking, talking_inference_input, talking_save_dir,
+                args.gpu_list, env_path=args.talking_head_env,
+                profile=args.talking_profile)
+            step4_time = time.time()
+            time_second["talking_gen"] = [step4_time-start_time]
+            print("Talking Generation", step4_time-start_time)
+
+            # 数字人嵌在右上角，边长取画面长边的 1/6（沿用上游的版式）
+            ref_stem = path.splitext(path.basename(args.ref_img))[0]
+            merge_slides_and_talking(
+                slide_dir=slide_image_dir, talking_dir=talking_save_dir,
+                output_dir=tmp_merage_dir, video_path=tmp_merage_1,
+                num_video=num_slide, ref_img=ref_stem, width=size, height=size)
+        else:
+            # 没有人像时不能跳过整个 stage 3：最终合片、光标与字幕都在这里。
+            # 只跳过数字人推理，改为把每页幻灯片按对应音频时长直接合成。
+            print("[数字人] 已关闭或未提供人像，跳过数字人生成，直接合成讲解视频")
+            time_second["talking_gen"] = None
+            step4_time = start_time
+            merge_slides_and_audio(
+                slide_dir=slide_image_dir, audio_dir=speech_save_dir,
+                output_dir=tmp_merage_dir, num_video=num_slide,
+                video_path=tmp_merage_1)
+
+        ## Step5: Merage
         # render cursor
         cursor_size = size//6
         if progress_report:

@@ -60,6 +60,92 @@ os.makedirs(JOBS_ROOT, exist_ok=True)
 app = FastAPI(title="Paper2Video Web", version="0.1.0")
 
 # ──────────────────────────────────────────────────────────────
+# 讲稿提示词模板：前端可编辑，但后端保留模板与安全边界
+# ──────────────────────────────────────────────────────────────
+SCRIPT_PROMPT_MAX_CHARS = 20000
+_SCRIPT_PROMPT_FILES = {
+    "zh": os.path.join(P2V_SRC, "prompts", "slide_subtitle_cursor_prompt_zh.txt"),
+    "en": os.path.join(P2V_SRC, "prompts", "slide_subtitle_cursor_prompt.txt"),
+}
+_SCRIPT_PROMPT_PROFILES = {
+    "paper": {
+        "label": "学术论文讲解",
+        "desc": "保留当前学术会议风格，突出研究问题、方法、实验与结论",
+        "zh": "",
+        "en": "",
+    },
+    "ebook": {
+        "label": "电子书 / 读物讲解",
+        "desc": "按章节脉络解释概念、人物、论点与上下文，避免虚构论文实验",
+        "zh": ("【内容类型覆盖指令】这次输入是电子书、读物或章节内容，不是学术论文。"
+               "请以知识讲解者的身份，围绕章节脉络、核心概念、人物或论点展开；"
+               "不要使用‘我们的论文/实验/方法’等学术论文口吻，也不要虚构实验数据。"
+               "本指令优先于上方关于学术会议或论文身份的描述。"),
+        "en": ("[Content-type override] The input is an ebook, book, or chapter, not a research paper. "
+               "Explain its narrative, concepts, people, arguments, and context as a knowledgeable guide. "
+               "Do not speak as the paper's author or invent methods, experiments, or results. "
+               "This instruction overrides any academic-conference role above."),
+    },
+    "course": {
+        "label": "课程讲解视频",
+        "desc": "采用教师授课口吻，强调学习目标、概念递进、例子与小结",
+        "zh": ("【内容类型覆盖指令】这次输入是课程或教学材料。请以教师授课口吻组织讲稿，"
+               "说明学习目标，按由浅入深的顺序解释概念，并在合适处给出直观例子或阶段小结。"
+               "不要把内容称为‘我们的论文’，也不要虚构材料中不存在的实验或结论。"
+               "本指令优先于上方关于学术会议或论文身份的描述。"),
+        "en": ("[Content-type override] The input is course or teaching material. Speak as an instructor: "
+               "state learning goals, explain concepts progressively, and add concise examples or recaps when useful. "
+               "Do not call it our paper or invent experiments or conclusions. "
+               "This instruction overrides any academic-conference role above."),
+    },
+    "custom": {
+        "label": "通用 / 自定义",
+        "desc": "使用中性的内容讲解口吻，并在下方提示词中自由调整角色与风格",
+        "zh": ("【内容类型覆盖指令】不要预设输入一定是论文。请以中性的专业讲解者身份，"
+               "只根据幻灯片可见内容组织清晰、连贯的讲解，不虚构原材料中不存在的事实。"
+               "本指令优先于上方关于学术会议或论文身份的描述。"),
+        "en": ("[Content-type override] Do not assume the input is a research paper. "
+               "Act as a neutral professional narrator and explain only what is supported by the visible slides. "
+               "Do not invent facts. This instruction overrides any academic-conference role above."),
+    },
+}
+
+
+def _script_prompt_text(profile, lang):
+    """返回某内容类型的完整讲稿提示词；严格格式约束始终来自上游模板。"""
+    profile = profile if profile in _SCRIPT_PROMPT_PROFILES else "custom"
+    lang = lang if lang in _SCRIPT_PROMPT_FILES else "en"
+    with io.open(_SCRIPT_PROMPT_FILES[lang], encoding="utf-8") as handle:
+        base = handle.read().strip()
+    directive = _SCRIPT_PROMPT_PROFILES[profile].get(lang) or ""
+    return base if not directive else base + "\n\n" + directive
+
+
+def _normalize_script_prompt(config):
+    """校验并补全讲稿提示词，返回 ``(profile, prompt)``。"""
+    profile = str(config.get("content_profile") or "paper").strip().lower()
+    if profile not in _SCRIPT_PROMPT_PROFILES:
+        raise HTTPException(status_code=400, detail="不支持的内容类型：{}".format(profile))
+    lang = str(config.get("script_lang") or "en").strip().lower()
+    prompt = config.get("script_prompt")
+    if prompt is None or not str(prompt).strip():
+        prompt = _script_prompt_text(profile, lang)
+    elif not isinstance(prompt, str):
+        raise HTTPException(status_code=400, detail="讲稿提示词必须是文本")
+    prompt = prompt.strip()
+    if len(prompt) > SCRIPT_PROMPT_MAX_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail="讲稿提示词过长（最多 {} 字符）".format(SCRIPT_PROMPT_MAX_CHARS))
+    # 下游的讲稿解析器依赖这两个结构标记。允许自由改角色、语气与长度，
+    # 但不能把机器可读的页分隔和光标字段一起删掉，否则 VLM 会反复重试后失败。
+    if "###" not in prompt or "|" not in prompt:
+        raise HTTPException(
+            status_code=400,
+            detail="讲稿提示词必须保留页分隔符 ### 和‘讲稿 | 光标目标’输出格式")
+    return profile, prompt
+
+# ──────────────────────────────────────────────────────────────
 # 接口凭据：**按任务**存进程内存，不落盘
 # ──────────────────────────────────────────────────────────────
 # 为什么不落盘：本地/内网服务，key 写进文件就多一份泄漏面。
@@ -486,7 +572,20 @@ def _phase_expected_s(phase_key, total_pages, script_lang):
     return _PHASE_FIXED_S.get(phase_key)
 
 
-def _phase_overall_pct(phase_key, done, total):
+def _phase_layout(include_talking=True):
+    """返回当前任务真正会执行的阶段及归一化权重。"""
+    keys = [k for k in _PHASE_KEYS if include_talking or k != "talking"]
+    total_weight = sum(_PHASE_WEIGHT[k] for k in keys) or 1.0
+    weights = {k: _PHASE_WEIGHT[k] / total_weight for k in keys}
+    starts = {}
+    cursor = 0.0
+    for key in keys:
+        starts[key] = cursor
+        cursor += weights[key]
+    return keys, weights, starts
+
+
+def _phase_overall_pct(phase_key, done, total, include_talking=True):
     """把「当前阶段 + 阶段内页数」换算成**总进度百分比**。
 
     口径（刻意保守，宁可不动也不假装在走）：
@@ -497,10 +596,11 @@ def _phase_overall_pct(phase_key, done, total):
 
     这样得到的总进度**单调不减**，也就消除了原先那次 100%→7% 的回跳。
     """
-    if phase_key not in _PHASE_WEIGHT:
+    keys, weights, starts = _phase_layout(include_talking)
+    if phase_key not in keys:
         return 0
-    base = _PHASE_START[phase_key]
-    weight = _PHASE_WEIGHT[phase_key]
+    base = starts[phase_key]
+    weight = weights[phase_key]
     frac = 0.0
     if _PHASE_HAS_PAGES[phase_key] and total:
         frac = min(1.0, max(0.0, float(done) / float(total)))
@@ -668,6 +768,9 @@ def read_progress(job):
     job_dir = _job_dir(job["id"])
     status = job.get("status")
     finished = status in ("done", "failed", "canceled")
+    config = job.get("config") or {}
+    include_talking = _as_bool(config.get("generate_talking"), True)
+    active_phase_keys, _active_weights, _active_starts = _phase_layout(include_talking)
 
     info = {
         "stage": job.get("stage", 0),
@@ -728,13 +831,17 @@ def read_progress(job):
 
     # ── 步骤条 + 总进度（前端的唯一数据源）──
     phase_key = info["phase_key"]
-    if phase_key not in _PHASE_WEIGHT:
+    if phase_key == "talking" and not include_talking:
+        phase_key = "merge"
+        info["phase_key"] = phase_key
+        info["phase"] = _PHASE_LABEL[phase_key]
+    if phase_key not in active_phase_keys:
         # job 里可能写着 "queued"/"startup" 这类非阶段值：归一到起点，
         # 界面文案仍用 job.phase（"排队中"），步骤条高亮第一步。
-        phase_key = _PHASE_KEYS[0]
+        phase_key = active_phase_keys[0]
         info["phase_key"] = phase_key
-    info["phase_index"] = _PHASE_KEYS.index(phase_key)
-    info["phase_count"] = len(_PHASE_KEYS)
+    info["phase_index"] = active_phase_keys.index(phase_key)
+    info["phase_count"] = len(active_phase_keys)
 
     if _PHASE_HAS_COUNT[phase_key] and not finished:
         # 计数**按阶段各取各的**：tts/talking 单位是"页"，cursor 是"条"。
@@ -751,7 +858,8 @@ def read_progress(job):
     # 总进度用**当前阶段自己的**计数与总数（页/条各自算，见上面的 counts）
     computed = _phase_overall_pct(phase_key,
                                   info.get("count_done") or 0,
-                                  info.get("count_total") or info["total_pages"])
+                                  info.get("count_total") or info["total_pages"],
+                                  include_talking=include_talking)
     if status == "done":
         info["overall_pct"] = 100
     elif finished:
@@ -761,7 +869,6 @@ def read_progress(job):
     else:
         info["overall_pct"] = computed
 
-    config = job.get("config") or {}
     info["phase_expected_s"] = _phase_expected_s(
         phase_key, info["total_pages"], config.get("script_lang", "en"))
 
@@ -942,7 +1049,6 @@ def _build_argv(job):
         # 这样 stage 1 已生成的幻灯片与讲稿就地重用，不需要复制几 GB 的产物。
         "--result_dir", cfg.get("result_dir") or os.path.join(_job_dir(job["id"]), "result"),
         "--paper_latex_root", job["paper_latex_root"],
-        "--ref_img", job["ref_img"],
         "--slide_lang", cfg["slide_lang"],
         "--script_lang", cfg["script_lang"],
         "--paper_type", cfg["paper_type"],
@@ -951,7 +1057,14 @@ def _build_argv(job):
         # 必须显式传：上游 argparse 的默认值是 True，不传就等于每篇都开。
         "--if_tree_search",
         "True" if _as_bool(cfg.get("if_tree_search"), False) else "False",
+        "--generate_talking",
+        "True" if _as_bool(cfg.get("generate_talking"), True) else "False",
     ]
+    if job.get("ref_img"):
+        argv += ["--ref_img", job["ref_img"]]
+    prompt_file = cfg.get("script_prompt_path")
+    if prompt_file:
+        argv += ["--script_prompt_file", prompt_file]
     if cfg.get("reuse_script"):
         argv += ["--reuse_script", "True"]
     # 原始论文文件：流水线会从它提取插图放进工程（幻灯片里才有 \includegraphics，
@@ -1017,6 +1130,11 @@ def _artifact_facts(job):
         "paper_type": cfg.get("paper_type", "auto"),
         "slide_lang": cfg.get("slide_lang"),
         "script_lang": cfg.get("script_lang"),
+        # 自定义讲稿提示词会直接改变 subtitle_w_cursor.txt，必须进入 deck 指纹。
+        # 存哈希而不是全文：manifest 可审计，同时避免缓存元数据膨胀。
+        "script_prompt_sha1": (cfg.get("script_prompt_sha1")
+                                or artifact_cache.digest_file(
+                                    cfg.get("script_prompt_path"))),
         "llm_model": os.environ.get("PAPER2VIDEO_LLM_MODEL", "deepseek-flash"),
         # ⚠️ VLM 实际用的是 pipeline.py 里的 argparse 默认值。仓库根 `.env` 那行
         #    `PAPER2VIDEO_VLM_MODEL` **没有任何代码读它**（全仓库搜过，已核实）——
@@ -1221,6 +1339,11 @@ async def _run_job(job):
         # 使用者选了"冰糖"却听到原来的男声时，唯一能自证的就是这一行。
         _log_line(log, "[voice] {}".format(
             (job.get("config") or {}).get("voice_note") or "内置默认音色"))
+        _log_line(log, "[talking] {}".format(
+            (job.get("config") or {}).get("talking_note")
+            or ("已启用数字人" if _as_bool(
+                (job.get("config") or {}).get("generate_talking"), True)
+                else "已关闭数字人")))
         log.flush()
 
         # ── 产物缓存：命中结构化 ⇒ 这一次不调 LLM ──
@@ -1398,6 +1521,21 @@ async def api_options():
         "script_langs": [{"value": k, "label": v["desc"]} for k, v in lc.SCRIPT_LANGS.items()],
         "paper_types": paper_types,
         "accept_formats": [".tex", ".zip", ".docx", ".doc", ".pdf"],
+        # 内容类型只决定“怎么讲”，不会改变输入格式。每个模板都把完整提示词
+        # 下发给前端，使用者可以在保持机器可读输出格式的前提下继续编辑。
+        "script_prompt_profiles": [
+            {
+                "value": key,
+                "label": value["label"],
+                "desc": value["desc"],
+                "prompts": {
+                    "zh": _script_prompt_text(key, "zh"),
+                    "en": _script_prompt_text(key, "en"),
+                },
+            }
+            for key, value in _SCRIPT_PROMPT_PROFILES.items()
+        ],
+        "script_prompt_max_chars": SCRIPT_PROMPT_MAX_CHARS,
         # 阶段表由后端下发（前端不硬编码）：步骤条与总进度共用同一份定义，
         # 将来加阶段只改 app.py 一处，前端自动跟上。
         "phases": _phase_payload(),
@@ -1792,21 +1930,43 @@ async def api_create_job(payload: dict):
     # 凭据挂到**本次任务的 id** 上（见下面 _remember_keys），不是全局会话 ——
     # 所以"谁的任务用谁的 key"。仍然只放进程内存，不落盘。
 
-    # 人像与音色也是上传来的；没人像就直接拒绝（数字人环节必然失败）
+    config = dict(payload.get("config") or {})
+
+    # 数字人是可选增强项。即使界面勾着开关，只要没有有效人像就自动关闭，
+    # stage 3 仍会继续做“幻灯片 + 音频 + 光标 + 字幕”的完整合片。
     portrait = payload.get("portrait_path")
-    if not portrait or not os.path.isfile(portrait):
-        raise HTTPException(status_code=400, detail="缺少人像图")
+    portrait = portrait if portrait and os.path.isfile(portrait) else None
+    generate_talking = _as_bool(config.get("generate_talking"), bool(portrait))
+    if generate_talking and not portrait:
+        generate_talking = False
+        talking_note = "未上传有效人像，已自动跳过数字人；仍会生成无数字人的完整讲解视频"
+    elif generate_talking:
+        talking_note = "已启用数字人"
+    else:
+        talking_note = "已关闭数字人；将生成幻灯片讲解视频"
+    config["generate_talking"] = generate_talking
+    config["talking_note"] = talking_note
 
     job_id = "job_" + time.strftime("%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:4]
     _remember_keys(job_id, payload)          # 凭据跟着任务走，不是全局一份
     job_dir = _job_dir(job_id)
     os.makedirs(job_dir, exist_ok=True)
 
+    # 讲稿提示词按任务落成独立 UTF-8 文件，避免把上万字符塞进 Windows 命令行；
+    # job.json 只记路径与哈希，缓存与追溯都以这份不可混淆的任务快照为准。
+    content_profile, script_prompt = _normalize_script_prompt(config)
+    script_prompt_path = os.path.join(job_dir, "script_prompt.txt")
+    with io.open(script_prompt_path, "w", encoding="utf-8", newline="") as handle:
+        handle.write(script_prompt + "\n")
+    config["content_profile"] = content_profile
+    config["script_prompt_path"] = script_prompt_path
+    config["script_prompt_sha1"] = artifact_cache.digest_text(script_prompt)
+    config.pop("script_prompt", None)
+
     # 音色：把界面上的选择解析成「参考音频 + 参考文本」。
     # **任何失败都回落到内置音色**，绝不因为音色问题拦住任务 —— 音色是增强，
     # 而 MiMo 是"限时免费"的第三方服务，网络/配额/key 都可能出问题。
     # 回落原因会同时进 config、响应体与任务日志（回落必须可见，见 _run_job）。
-    config = dict(payload.get("config") or {})
     voice_spec = config.get("voice") or {"kind": "default"}
     ref_audio, ref_text, voice_note = mimo_voice.resolve(
         voice_spec, config.get("script_lang", "en"))
@@ -1852,7 +2012,9 @@ async def api_create_job(payload: dict):
             # 把这个任务的音色结论回给界面：用了哪个音色、还是回落到了内置默认。
             # 不返回的话，使用者只能从成片里"听"出来自己选的音色没生效。
             "voice_note": voice_note,
-            "voice_active": bool(ref_audio)}
+            "voice_active": bool(ref_audio),
+            "generate_talking": generate_talking,
+            "talking_note": talking_note}
 
 
 @app.post("/api/jobs/{job_id}/rerun")
@@ -1875,17 +2037,25 @@ async def api_rerun_job(job_id: str, payload: dict):
         raise HTTPException(status_code=400,
                             detail="原任务没有 result 目录，无法续跑（可能从未开始）")
 
-    portrait = payload.get("portrait_path") or src_job.get("ref_img")
-    if not portrait or not os.path.isfile(portrait):
-        raise HTTPException(
-            status_code=400,
-            detail="续跑需要人像图，但原任务的人像已不在（素材可能被清理），请重新上传")
-
     config = dict(src_job.get("config") or {})
+    portrait = payload.get("portrait_path") or src_job.get("ref_img")
+    portrait = portrait if portrait and os.path.isfile(portrait) else None
+    generate_talking = _as_bool(
+        payload.get("generate_talking"),
+        _as_bool(config.get("generate_talking"), bool(portrait)))
+    if generate_talking and not portrait:
+        generate_talking = False
+        config["talking_note"] = (
+            "续跑时找不到有效人像，已自动跳过数字人；仍会生成无数字人的完整讲解视频")
+    elif generate_talking:
+        config["talking_note"] = "已启用数字人"
+    else:
+        config["talking_note"] = "已关闭数字人；将生成幻灯片讲解视频"
     config.update({
         "stages": payload.get("stages") or ["2", "3"],
         "reuse_script": payload.get("reuse_script", True),
         "result_dir": src_result,
+        "generate_talking": generate_talking,
     })
 
     new_id = "job_" + time.strftime("%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:4]
@@ -1920,6 +2090,7 @@ async def api_rerun_job(job_id: str, payload: dict):
     await _QUEUE.put(new_id)
     return {"ok": True, "job_id": new_id, "resumed_from": job_id,
             "stages": config["stages"], "reuse_script": config["reuse_script"],
+            "generate_talking": generate_talking,
             "queue_ahead": _QUEUE.qsize()}
 
 

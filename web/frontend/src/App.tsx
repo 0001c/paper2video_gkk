@@ -52,6 +52,7 @@ type ScriptPromptProfile = {
   label: string;
   desc: string;
   prompts: Record<string, string>;
+  slide_prompts: Record<string, string>;
 };
 
 type Options = {
@@ -65,7 +66,6 @@ type Options = {
   toggles?: Toggle[];
   script_prompt_profiles?: ScriptPromptProfile[];
   script_prompt_max_chars?: number;
-  slide_prompts?: Record<string, string>;
   slide_prompt_max_chars?: number;
   slide_count?: { default: number; min: number; max: number };
   voice: Voices;
@@ -520,8 +520,10 @@ export default function App() {
   }, [promptTemplate]);
 
   const slidePromptTemplate = useMemo(
-    () => opts?.slide_prompts?.[slideLang] ?? "",
-    [opts, slideLang],
+    () => opts?.script_prompt_profiles
+      ?.find((x) => x.value === contentProfile)
+      ?.slide_prompts?.[slideLang] ?? "",
+    [opts, contentProfile, slideLang],
   );
 
   useEffect(() => {
@@ -1455,9 +1457,19 @@ export default function App() {
                 产物会在各阶段结束后陆续出现在这里（运行中也能看到已生成的部分）。
               </div>
             )}
-            {artifacts.some((a) => a.name === "3_merage.mp4") && (
-              <video controls src={`/api/jobs/${jobId}/files/3_merage.mp4`} />
-            )}
+            {(() => {
+              const video = artifacts.find((a) => a.name === "3_merage.mp4");
+              return video ? (
+                <video
+                  key={video.version || video.size_bytes}
+                  controls
+                  preload="metadata"
+                  src={`/api/jobs/${jobId}/files/3_merage.mp4?v=${encodeURIComponent(
+                    video.version || String(video.size_bytes || "latest"),
+                  )}`}
+                />
+              ) : null;
+            })()}
           </div>
         )}
 
@@ -1540,6 +1552,9 @@ export default function App() {
               <div className={"jobrow" + (j.id === jobId ? " active" : "")} key={j.id}>
                 <span className={"dot " + dotOf(j.status)} />
                 <span className="jid">{j.id}</span>
+                <span className="jfile" title={j.source_name || "未记录文件名"}>
+                  {j.source_name || "旧任务未记录文件名"}
+                </span>
                 <span className="jphase">
                   {j.phase}
                   {j.elapsed_min ? ` · ${j.elapsed_min} min` : ""}

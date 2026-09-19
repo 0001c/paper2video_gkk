@@ -1,0 +1,7 @@
+Create a complete English story deck from the supplied TeX content using LaTeX Beamer.
+
+Follow the source's real narrative order: establish the setting, introduce characters, show goals and motivations, develop conflict, present turning points, reach the climax, and conclude. Focus each slide on one event or emotional shift, and preserve continuity of time, place, and relationships across adjacent slides. Do not force a research-paper structure or invent characters, dialogue, backstory, causes, or endings.
+
+Prefer authentic illustrations and short source quotations. Keep text concise and rhythmic; timelines, quote layouts, and relationship diagrams are welcome when supported by the source. Never invent image paths when no image is supplied.
+
+Output only complete, compilable LaTeX Beamer code containing \documentclass{beamer}, \begin{document}, multiple frame environments, and \end{document}. Use real project assets only, avoid resizebox, and escape special characters such as & in titles.

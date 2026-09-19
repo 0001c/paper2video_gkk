@@ -112,6 +112,28 @@ _SCRIPT_PROMPT_PROFILES = {
     },
 }
 _SCRIPT_PROMPT_ALIASES = {"ebook": "textbook", "course": "textbook"}
+_SLIDE_PROMPT_FILES = {
+    "paper": {
+        "zh": os.path.join(_PROMPT_DIR, "slide_beamer_prompt_zh.txt"),
+        "en": os.path.join(_PROMPT_DIR, "slide_beamer_prompt.txt"),
+    },
+    "textbook": {
+        "zh": os.path.join(_PROMPT_DIR, "slide_beamer_prompt_textbook_zh.txt"),
+        "en": os.path.join(_PROMPT_DIR, "slide_beamer_prompt_textbook.txt"),
+    },
+    "story": {
+        "zh": os.path.join(_PROMPT_DIR, "slide_beamer_prompt_story_zh.txt"),
+        "en": os.path.join(_PROMPT_DIR, "slide_beamer_prompt_story.txt"),
+    },
+    "fiction_comic": {
+        "zh": os.path.join(_PROMPT_DIR, "slide_beamer_prompt_fiction_comic_zh.txt"),
+        "en": os.path.join(_PROMPT_DIR, "slide_beamer_prompt_fiction_comic.txt"),
+    },
+    "custom": {
+        "zh": os.path.join(_PROMPT_DIR, "slide_beamer_prompt_general_zh.txt"),
+        "en": os.path.join(_PROMPT_DIR, "slide_beamer_prompt_general.txt"),
+    },
+}
 
 
 def _script_prompt_text(profile, lang):
@@ -120,6 +142,15 @@ def _script_prompt_text(profile, lang):
     profile = profile if profile in _SCRIPT_PROMPT_PROFILES else "custom"
     lang = lang if lang in ("zh", "en") else "en"
     with io.open(_SCRIPT_PROMPT_FILES[profile][lang], encoding="utf-8") as handle:
+        return handle.read().strip()
+
+
+def _slide_prompt_text(profile, lang):
+    """读取与讲解内容类型匹配的完整幻灯片提示词。"""
+    profile = _SCRIPT_PROMPT_ALIASES.get(profile, profile)
+    profile = profile if profile in _SLIDE_PROMPT_FILES else "custom"
+    lang = lang if lang in ("zh", "en") else "en"
+    with io.open(_SLIDE_PROMPT_FILES[profile][lang], encoding="utf-8") as handle:
         return handle.read().strip()
 
 
@@ -149,16 +180,12 @@ def _normalize_script_prompt(config):
     return profile, prompt
 
 
-def _normalize_slide_prompt(config):
+def _normalize_slide_prompt(config, profile):
     """校验幻灯片提示词与目标页数，返回 ``(prompt, count)``。"""
     lang = str(config.get("slide_lang") or "en").strip().lower()
-    default_path = os.path.join(
-        _PROMPT_DIR,
-        "slide_beamer_prompt_zh.txt" if lang == "zh" else "slide_beamer_prompt.txt")
     prompt = config.get("slide_prompt")
     if prompt is None or not str(prompt).strip():
-        with io.open(default_path, encoding="utf-8") as handle:
-            prompt = handle.read().strip()
+        prompt = _slide_prompt_text(profile, lang)
     elif not isinstance(prompt, str):
         raise HTTPException(status_code=400, detail="幻灯片提示词必须是文本")
     prompt = prompt.strip()
@@ -1562,10 +1589,6 @@ async def api_options():
         "slide_langs": [{"value": k, "label": v["desc"]} for k, v in lc.SLIDE_LANGS.items()],
         "script_langs": [{"value": k, "label": v["desc"]} for k, v in lc.SCRIPT_LANGS.items()],
         "accept_formats": [".tex", ".zip", ".docx", ".doc", ".pdf"],
-        "slide_prompts": {
-            key: io.open(value["prompt"], encoding="utf-8").read().strip()
-            for key, value in lc.SLIDE_LANGS.items()
-        },
         "slide_prompt_max_chars": SLIDE_PROMPT_MAX_CHARS,
         "slide_count": {"default": 12, "min": SLIDE_COUNT_MIN, "max": SLIDE_COUNT_MAX},
         # 内容类型只决定“怎么讲”，不会改变输入格式。每个模板都把完整提示词
@@ -1578,6 +1601,10 @@ async def api_options():
                 "prompts": {
                     "zh": _script_prompt_text(key, "zh"),
                     "en": _script_prompt_text(key, "en"),
+                },
+                "slide_prompts": {
+                    "zh": _slide_prompt_text(key, "zh"),
+                    "en": _slide_prompt_text(key, "en"),
                 },
             }
             for key, value in _SCRIPT_PROMPT_PROFILES.items()
@@ -1997,7 +2024,7 @@ async def api_create_job(payload: dict):
     # 先校验再创建任务目录/记凭据：无效输入必须是零副作用的 400，
     # 不能留下一个永远不会入队的 job_<时间> 孤儿目录。
     content_profile, script_prompt = _normalize_script_prompt(config)
-    slide_prompt, slide_count = _normalize_slide_prompt(config)
+    slide_prompt, slide_count = _normalize_slide_prompt(config, content_profile)
     config["paper_type"] = "auto"
 
     job_id = "job_" + time.strftime("%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:4]
@@ -2058,6 +2085,7 @@ async def api_create_job(payload: dict):
         # 放在这里而不是去 jobs/<ingest_id>/input 里找，是因为 ingest 目录
         # 将来可能被清理，而任务自己记着更可靠。
         "source_path": payload.get("source_path"),
+        "source_name": ((_content_meta(work) or {}).get("original_names") or [None])[-1],
         # 内容寻址的溯源信息：论文与音色的内容指纹（音色本身就是 sha1 命名的 wav）。
         # 记下来的用处：将来把"同样的输入 ⇒ 同样的产物"做成缓存键时，这些字段
         # 就是现成的上半截；排查时也能一眼看出"这个任务用的是哪一份文件"。
@@ -2143,6 +2171,7 @@ async def api_rerun_job(job_id: str, payload: dict):
         # 续跑时 LaTeX 工程一定已经存在（stage 1 跑过），不要再触发一次结构化
         "needs_struct": False,
         "source_path": src_job.get("source_path"),
+        "source_name": src_job.get("source_name"),
         "resumed_from": job_id,
     }
     _save_job(job)
@@ -2292,9 +2321,14 @@ async def api_artifacts(job_id: str):
         for name in sorted(os.listdir(base)):
             path = os.path.join(base, name)
             if os.path.isfile(path):
+                stat = os.stat(path)
                 items.append({
                     "name": name,
-                    "size_mb": round(os.path.getsize(path) / 2 ** 20, 2),
+                    "size_mb": round(stat.st_size / 2 ** 20, 2),
+                    "size_bytes": stat.st_size,
+                    # 文件仍在写入时大小/mtime 会变化。前端把版本放进视频 URL，
+                    # 避免浏览器一直持有第一次读到的未封口 MP4。
+                    "version": "{}-{}".format(stat.st_size, stat.st_mtime_ns),
                     "kind": "video" if name.endswith(".mp4") else "file",
                 })
     return {"job": job_id, "artifacts": items}

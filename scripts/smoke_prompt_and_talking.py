@@ -48,7 +48,8 @@ async def main_async():
                   for p in options.get("presets") or []))
         check("下发中英文幻灯片提示词和页数范围",
               all("\\documentclass" in text and "frame" in text
-                  for text in (options.get("slide_prompts") or {}).values())
+                  for profile in profiles
+                  for text in profile.get("slide_prompts", {}).values())
               and options.get("slide_count") == {"default": 12, "min": 4, "max": 40})
         check("下发五种独立讲稿内容模板",
               [p["value"] for p in profiles]
@@ -59,6 +60,11 @@ async def main_async():
         check("各预制提示词不是论文模板追加覆盖指令",
               len({p["prompts"]["zh"] for p in profiles}) == len(profiles)
               and all("内容类型覆盖指令" not in p["prompts"]["zh"] for p in profiles))
+        check("五种内容类型都有独立的中英文幻灯片提示词",
+              len({p["slide_prompts"]["zh"] for p in profiles}) == len(profiles)
+              and len({p["slide_prompts"]["en"] for p in profiles}) == len(profiles))
+
+        web._write_content_meta(ingest_dir, {"original_names": ["课程教材.pdf"]})
 
         custom_prompt = (
             "你是一位课程教师，请用通俗语言讲解每页内容。\n"
@@ -85,6 +91,7 @@ async def main_async():
         created.append(job_id)
         job = web._load_job(job_id)
         cfg = job["config"]
+        check("任务记录保存内容文件名", job.get("source_name") == "课程教材.pdf")
 
         check("无人像时自动关闭数字人",
               response["generate_talking"] is False
@@ -112,6 +119,19 @@ async def main_async():
         check("命令行传幻灯片提示词与页数",
               argv[argv.index("--slide_prompt_file") + 1] == cfg["slide_prompt_path"]
               and argv[argv.index("--slide_count") + 1] == "9")
+
+        result_dir = web._result_dir(job)
+        os.makedirs(result_dir, exist_ok=True)
+        video_path = os.path.join(result_dir, "3_merage.mp4")
+        io.open(video_path, "wb").write(b"unfinished")
+        artifacts_a = await web.api_artifacts(job_id)
+        version_a = next(a["version"] for a in artifacts_a["artifacts"]
+                         if a["name"] == "3_merage.mp4")
+        io.open(video_path, "ab").write(b"-finished")
+        artifacts_b = await web.api_artifacts(job_id)
+        version_b = next(a["version"] for a in artifacts_b["artifacts"]
+                         if a["name"] == "3_merage.mp4")
+        check("成片写完后版本变化以触发播放器自动重载", version_a != version_b)
 
         progress_job = dict(job, status="running", phase_key="merge", phase="合成视频")
         progress = web.read_progress(progress_job)
@@ -149,6 +169,8 @@ async def main_async():
               all(token in tsx for token in (
                   "script_prompt_profiles", "prompt-editor", "generate_talking",
                   "未上传人像，本次将自动跳过数字人")))
+        check("前端用成片版本刷新播放器并显示内容文件名",
+              "video.version" in tsx and "j.source_name" in tsx)
         pipeline = io.open(os.path.join(ROOT, "Paper2Video-main", "src", "pipeline.py"),
                            encoding="utf-8").read()
         check("主流水线关闭数字人时改走音频直合片",

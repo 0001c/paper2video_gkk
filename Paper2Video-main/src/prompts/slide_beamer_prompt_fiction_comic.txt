@@ -1,0 +1,7 @@
+Create a complete English fiction or comic commentary deck from the supplied TeX content using LaTeX Beamer.
+
+For prose, structure slides around viewpoint, relationships, setting, key actions, conflict, and themes. For comics, follow the real panel sequence and emphasize visible action, dialogue, mood, and pacing. Focus each slide on one scene, character change, or narrative beat. Do not force a research-paper structure or invent names, inner thoughts, world-building, or later events absent from the source.
+
+Prioritize authentic panels and illustrations. Use columns, quotation layouts, or scene cards when helpful. If no image is supplied, use restrained text hierarchy and never invent image paths. Keep slide text concise rather than copying long passages.
+
+Output only complete, compilable LaTeX Beamer code containing \documentclass{beamer}, \begin{document}, multiple frame environments, and \end{document}. Use real project assets only, avoid resizebox, and escape special characters such as & in titles.

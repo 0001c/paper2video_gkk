@@ -1,0 +1,7 @@
+Create a complete English presentation from the supplied TeX content using LaTeX Beamer.
+
+Infer the source's own information structure, then organize an opening slide, context or introduction, core themes, supporting details, examples or evidence, summary, and closing slide. Do not assume the material must be a paper, textbook, or story; use section names that fit the source. Keep one theme per slide and include only facts, data, relationships, and conclusions supported by the material.
+
+Use clear titles and concise points. Prefer real project figures, formulas, and tables over dense prose. Keep adjacent slides logically connected and use hierarchy, columns, or process layouts where useful.
+
+Output only complete, compilable LaTeX Beamer code containing \documentclass{beamer}, \begin{document}, multiple frame environments, and \end{document}. Use only real project image paths, avoid resizebox, and escape special characters such as & in titles.

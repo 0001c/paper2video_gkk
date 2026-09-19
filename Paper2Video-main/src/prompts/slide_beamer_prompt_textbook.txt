@@ -1,0 +1,7 @@
+Create a complete English teaching deck from the supplied textbook or course TeX content using LaTeX Beamer.
+
+Organize the material as learning goals, foundational concepts, principles or procedures, worked examples, common pitfalls, and recap. Keep one teachable idea per slide. Define new terms, explain formula symbols, and use only examples and facts supported by the source. Select sections according to the actual material; do not force a research-paper structure such as methods, experiments, or ablations.
+
+Use concise titles and 3–5 short points per slide. Prefer real figures, formulas, tables, and examples from the project over dense prose. Arrange adjacent slides in a clear progression from basic to advanced.
+
+Output only complete, compilable LaTeX Beamer code containing \documentclass{beamer}, \begin{document}, multiple frame environments, and \end{document}. Use only real project image paths, never invent data or references, avoid resizebox, and escape special characters such as & in titles.

@@ -117,7 +117,10 @@ def render_video_with_cursor_from_json(
     transition_duration=0.1,
     cursor_size=16
 ):
-    with open(json_path, "r") as f:
+    # ⚠️ 显式 utf-8：Windows 上 `open()` 默认 ANSI(GBK)。这份 cursor.json 目前是
+    # 纯 ASCII（json.dump 默认转义非 ASCII），但同族的错配成本只有一行参数 ——
+    # 与 pipeline.py 里 sat/token.json 的处理保持一致。
+    with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     cursor_points = []

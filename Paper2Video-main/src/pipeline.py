@@ -197,12 +197,12 @@ if __name__ == '__main__':
     args.paper_latex_root = copy_latex_proj_path
     
     if path.exists(path.join(args.result_dir, "sat.json")) is True:
-        with open(path.join(args.result_dir, "sat.json"), 'r') as f: 
+        with open(path.join(args.result_dir, "sat.json"), 'r', encoding="utf-8") as f:
             time_second = json.load(f)
     else: time_second = {}
         
     if path.exists(path.join(args.result_dir, "token.json")) is True:
-        with open(path.join(args.result_dir, "token.json"), 'r') as f: 
+        with open(path.join(args.result_dir, "token.json"), 'r', encoding="utf-8") as f:
             token_usage = json.load(f)
     else: token_usage = {}
 
@@ -394,5 +394,9 @@ if __name__ == '__main__':
     # 改为：各阶段块自己写自己那段，这里只补齐「没跑的阶段」为 None。
     for _key in _STAGE_KEYS:
         time_second.setdefault(_key, None)
-    with open(path.join(args.result_dir, "sat.json"), 'w') as f: json.dump(time_second, f, indent=4)
-    with open(path.join(args.result_dir, "token.json"), 'w') as f: json.dump(token_usage, f, indent=4)
+    # ⚠️ JSON 的读写都显式 utf-8：这几份文件现在恰好是纯 ASCII（json.dump 默认
+    # ensure_ascii=True 会把非 ASCII 转义），所以平台编码不影响结果 —— 但那是**运气**，
+    # 一旦哪天往 token_usage 里放了中文（例如模型名、备注），GBK 默认就会养成
+    # "写入 GBK、读取按 UTF-8"的错配。cost：一行参数。
+    with open(path.join(args.result_dir, "sat.json"), 'w', encoding="utf-8") as f: json.dump(time_second, f, indent=4)
+    with open(path.join(args.result_dir, "token.json"), 'w', encoding="utf-8") as f: json.dump(token_usage, f, indent=4)

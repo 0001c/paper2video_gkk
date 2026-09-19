@@ -80,7 +80,13 @@ def run_combo(name, slide_lang, script_lang, stage, extra=None):
         log.flush()
 
         t0 = time.time()
-        proc = subprocess.run(cmd, cwd=SRC, stdout=log, stderr=subprocess.STDOUT)
+        # 与 web 侧 `_run_job` 用同一套环境约定：UTF-8 模式 + 标准流 UTF-8。
+        # 少了它们，Windows 上会撞上游那些"不带 encoding 的 open()"
+        # （实测：--if_tree_search True 时读 select_proposal.txt 的 0x92 报错）。
+        sub_env = dict(os.environ)
+        sub_env["PYTHONIOENCODING"] = "utf-8"
+        sub_env["PYTHONUTF8"] = "1"
+        proc = subprocess.run(cmd, cwd=SRC, stdout=log, stderr=subprocess.STDOUT, env=sub_env)
         dt = time.time() - t0
 
         log.write('### 退出码={}\n'.format(proc.returncode))

@@ -1129,9 +1129,21 @@ async def _run_job(job):
     # 实测 utf-8 与 gbk **解码都会抛 UnicodeDecodeError**，后果是：
     #   · 界面上的日志尾巴全是乱码（"第 5 页合成完成" → "�� 5 ҳ�ϳ����"）；
     #   · 日志兜底解析失效（数页数的正则命中 0 条）。
-    # 只设 PYTHONIOENCODING（**不设 PYTHONUTF8**），把影响限制在标准流上，
-    # 不去改变子进程里 open() 的默认编码。
+    # 只设 PYTHONIOENCODING 是**不够的**（这条早先的判断已被实测推翻，见下）。
     env["PYTHONIOENCODING"] = "utf-8"
+    # ⚠️ 2026-09-19 起同时设 `PYTHONUTF8=1`（UTF-8 模式）。早先刻意不设它，
+    # 理由是"把影响限制在标准流上、不去改变 `open()` 的默认编码"—— 那个判断错了：
+    # 上游代码里**大量 `open()` 假设 UTF-8**（提示词模板、中间 .tex、JSON），
+    # 而 Windows 上 `open()` 默认用 ANSI(GBK)。实测撞上的是
+    # `slide_code_gen_select_improvement.improve_layout` 读 `prompts/select_proposal.txt`
+    # （内含 `→`）时的 `UnicodeDecodeError: 0x92`，只在 `--if_tree_search True` 时才走到，
+    # 所以默认关的时候一直没暴露。全仓库同类写法扫描到 92 处（含 evaluation/ 那棵子树）。
+    #
+    # 逐个改当然更"显式"，但那只覆盖我们**已经发现**的那些；UTF-8 模式一条覆盖全部，
+    # 而且**让 Windows 开发机的行为对齐 Linux 服务器**（正是本项目的迁移目标）。
+    # 我们用到的那些关键位置仍然逐处写死 `encoding="utf-8"`（双保险，也让命令行直跑
+    # `pipeline.py` 不依赖这个环境变量）。
+    env["PYTHONUTF8"] = "1"
     # 凭据来自**这个任务自己**那份（_JOB_KEYS[job_id]），不是全局会话 ——
     # 多人共用同一服务时不会互相覆盖。
     if keys.get("api_key"):

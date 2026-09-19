@@ -144,10 +144,10 @@ if __name__ == "__main__":
     args.paper_latex_root = copy_latex_proj_path
 
     sat_path = os.path.join(args.result_dir, "sat.json")
-    time_second = json.load(open(sat_path)) if os.path.exists(sat_path) else {}
+    time_second = json.load(open(sat_path, encoding="utf-8")) if os.path.exists(sat_path) else {}
 
     token_path = os.path.join(args.result_dir, "token.json")
-    token_usage = json.load(open(token_path)) if os.path.exists(token_path) else {}
+    token_usage = json.load(open(token_path, encoding="utf-8")) if os.path.exists(token_path) else {}
 
     slide_image_dir = os.path.join(args.result_dir, "slide_imgs")
 

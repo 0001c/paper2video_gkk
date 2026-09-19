@@ -168,7 +168,13 @@ def latex_code_gen_upgrade(prompt_path, tex_dir, beamer_save_path,
 
 select_proposal_prompt_path = "prompts/select_proposal.txt"
 def improve_layout(code, feedback, beamer_save_path, model_config):
-    with open(select_proposal_prompt_path, 'r') as f: template_prompt = f.read()
+    # ⚠️ 编码必须写死 utf-8：这段提示词是 UTF-8（里面有 `→`），
+    # 而 Windows 上 `open()` 不带 encoding 会用 ANSI(GBK) 解码 ——
+    # 实测在 `→`（e2 86 92）的第三字节 0x92 上抛
+    #   UnicodeDecodeError: 'gbk' codec can't decode byte 0x92 in position 392
+    # 这条路径只在 `--if_tree_search True` 时才会走到，所以开关默认关的时候
+    # 它一直没暴露（2026-09-19 打开开关后才撞上）。
+    with open(select_proposal_prompt_path, 'r', encoding="utf-8") as f: template_prompt = f.read()
     token_usage_improve = []
     
     ## get layout warning info
@@ -218,7 +224,11 @@ def improve_layout(code, feedback, beamer_save_path, model_config):
             proposal_code = add_small_after_blocks(proposal_code)
             proposal_full_code =  '\n'.join(["\\documentclass{beamer}", head, "\\begin{document}", proposal_code, "\\end{document}"])
             proposal_code_save_path = beamer_save_path.replace('.tex', 'proposal_{}.tex'.format(str(factor)))
-            with open(proposal_code_save_path, 'w') as f: f.write(proposal_full_code)
+            # 这份 .tex 要交给 tectonic，而 tectonic 按 UTF-8 读源码：写到 GBK 里
+            # 轻则编译失败、重则**编译成功但文字全乱**（比崩溃更难发现）。
+            # 而它的内容来自模型生成的幻灯片代码，含中文/箭头等非 GBK 或跨编码字符，
+            # 所以两种模式（写/读）都必须显式 utf-8。
+            with open(proposal_code_save_path, 'w', encoding="utf-8") as f: f.write(proposal_full_code)
             _, feedback = compile_tex(proposal_code_save_path)  
             img_path = pdf2img(proposal_code_save_path.replace(".tex", ".pdf"), proposal_tmp_dir)
             proposal_imgs_path_list.append(img_path)  
@@ -255,7 +265,9 @@ def improve_layout(code, feedback, beamer_save_path, model_config):
     new_code.append("\\end{document}")
     new_code = "\n".join(new_code)
     new_code_save_path = beamer_save_path.replace(".tex", "_refined.tex")
-    with open(new_code_save_path, 'w') as f: f.write(new_code) 
+    # ⚠️ 这是**最终返回给流水线**的幻灯片源码（下游据此渲染 PDF 再做幻灯片图），
+    # 写成 GBK 会让后续读它的人（tectonic / pipeline）拿到乱码，且不报错。
+    with open(new_code_save_path, 'w', encoding="utf-8") as f: f.write(new_code)
     _, feedback = compile_tex(new_code_save_path)
     return new_code_save_path.replace(".tex", ".pdf"), token_usage_improve
 
@@ -279,7 +291,8 @@ def improve_per_slide(data):
         proposal_code = add_small_after_blocks(proposal_code)
         proposal_full_code =  '\n'.join(["\\documentclass{beamer}", head, "\\begin{document}", proposal_code, "\\end{document}"])
         proposal_code_save_path = beamer_save_path.replace('.tex', 'proposal_{}.tex'.format(str(factor)))
-        with open(proposal_code_save_path, 'w') as f: f.write(proposal_full_code)
+        # 同上：写 .tex 必须 utf-8（详见 improve_layout 里的说明）
+        with open(proposal_code_save_path, 'w', encoding="utf-8") as f: f.write(proposal_full_code)
         _, feedback = compile_tex(proposal_code_save_path)
         img_path = pdf2img(proposal_code_save_path.replace(".tex", ".pdf"), proposal_tmp_dir)
         proposal_imgs_path_list.append(img_path)  
@@ -708,7 +721,12 @@ def compile_tex(tex_path):
     result = subprocess.run(
         ["tectonic", str(tex_path)],
         capture_output=True,
-        text=True
+        # ⚠️ `text=True` 不带 encoding 会用平台编码解码 tectonic 的输出（都是 UTF-8），
+        # Windows 上是 GBK —— 解码失败发生在**读取线程**里，症状是
+        # `UnicodeDecodeError: byte 0x93` 之类的**假失败**（编译其实成功了）。
+        # `errors="replace"` 保证反馈文本永远拿得到（improve_layout 要从里面 grep
+        # `^warning:` 找 Overfull），不会因为一个坏字节把整步弄崩。
+        text=True, encoding="utf-8", errors="replace"
     )
     ok = result.returncode == 0
     feedback = _clean_feedback("\n".join([result.stdout or "", result.stderr or ""]))

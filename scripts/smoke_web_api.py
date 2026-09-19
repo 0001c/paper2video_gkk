@@ -2569,6 +2569,134 @@ def test_artifact_cache_and_reuse(app):
     return ok
 
 
+
+def test_upstream_encoding_patches(app):
+    """第 13 组：上游的**平台编码**地雷（我们打的补丁 + 治本开关）。
+
+    为什么值得单列一组：这类问题的失败形态是**静默的**，而且**只在特定开关下才走到**——
+    实测 `--if_tree_search True` 第一次打开就撞上
+      `UnicodeDecodeError: 'gbk' codec can't decode byte 0x92 in position 392`
+    （读 `prompts/select_proposal.txt`，那文件是 UTF-8、内含 `→`）。默认关的时候
+    这条路径根本不执行，所以它能潜伏很久。
+
+    本组钉两件事，都不需要网络、也不花钱：
+      1. **静态**：我们链路上的 `.py` 里，文本模式 `open()` 必须都带 encoding。
+         用 AST 扫（不是 grep）—— 才能正确忽略二进制模式、并认关键字形式。
+         ⚠️ 配一条**反面对照**（`evaluation/` 里应该扫得出命中），否则"扫描器坏了
+         所以永远通过"这种假绿灯根本看不出来。
+      2. **行为**：另起**干净环境**的子进程验证"不带 encoding 会炸、PYTHONUTF8=1 能救"。
+         ⚠️ 必须另起进程并剔除 `PYTHONUTF8`：本测试进程自己可能已经处于 UTF-8 模式
+         （开发机的 shell 里就设了），那就测不出"平台默认"的真实行为 —— 我踩过这一脚。
+    """
+    print()
+    print("=" * 66)
+    print("[13] 平台编码：上游 open() 的编码补丁 + UTF-8 模式")
+    print("=" * 66)
+    ok = True
+
+    import ast
+    import locale
+    import subprocess
+
+    src_root = os.path.join(ROOT, "Paper2Video-main", "src")
+
+    def unencoded_text_opens(rel_dir):
+        """返回 [(相对路径:行号)]：文本模式 open() 没写 encoding 的位置。"""
+        found = []
+        for base, dirs, files in os.walk(os.path.join(src_root, rel_dir) if rel_dir else src_root):
+            dirs[:] = [d for d in dirs if d != "__pycache__"]
+            for name in sorted(files):
+                if not name.endswith(".py"):
+                    continue
+                path = os.path.join(base, name)
+                try:
+                    tree = ast.parse(io.open(path, encoding="utf-8").read())
+                except Exception:
+                    continue
+                for node in ast.walk(tree):
+                    if not isinstance(node, ast.Call):
+                        continue
+                    fn = node.func
+                    if not (isinstance(fn, ast.Name) and fn.id == "open"):
+                        continue
+                    if node.args and isinstance(node.args[0], ast.Constant) \
+                            and not isinstance(node.args[0].value, str):
+                        continue          # 变量路径也要查，但非字符串字面量先放过
+                    mode = None
+                    if len(node.args) > 1 and isinstance(node.args[1], ast.Constant):
+                        mode = node.args[1].value
+                    for kw in node.keywords:
+                        if kw.arg == "mode" and isinstance(kw.value, ast.Constant):
+                            mode = kw.value.value
+                    if mode is not None and "b" in str(mode):
+                        continue          # 二进制模式不需要编码
+                    if any(kw.arg == "encoding" for kw in node.keywords):
+                        continue
+                    found.append("%s:%d" % (os.path.relpath(path, src_root).replace(os.sep, "/"),
+                                            node.lineno))
+        return found
+
+    ours = [x for x in unencoded_text_opens("") if not x.startswith("evaluation/")]
+    ok &= check("流水线链路上的文本 open() 都指定了 encoding（Windows 默认是 GBK，不是 UTF-8）",
+                not ours, "未指定的：%s" % (ours[:6] or "无"))
+
+    # 反面对照：扫描器必须**能**扫出东西来，否则上面那条是假绿灯
+    theirs = unencoded_text_opens("evaluation")
+    ok &= check("对照组：evaluation/ 那棵子树仍能扫出未指定编码的 open()（证明扫描有效）",
+                len(theirs) > 0, "扫出 %d 处（论文评测代码，我们的链路不使用）" % len(theirs))
+
+    # ── 行为验证：另起干净环境的子进程 ──
+    prompt = os.path.join(src_root, "prompts", "select_proposal.txt")
+    ok &= check("那份提示词确实是 UTF-8 且含非 ASCII（否则这个 bug 不存在）",
+                os.path.isfile(prompt)
+                and any(b > 127 for b in open(prompt, "rb").read()[:400]),
+                "%d 字节" % os.path.getsize(prompt))
+
+    probe = ("p = r'%s'\ntry:\n    n = len(open(p).read()); print('OK', n)\n"
+             "except Exception as e:\n    print('FAIL', type(e).__name__)\n") % prompt
+
+    def run_probe(**extra):
+        env = dict(os.environ)
+        for k in ("PYTHONUTF8", "PYTHONIOENCODING"):
+            env.pop(k, None)                      # 关键：清掉，否则测的不是"平台默认"
+        env.update(extra)
+        r = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", env=env)
+        return (r.stdout or r.stderr or "").strip().splitlines()[-1]
+
+    platform_default = run_probe()
+    with_utf8 = run_probe(PYTHONUTF8="1")
+    ok &= check("对照组：不带 encoding 时，平台默认（GBK）读这份提示词会失败"
+                "（证明这不是假想问题）",
+                platform_default.startswith("FAIL"), platform_default[:70])
+    ok &= check("治本修法生效：PYTHONUTF8=1 下不写 encoding 也能读成功",
+                with_utf8.startswith("OK"), with_utf8[:70])
+
+    # ── 静态：两个入口都必须把 UTF-8 模式传给流水线子进程 ──
+    app_src = io.open(os.path.join(ROOT, "web", "app.py"), encoding="utf-8").read()
+    ok &= check("web 侧给流水线子进程设了 PYTHONUTF8=1（一条覆盖上游所有 open()）",
+                'env["PYTHONUTF8"] = "1"' in app_src, "在 _run_job 的环境里")
+    ok &= check("web 侧仍保留 PYTHONIOENCODING（日志编码统一，与上面互补而非互斥）",
+                'env["PYTHONIOENCODING"] = "utf-8"' in app_src, "在 _run_job 的环境里")
+    combos = io.open(os.path.join(ROOT, "scripts", "gkk_3combos.py"), encoding="utf-8").read()
+    ok &= check("命令行驱动（gkk_3combos）用同一套环境约定（否则命令行跑法仍会撞）",
+                'PYTHONUTF8' in combos and "env=sub_env" in combos,
+                "子进程带 env")
+
+    # ── 静态：树搜索那几个写入点必须是 utf-8（写 GBK 的 .tex，tectonic 会返回 0 但丢字）──
+    tree_src = io.open(os.path.join(src_root, "slide_code_gen_select_improvement.py"),
+                       encoding="utf-8").read()
+    ok &= check("improve_layout 读提示词用了 utf-8",
+                "open(select_proposal_prompt_path, 'r', encoding=\"utf-8\")" in tree_src,
+                "已指定")
+    ok &= check("树搜索写 .tex 用 utf-8（写出 GBK 的 .tex 会让 tectonic 返回 0 但文字丢成 U+FFFD）",
+                tree_src.count("_code_save_path, 'w', encoding=\"utf-8\"") >= 3,
+                "写入点 %d 处带 encoding" % tree_src.count("_code_save_path, 'w', encoding=\"utf-8\""))
+    ok &= check("该模块的 compile_tex 也指定了编码（否则读取线程会因解码 UTF-8 输出而假失败）",
+                'text=True, encoding="utf-8", errors="replace"' in tree_src, "已指定")
+    return ok
+
+
 def main():
     app = load_app()
     suite_started = time.time()          # 清理护栏：只删本次测试期间新建的目录
@@ -2585,6 +2713,7 @@ def main():
         test_voice_and_ref_audio(app),
         test_content_store_and_fingerprint(app),
         test_artifact_cache_and_reuse(app),
+        test_upstream_encoding_patches(app),
     ]
     orphan = _cleanup_orphan_jobs(app, suite_started)
     if orphan:

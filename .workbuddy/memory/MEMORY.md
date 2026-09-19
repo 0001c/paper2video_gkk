@@ -4,9 +4,13 @@
 
 本仓库是「论文研究 / 复现」工作区，不是上游仓库的 fork。
 
-- `Paper2Video-main/`：上游开源代码包（showlab/Paper2Video，即论文官方实现），
-  已在 `.gitignore` 忽略。**但我们确实会改它**（MuseTalk 补丁、emoji stdout 兜底、
-  跳过判据、max_tokens）—— 改动必须同时落到 `docs/` 与提交信息里。
+- `Paper2Video-main/`：上游开源代码包（showlab/Paper2Video，即论文官方实现）。
+  ⚠️ **它在 Git 里**（2026-09-19 核实：`src/` 下 172 个文件被跟踪，`pipeline.py`
+  自己有 11 次提交；`.gitignore` 只忽略它的构建产物与 `__pycache__`）。
+  早先笔记写的"已忽略、不要修改、不要提交"是**错的** —— 那会让人以为补丁不在
+  版本控制里。**我们确实会改它**（补丁总账见 `docs/上游补丁清单.md`），
+  改动必须同时落到 `docs/` 与提交信息里。**唯一不在本仓库 Git 里的是 MuseTalk**
+  （独立仓库）——"重装后必须重打"只对它成立。
 - `docs/` 归档论文与分析结论；`scripts/` 本仓库自己的脚本；`.venv/` 虚拟环境（根目录）。
 - Python 一律走 `.venv`。分析结论写进 `docs/`，不回写上游目录。
 
@@ -36,6 +40,13 @@ HuggingFace `ZaynZhu/Paper2Video`；数字人权重需另装（见模型选型�
 - 中文字幕字体**不能硬编码 Windows 字体**（已修：`_cjk_subtitle_font()`，
   可用 `PAPER2VIDEO_CJK_FONT` 覆盖）—— 英文正常、中文变方框。
 - 权重/缓存路径不要出现盘符；GPU 档位不要写死（服务器可能多卡）。
+- **平台编码**：Windows 上 `open()` 不带 encoding 用 **cp936**，Linux 上是 UTF-8。
+  我们链路的 11 处已显式 `encoding="utf-8"`，且流水线子进程环境加了
+  **`PYTHONUTF8=1`**（`web/app.py::_run_job`、`scripts/gkk_3combos.py`）——
+  后者**推翻了早先"只设 PYTHONIOENCODING"的决定**（旧理由在"上游 92 处 open() 假设
+  UTF-8"面前不成立）。自检 `scripts/verify_tex_encoding.py` + 冒烟第 13 组。
+  ⚠️ 判据要记住：**编译/命令退出码 0 ≠ 内容正确** —— GBK 写出的 .tex 让 tectonic
+  返回 0 却把非 ASCII 全替换成 U+FFFD（实测 PDF 里中文三个判据全 False）。
 - **MuseTalk 补丁改的是上游仓库、不在本仓库 Git 里 → 重装后必须重打**。
 - 多人使用要补：任务按人隔离（凭据已按 job 隔离）、排队可见、按人统计 token、只监听内网。
 - 跑冒烟测试要 `CODEBUDDY_SAFE_DELETE_ENABLED=0`（沙箱批量删除守卫会拦测试自己的清理）；

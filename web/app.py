@@ -1947,6 +1947,10 @@ async def api_create_job(payload: dict):
     config["generate_talking"] = generate_talking
     config["talking_note"] = talking_note
 
+    # 先校验再创建任务目录/记凭据：无效输入必须是零副作用的 400，
+    # 不能留下一个永远不会入队的 job_<时间> 孤儿目录。
+    content_profile, script_prompt = _normalize_script_prompt(config)
+
     job_id = "job_" + time.strftime("%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:4]
     _remember_keys(job_id, payload)          # 凭据跟着任务走，不是全局一份
     job_dir = _job_dir(job_id)
@@ -1954,7 +1958,6 @@ async def api_create_job(payload: dict):
 
     # 讲稿提示词按任务落成独立 UTF-8 文件，避免把上万字符塞进 Windows 命令行；
     # job.json 只记路径与哈希，缓存与追溯都以这份不可混淆的任务快照为准。
-    content_profile, script_prompt = _normalize_script_prompt(config)
     script_prompt_path = os.path.join(job_dir, "script_prompt.txt")
     with io.open(script_prompt_path, "w", encoding="utf-8", newline="") as handle:
         handle.write(script_prompt + "\n")

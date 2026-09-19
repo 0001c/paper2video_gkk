@@ -95,6 +95,14 @@ GBK stdout 下抛 UnicodeEncodeError 且崩点在**流水线最末端** → `pv_
   **该分支已被我们合并**（symtable 复核 `improve_layout` 调用链无未定义引用）。
   ⚠️ 它改变幻灯片产物 ⇒ **必须在 `artifact_cache.DECK_FIELDS` 里**，且值要归一成 bool。
   开关文案/默认值/成本口径由 `/api/options.toggles` 下发，前端不硬编码。
+  ⚠️ **实测（2026-09-19 11:20）它在本项目里结构性空转**（详见 `docs/树搜索实测.md`）：
+  入选门槛是"Overfull 溢出的页 **且** 该 frame 含 `\includegraphics`"，而我们喂给模型的
+  工程里**没有任何图片文件**（`paper_ingest → paper_struct` 只提正文，`latex_proj/` 里
+  只有 main.tex+main.pdf），中文提示词又明确授权"若没有可用图片就不要写 `\includegraphics`"
+  ⇒ 历史上 3 份 slides.tex 的 `\includegraphics` **全是 0** ⇒ `need_improve_list` 恒为空。
+  判据不是"产物变没变"：`improve_layout` **总会**重写一份 `slides_refined.tex`（无条件），
+  要看 **`result/latex_proj/proposal_imgs/` 是否非空**（空 = 一页都没改进）。
+  ⇒ 想让论文这个核心机制真跑起来，必须先让**图片进入 `paper_latex_root`**。
 
 ## 输入与产物：内容寻址
 

@@ -1,264 +1,181 @@
 # paper2video 项目长期笔记
 
-## 项目定位
+## 项目定位与约定
 
-本仓库是「论文研究 / 复现」工作区，不是上游代码的 fork。
+本仓库是「论文研究 / 复现」工作区，不是上游仓库的 fork。
 
-- `Paper2Video-main/`：从 GitHub 拉取的**上游开源代码包**（showlab/Paper2Video），
-  已在 `.gitignore` 中忽略，**不要修改、不要提交**。属于「素材」而非「本仓库产物」。
-- `docs/`：归档的论文原文（PDF）与提取文本，作为对照依据。
-- `scripts/`：本仓库自己的辅助脚本。
-- `.venv/`：本仓库 Python 虚拟环境（根目录，已 gitignore）。
+- `Paper2Video-main/`：上游开源代码包（showlab/Paper2Video，即论文官方实现），
+  已在 `.gitignore` 忽略。**但我们确实会改它**（MuseTalk 补丁、emoji stdout 兜底、
+  跳过判据、max_tokens）—— 改动必须同时落到 `docs/` 与提交信息里。
+- `docs/` 归档论文与分析结论；`scripts/` 本仓库自己的脚本；`.venv/` 虚拟环境（根目录）。
+- Python 一律走 `.venv`。分析结论写进 `docs/`，不回写上游目录。
 
-## 约定
+**关键事实**：论文 = arXiv 2510.05096v2（Show Lab, NUS）。benchmark 数据在
+HuggingFace `ZaynZhu/Paper2Video`；数字人权重需另装（见模型选型）。
 
-- Python 一律走 `.venv`，不用全局解释器。
-- 上游代码只读；分析结论写进 `docs/` 或对话，不回写上游目录。
+## 模型选型（2026-09-17 定，详见 `docs/模型替换方案.md`）
 
-## 关键事实（2026-09-16 核实）
+用户目标：本地模型国产化（可用 > 效果），API 侧全用 DeepSeek-V4.1-Flash。
 
-- 论文 `docs/Paper2Video.pdf` = arXiv 2510.05096v2，标题 *Paper2Video: Automatic Video Generation
-  from Scientific Papers*，作者 Zeyu Zhu / Kevin Qinghong Lin / Mike Zheng Shou（Show Lab, NUS）。
-- 上游仓库即该论文官方实现，含 PaperTalker 多智能体生成管线 + 四项评测指标代码。
-- 数据与模型权重不在仓库内：benchmark 数据集在 HuggingFace `ZaynZhu/Paper2Video`；
-  数字人权重需另装 Hallo2（独立环境）。
+- TTS → `Qwen/Qwen3-TTS-12Hz-1.7B-Base`（Apache-2.0，替 F5-TTS 的 CC-BY-NC）
+- 光标 → `mPLUG/GUI-Owl-1.5-4B-Instruct`（MIT；UI-TARS-7B 装不下）
+- 转写对齐 → `Qwen3-ASR-0.6B` + `Qwen3-ForcedAligner-0.6B`
+- 数字人 → `MeiGen-AI/InfiniteTalk`（Apache-2.0；Hallo2 锁 cu118，sm_120 上是死结）
+- API 语言+视觉 → `deepseek-flash`；API 视频理解 → `Qwen3.5-Omni-Plus`
 
-## 模型选型决策（2026-09-17 定）
+**省返工的两条**：① `wei_utils.get_agent_config()` 有兜底分支 ⇒ 换模型只需设
+`OPENAI_API_BASE/KEY` + `--model_name_t deepseek-flash`，**不用改代码**；
+② `cursor_gen.py:55` 本就用 `factor=1000, model_type="qwen25vl"`，与 GUI-Owl 同源。
+**硬约束**：单卡按阶段加载/卸载；路径含中文 ⇒ 权重放英文目录；`HF_HOME` 在 E/F 盘。
+**许可证雷区**：`tencent/HunyuanVideo-Avatar` 非商用 ⇒ 商业交付只用 InfiniteTalk。
 
-用户目标：本地模型全部国产化（优先可用 > 效果），API 侧 LLM 全部换 DeepSeek-V4.1-Flash。
-完整方案见 `docs/模型替换方案.md`，核验数据可用 `scripts/hf_check.py` 复跑。
+## 迁移目标：学校 Linux 服务器（本机 Windows 只是开发环境）
 
-**已定选型**（许可证/参数量均在 HF API 上实测过；详表见 `docs/模型替换方案.md`）：
+开发机上永远不出现、但 Linux 上必现的问题：
 
-- 语音合成 → `Qwen/Qwen3-TTS-12Hz-1.7B-Base`（Apache-2.0，替 F5-TTS 的 CC-BY-NC）
-- 光标定位 → `mPLUG/GUI-Owl-1.5-4B-Instruct`（MIT；UI-TARS-7B 显存装不下）
-- 转写对齐 → `Qwen/Qwen3-ASR-0.6B` + `Qwen/Qwen3-ForcedAligner-0.6B`
-- 数字人 → `MeiGen-AI/InfiniteTalk`（Apache-2.0；Hallo2 锁 cu118，在 sm_120 上是死结）
-- API 语言+视觉 → **`deepseek-flash`**（原生图像输入、1M 上下文）
-- API 视频理解 → `Qwen3.5-Omni-Plus`（DeepSeek 不支持视频输入）
-
-**改造时先记住两条**（能省大量返工）：
-
-1. `wei_utils.get_agent_config()` 有兜底分支 → 换成 `OPENAI_COMPATIBLE_MODEL` 只需设
-   `OPENAI_API_BASE`/`OPENAI_API_KEY` + 传 `--model_name_t deepseek-flash`，**不用改代码**。
-2. `cursor_gen.py:55` 本就用 `parse_action_to_structure_output(factor=1000, model_type="qwen25vl")`，
-   与 GUI-Owl 的 0–1000 归一化坐标同源 → 换模型近乎零改造。
-
-**硬约束**：单卡必须按阶段加载/卸载（多进程会让每个 worker 各持一份权重）；
-项目路径含中文 → 权重放英文目录；`HF_HOME` 必须在 E/F 盘。
-
-**许可证雷区**：`tencent/HunyuanVideo-Avatar` 是腾讯社区协议（非商用）→
-商业交付只用 Apache-2.0 的 InfiniteTalk。
-
-## 音色：MiMo 造参考音频 + 本地克隆（2026-09-19 完成）
-
-方案与实测数据见 `docs/音色方案.md`。要点：
-
-- **接法是"云端只造一次音色、逐页仍本地 Qwen3-TTS 克隆"**（不是逐页调云端 TTS）：
-  音色一次定下 → 全片一致；免费期结束/断网/无 key 都不影响出片；字幕对齐链路不动。
-- **地基已实测**：MiMo 生成的 wav 直接当克隆参考可用（f0 差 53 Hz 证明音色真变了）。
-- **`MIMO_API_KEY` 在服务端 `.env`**（gitignore 里）；参考文本写死在
-  `scripts/mimo_voice.py` 的 `REF_TEXTS`（**必须由我们给定**并放 assistant ——
-  用文档的 `optimize_text_preview=True` 会让 ref_text 失控，只能回头靠 ASR 转写，
-  而 ASR 在本项目里是已知会转错的）。
-- **限时免费 ⇒ 必须有回落**：`resolve()` 任何失败都回落内置音色，且回落原因
-  会进响应与 run.log（`[voice]` 行）。
-- **已生成的音色不需要 key**（缓存命中直接可用）⇒ 攒下的音色资产长期有效。
-  缓存目录 `jobs/_voices/<sha1>.wav|.txt|.json`，key = kind|voice|prompt|lang。
-- **踩过的坑**：`pipeline.py` 里 `ref_audio` 与 `ref_text` 各自 `or lang[...]` 回落
-  ⇒ 自定义音频 + 没给文本时会把**档位那段的文本**配上去，克隆失真且**不报错**。
-  已改成 ref_text 跟着 ref_audio 走（无文本则保持 None 交给 ASR）。
-- 预置音色 8 个（中英男女各 2），**不用 `mimo_default`**（它因集群而异，
-  同一份配置在不同部署上会出不同音色）。
-- 测试不消耗配额：网络路径全用假 client / 缺 key 覆盖（第 10 组，35 项）。
-
-## H5 可视化改造（2026-09-18）
-
-方案文档 `docs/Web可视化方案.md`。改造**只加外壳、不碰算法**。
-
-**输入支持 `.tex`/`.zip`/`.docx`/`.doc`/`.pdf`**（使用者给的是 Word 与 PDF，不是 tex）。
-链路：输入 → 提取（`scripts/paper_ingest.py`，零成本）→ LLM 结构化 → `main.tex`。
-**A/B/C 已定**（B2 内联预览；做任务列表+续跑）；**D 建议 React+Vite+TDesign+FastAPI**
-（build 产物由后端服务、不引路由与状态库）。
-
-**⚠️ 迁移目标：学校 Linux 服务器**（本机 Windows 只是开发环境，导师演示通过后搬迁）：
 - 中文字幕字体**不能硬编码 Windows 字体**（已修：`_cjk_subtitle_font()`，
-  Linux 用 Noto Sans CJK，可 `PAPER2VIDEO_CJK_FONT` 覆盖）—— 英文不受影响、
-  中文会变方框，这类问题在开发机上永远不出现
-- 权重/缓存路径不要出现盘符；GPU 档位不要写死（服务器可能多卡）
-- 多人使用要补：任务按人隔离、排队可见、按人统计 token、只监听内网
+  可用 `PAPER2VIDEO_CJK_FONT` 覆盖）—— 英文正常、中文变方框。
+- 权重/缓存路径不要出现盘符；GPU 档位不要写死（服务器可能多卡）。
+- **MuseTalk 补丁改的是上游仓库、不在本仓库 Git 里 → 重装后必须重打**。
+- 多人使用要补：任务按人隔离（凭据已按 job 隔离）、排队可见、按人统计 token、只监听内网。
+- 跑冒烟测试要 `CODEBUDDY_SAFE_DELETE_ENABLED=0`（沙箱批量删除守卫会拦测试自己的清理）；
+  服务器上装 node 跑一次 `npm run build`（`web/static/` 是构建产物，已 gitignore）。
 
-三条硬约束：
-1. **入口是 LaTeX 源码目录**：`--paper_latex_root` 下必须有 `main.tex`。
-2. **只需一组 API key**：`OPENAI_API_KEY` / `OPENAI_API_BASE`（DeepSeek）。
-3. **`--if_tree_search` 默认关闭**：它是"幻灯片布局微调"（每张溢出页生成 4 个缩放候选
-   拼成 2×2 图，由 VLM 选一个 → 宽度 4、深度 1 的束搜索）。关它是**成本**考虑，不是
-   "会崩"：早先记的 NameError 来自上游 `pipeline.py` 的 `else` 分支引用了被注释掉的
-   `latex_code_gen`，**那个分支已被我们合并掉**（2026-09-19 用 symtable 复核，
-   `improve_layout` 调用链无未定义引用）。
+## 流水线与三个必知的改造点
 
-转换层：不用 Office/WPS 的 COM（会连到使用者的 WPS 并挂死）；`.doc` 走 olefile（**有损**）；
-PDF 必须行合并且句末判据同时认中英文标点。**真实 Word 不用标题样式（heading=0）**，
-所以 `.docx` 并无结构优势，三种格式都靠 LLM 从正文推断章节；
-三者内容等价，**pdf 噪声最少、优先用**。
+链路：输入 → `paper_ingest` 提取（零成本）→ `paper_struct` LLM 结构化（花钱）→
+LaTeX 工程 → stage1 幻灯片+光标 → stage2 讲稿 → TTS → 数字人 → 合片。
+成本口径 `result/<名字>/token.json`：一篇约 5.6 万 token，**讲稿占 76%**。
 
-成本口径：`result/<名字>/token.json`；一篇约 5.6 万 token，**讲稿占 76%**，
-故 `--reuse_script` 是省钱主力。
+**① 结构化层（`scripts/paper_struct.py`）**：输出上限 65536
+（`PAPER2VIDEO_MAX_TOKENS` 可覆盖）。撞上限会**续写**（≤3 轮）→ 仍不全则**截到最后
+环境配平点 + 补 `\end{document}`**（实测丢 1.3%、编译通过）。prompt 必须写死四条：
+中文用 `ctex`、表格用 `tabularray` 的 `tblr`（与 ctex 宏包级冲突）；真实论文标题无样式
+标记（heading=0）靠语义识别章节；不得编造数据/文献；**不得"顺手纠正"原文**。
+保真度检查 `scripts/check_struct_fidelity.py` —— **主指标必须用固定长度窗口**，
+整句比对会产出大量假阴性，而**假警报比不报更糟**。
 
-**数字人必须打 MuseTalk 偶数尺寸补丁**（`docs/MuseTalk补丁.md`）：
-上游 `-vf format=yuv420p` 不处理奇数尺寸，人脸裁框为奇数（如 215x221）时
-libx264 拒绝编码 → temp.mp4 为 0 字节 → **整批 11 页"跑完但无产物"**，
-症状极具误导性（上游照样打印 result is save、总耗时正常）。
-已改 `<MuseTalk>/scripts/{realtime_inference,inference}.py`，加
-`crop=trunc(iw/2)*2:trunc(ih/2)*2`；源码里要用**转义双引号**（f-string 定界符）。
-⚠️ **改的是上游仓库、不在本仓库 Git 里，学校服务器重装后必须重打**；
-自检：`python scripts/verify_musetalk_patch.py`（talking_gen 也会在批量入口提示）。
+**② MuseTalk 偶数尺寸补丁**（`docs/MuseTalk补丁.md`）：上游 `-vf format=yuv420p`
+不处理奇数尺寸，人脸裁框为奇数（如 215×221）时 libx264 拒绝编码 → temp.mp4 = 0 字节
+→ **整批页"跑完但无产物"**，而上游照样打印 result is save、耗时正常。
+已加 `crop=trunc(iw/2)*2:trunc(ih/2)*2`；源码里要用**转义双引号**（f-string 定界符）。
+自检 `python scripts/verify_musetalk_patch.py`；`talking_gen` 批量入口也会提示。
 
-**stdout 兜底**：上游有 4 处 print 带 emoji（`cursor_render.py` 的 \u2705、
-`cursor_gen.py` 与 `slide_code_gen` 的 \u26a0），GBK stdout 下会抛
-UnicodeEncodeError，且崩点在流水线**最末端**。已在 `pv_env.py` 模块级做
-`stdout/stderr.reconfigure(errors="replace")`（被 9 个模块导入 ⇒ 覆盖所有入口），
-配合 web 侧 `PYTHONIOENCODING=utf-8`。
-
-**日志编码必须统一**：`run.log` 同时是父进程写入目标与子进程 stdout 目标，
-子进程默认按 Windows 控制台编码（GBK）输出 → 混合编码文件任何单一解码器都读不了，
-表现为界面乱码 + **日志解析正则命中 0 条**（不报错）。
-已修：子进程加 `PYTHONIOENCODING=utf-8`；读取端 `_read_log_text()` 逐行回落。
-**迁 Linux 后这一行仍要保留**（Linux 默认 UTF-8，属无操作，但别删）。
+**③ stdout 兜底 + 日志编码**：上游 4 处 print 带 emoji（`\u2705`/`\u26a0`），
+GBK stdout 下抛 UnicodeEncodeError 且崩点在**流水线最末端** → `pv_env.py` 模块级
+`stdout/stderr.reconfigure(errors="replace")`（被 9 个模块导入）。`run.log` 同时是
+父进程写入目标与子进程 stdout 目标，两种编码混写 ⇒ **任何单一解码器都读不了**，
+表现为界面乱码 + **日志解析正则命中 0 条**（不报错）→ 子进程加
+`PYTHONIOENCODING=utf-8`、读取端 `_read_log_text()` 逐行回落（**迁 Linux 后别删这行**）。
 
 架构：FastAPI + 单 worker 串行队列（单卡并行必 OOM）；流水线走子进程
 `Popen(argv, cwd=绝对路径)` 不经 shell；只监听 127.0.0.1。
 
-## H5 P1（2026-09-18 完成）
+## 开关与配置
 
-四件：结构化进度 / 页级可视化 / 逐页素材浏览 / 任务记录+续跑。
+- **只需一组 API key**：`OPENAI_API_KEY` / `OPENAI_API_BASE`。前端存 localStorage，
+  服务端**按任务注入** `_JOB_KEYS[job_id]`（原先是进程级 `_SESSION_KEYS` ⇒ 多人共用
+  一份、最后输入的人覆盖所有人）。回落 .env 时必须写 run.log。
+- **入口是 LaTeX 源码目录**：`--paper_latex_root` 下必须有 `main.tex`。
+- **`--if_tree_search`：界面上可开、默认关，且在产物指纹里**（2026-09-19）。
+  它是"幻灯片布局微调"（编译后挑出 Overfull 溢出的页，每页 4 个宽度候选拼 2×2 图，
+  VLM 选一个 → 宽度 4、深度 1 的束搜索）。默认关是**成本**考虑，不是"会崩"：早先记的
+  NameError 来自上游 `pipeline.py` 的 `else` 分支引用了被注释掉的 `latex_code_gen`，
+  **该分支已被我们合并**（symtable 复核 `improve_layout` 调用链无未定义引用）。
+  ⚠️ 它改变幻灯片产物 ⇒ **必须在 `artifact_cache.DECK_FIELDS` 里**，且值要归一成 bool。
+  开关文案/默认值/成本口径由 `/api/options.toggles` 下发，前端不硬编码。
 
-- **`src/progress_report.py`**：流水线写 `progress.jsonl`（一行一 JSON）。
-  **默认不生效**（未设 `PAPER2VIDEO_PROGRESS_FILE` 就不生成文件）、绝不抛异常、只追加。
-  后端 `read_progress` **优先读它、回落日志**，终态以任务状态为准。
-- **产物目录读写在 `_result_dir(job)`**（唯一入口）：续跑不复制产物，
-  新任务的 `config.result_dir` 指向原任务的目录。**读取侧（产物列表/逐页索引/
-  文件服务/总页数）必须走它**，直接拼 `<job_dir>/result` 会让续跑任务看到空产物，
-  且"续跑的续跑"会被 400 拒掉。
-- **`POST /api/jobs/{id}/rerun`**：只重跑 stage 2/3 + `--reuse_script` ⇒ **零 API 费用**。
-  **不复制产物**：新任务指向原 `result` 目录（`_build_argv` 支持 `result_dir` 覆盖）。
-- ⚠️ **数字人产物的复用只看 `result_dir`**（2026-09-19 查证）：落点
+## 输入与产物：内容寻址
+
+**上传内容库**：`jobs/_content/<sha1[:12]>/` = `meta.json` + 不可变的
+`input/<sha1><ext>` + 派生 `ingest/`。**解析上传 id 的唯一入口 `_upload_work()`**；
+校验的是「一个路径段 + 不以点开头」，**不是前缀白名单**（白名单挡不住
+`content_../..`，却会误伤手工建的目录）。命中判据 = 内容 sha1 +
+`paper_ingest.EXTRACTOR_VERSION` ⇒ **改了提取逻辑必须把版本号 +1**（否则命中旧缓存
+且不报错）。派生正文仍按任务复制到 `<job_dir>/ingest/`（任务自包含）。
+老目录（`ingest_*`/`portrait_*`）**不迁移**：可回收仅约 1.2 MB，不值得动历史记录。
+
+**产物目录的唯一入口是 `_result_dir(job)`**（优先 `config.result_dir`）：续跑不复制
+产物，新任务指过去。**读取侧（产物列表/逐页索引/文件服务/总页数）必须走它** ——
+直拼 `<job_dir>/result` 会让续跑任务看到空产物，且"续跑的续跑"被 400 拒掉。
+
+**产物缓存（阶段 3，`scripts/artifact_cache.py`）**：`jobs/_cache/struct|deck/<指纹>/`，
+命中即跳过**唯一两步联网付费**的步骤。五条硬规矩：
+
+1. **两类缓存各有一份写死的字段表**：加字段前问「它会改变产物吗」。少了 → 输入不同却
+   命中（静默出错）；多了 → 白花钱。`struct` 不含语言/人像/音色，`deck` 不含人像/音色
+   （"换头像不废缓存"是**特性**），但**含 `if_tree_search`**。
+2. **键只算一次、由调用方传下去**（`lookup_*`/`publish_*` 都收 `key=`）。算两次必然漂移
+   （流水线会改写 `main.tex`），漂移的表现是"永远命中不了且不报错"。通用判据：
+   **凡"算出来的值既用于查询又用于写入"，就只算一次**。
+3. **输入取不到指纹 ⇒ 既不命中也不写入**（`REQUIRED_FIELDS`），否则不同输入会因为
+   字段都是 None 而塌成同一个键。
+4. **只增不删**：模块里没有删除实现，`plan_gc()` 只读清点；`GET /api/cache` 查看；
+   逃生门 `config.force_regenerate=True`。
+5. ⚠️ 命中会改 `config.stages`/`reuse_script` 并重建 argv ⇒ 收尾**必须把这两个一起落盘**。
+
+**还没做**：GPU 侧产物（TTS/光标/数字人/成片）未进缓存；界面未提示"本次命中了缓存"。
+
+## 数字人产物的复用与跳过判据
+
+- **复用只看 `result_dir`**：落点
   `<result_dir>/talking_<backend>/<音频序号>/<参考图主文件名>/merge_video.mp4`，
   存在即跳过。`result_dir` 每任务一份 ⇒ **手动上传相同素材 = 新任务 = 一页都不跳过**
-  （中间 workspace 的 `avatar_id` 还带时间戳，刻意禁止跨运行复用）；
+  （中间 workspace 的 `avatar_id` 带时间戳，刻意禁止跨运行复用）；
   `_file_sha1()` 只在**单次运行内**按参考图分组，不是跨运行去重。
-- 🔴 **已知未修缺陷：数字人的跳过判据不含音频**（2026-09-19 发现）：
-  `_target_paths(save_dir, idx, ref_img_path)` 的键只有（页号, 参考图主文件名）；
-  而合片 `merge_slides_and_talking()` **签名里没有音频参数**，音轨取自数字人视频
-  自带那条 ⇒ 音频变了但页数/人像名不变时，该页被跳过并**连同旧配音进成片**，
-  新 TTS 音频静默丢弃、字幕与声音错位，**全程不报错**。
-  触发：续跑 `reuse_script: False`，或讲稿文件丢失导致被动重新生成。
-  修法首选「把音频指纹写进每页目录的 `.inputs.json`，跳过前比对」。
-  ✅ **已于 2026-09-19 按此修好**（`talking_gen._inputs_unchanged` /
-  `_write_inputs_stamp`，两处跳过点 + 两处写入点）。
+- ✅ **跳过判据已含音频指纹**（2026-09-19 修）：原先判据只有（页号, 参考图主文件名），
+  而合片函数签名里没有音频参数、音轨取自数字人视频自带那条 ⇒ 音频变了而页数/人像名不变时
+  该页被跳过、**旧配音进成片、新 TTS 音频静默丢弃**，全程不报错。
+  现每页目录落 `.inputs.json`（参考图 + 音频的 size/sha1），两处跳过点都比对；
+  **任何不确定（旧产物没指纹、指纹损坏、输入读不到）一律判为"不能复用"**。
+- **要省数字人那 10 分钟只能用续跑**，不能靠重新上传（见上）。
 
-## 上传内容库（内容寻址，2026-09-19 实施）
+## Web 侧（`docs/Web可视化方案.md`、`docs/前端体验改进方案.md`）
 
-- 结构 `jobs/_content/<sha1[:12]>/`：`meta.json` + 不可变的 `input/<sha1><ext>`
-  + 派生的 `ingest/`（`paper_text.md`、`ingest_meta.json`）。
-- **解析上传 id 的唯一入口是 `_upload_work()`**（`web/app.py`）：认
-  `content_<sha1[:12]>` 与任何单个路径段的名字（老随机 id）。校验的是
-  「一个路径段 + 不以点开头」，不是前缀白名单 —— 白名单挡不住 `content_../..`，
-  却会误伤手工建的目录名。
-- **命中判据 = 内容 sha1 + `paper_ingest.EXTRACTOR_VERSION`**：
-  ⚠️ **改了 `scripts/paper_ingest.py` 的提取逻辑必须把版本号 +1**，
-  否则命中旧缓存且不报错。
-- 派生正文仍按任务复制一份到 `<job_dir>/ingest/`（任务自包含，内容库被 GC 也不影响）。
-- 任务记录新增 `ingest_id` / `source_digest`。
-- **老目录（`ingest_*`/`portrait_*`）不自动迁移**：老任务的 `source_path` 是绝对
-  路径指进去的。实测可回收仅约 1.2 MB，不值得动历史记录。
-## 产物缓存（阶段 3，2026-09-19 实施）
+- 输入支持 `.tex/.zip/.docx/.doc/.pdf`；**pdf 噪声最少、优先用**。转换层不用
+  Office/WPS COM（会连到使用者的 WPS 并挂死）；`.doc` 走 olefile（有损）；
+  真实 Word 不用标题样式（heading=0）⇒ `.docx` 无结构优势，三种格式都靠 LLM 推断章节。
+- **阶段与总进度只有一处定义**：`web/app.py` 的 `PHASES`（9 阶段，带权重/有无计数/
+  卡住阈值），`/api/options` 下发渲染步骤条；总进度由后端 `_phase_overall_pct` 算且
+  **单调不减**；没有逐页计数的阶段**不编造进度**，改用"已用 / 约"。计数单位随阶段不同
+  （页/条）—— 混用会算出"18 页"这种荒谬值且界面看着正常。
+- **数字人阶段的进度靠旁路取数**：批量路径是"一个进程跑完 N 页、之后才逐页 report"
+  （实测 14 条记录时间戳全为同一秒）⇒ 真正在跑的 5~10 分钟里 progress.jsonl 零记录、
+  条停 100%、还会误报「疑似卡住」。现由 `talking_gen._monitor_batch_progress` 后台线程
+  轮询预期产物路径（**不改 MuseTalk**），旧文件靠 `mtime + 1.0 >= started` 排除。
+- **SSE**：帧逻辑抽成 `_sse_frames()`（心跳注释帧、间隔可用 `PAPER2VIDEO_SSE_KEEPALIVE`
+  覆盖）。抽出来还有第二个原因：**TestClient 对流式响应是缓冲的**，测心跳必须直驱生成器。
+  前端断流必须重连并提示 —— 原先 `es.onerror = () => es.close()` **禁用了 EventSource
+  自带重连**，而产物只在 `job.status` 变化时拉一次 ⇒ 断流后唯一触发点永不到来。
+  **"单一触发点 + 静默失败"是同一类坏味道**，凡"只在 X 变化时刷新"都要加轮询兜底。
+- ⚠️ 三条"能构建但行为不对"的坑：TDesign 主题 CSS 漏引入（`--td-*` 全未定义）、
+  `ConfigProvider` 只读 `globalConfig`（locale 被忽略）、build 带 `--noCheck` 掩盖类型
+  错误。现 build 是 `tsc -b && vite build`。
+- `GET /api/jobs/{id}/pages` 由服务端拼逐页索引（幻灯片 1-based / 音频 0-based /
+  数字人多一层参考图目录，命名不一致，**前端别自己拼**）。
 
-`scripts/artifact_cache.py` + `_run_job` 里的两处命中检查。缓存
-`jobs/_cache/struct|deck/<指纹>/`，命中即跳过**唯一两步联网付费**的步骤
-（结构化 / 讲稿）。三条硬规矩：
+## 测试（`scripts/smoke_web_api.py`，273 项断言，零 API 费用）
 
-1. **两类缓存各有一份写死的字段表**，加字段前必须回答「它会改变产物吗」：
-   少了 → 输入不同却命中（静默出错）；多了 → 输入变了却重算（白花钱）。
-   `struct` 不含语言/人像/音色，`deck` 不含人像/音色 —— 这是刻意的。
-2. **键只算一次、由调用方传下去**（`lookup_*`/`publish_*` 都收 `key=`）。
-   算两次必然漂移（流水线会改写 `main.tex`），而漂移的表现是"缓存永远命中不了
-   且不报错"。通用判据：**凡"算出来的值既用于查询又用于写入"，就只算一次**。
-3. **输入取不到指纹 ⇒ 既不命中也不写入**（`REQUIRED_FIELDS`）。否则不同输入会因为
-   字段都是 None 而塌成同一个键，后跑的直接拿到前一个任务的产物。
-4. **只增不删**：模块里没有删除实现，`plan_gc()` 只读清点；`GET /api/cache` 查看。
-   逃生门 `config.force_regenerate=True` 完全绕过缓存。
-5. ⚠️ 命中会改 `config.stages`/`reuse_script` 并重建 argv —— 收尾**必须把这两个
-   一起落盘**，否则任务记录与真实执行的参数不一致。
+- **清理只删「进入作用域前 vs 现在」的快照差集**，绝不按名字前缀批量删共享目录
+  （曾因此误删使用者正在运行的任务）。测试自己的命名空间（`smoke_`）例外。
+- **清理失败必须复核并报告**：`ignore_errors=True` 会吞掉 Windows 上偶发的删除失败，
+  残留会在**下一次**运行时造成"命中了上次遗留"的**假失败**。`main()` 末尾的
+  `_final_sweep()` 负责清掉并打印；"按规矩保留（有任务引用）"与"删不掉"要分开报。
+- 测试写了用户可见的持久化数据（音色缓存、内容库）必须在 finally 清掉。
+- 网络路径全用假 client / 缺 key 覆盖 ⇒ 跑测试不消耗配额。
 
-**还没做**：GPU 侧产物（TTS/光标/数字人/成片）未进缓存；界面未提示"本次命中"。
+## 音色：MiMo 造参考音频 + 本地克隆（`docs/音色方案.md`）
 
-- ⚠️ **测试清理必须跳过 `_` 开头的共享目录**（`_content` / `_voices`）：
-  已封装成 `smoke_web_api._cleanup_new()` 与 `_cleanup_new_content()`。
-  ⇒ 想省数字人那 10 分钟，只能用**续跑**，不能靠"重新上传同样文件"。
-- **`GET /api/jobs/{id}/pages`**：服务端拼逐页索引（幻灯片 1-based / 音频 0-based /
-  数字人多一层参考图目录，命名不一致，前端别自己拼）。
-- **补上 P0 缺口**：`needs_struct` 原本没人用（PDF/Word 输入不会生成 main.tex）
-  → 新增 `_prepare_latex()` 前置步骤。
-
-⚠️ 三条"能构建但行为不对"的坑（都靠完整类型检查/测试才发现）：
-TDesign 主题 CSS 漏引入（`--td-*` 全未定义）、`ConfigProvider` 只读 `globalConfig`
-（locale 被忽略）、build 带 `--noCheck` 掩盖类型错误。现 build 改为 `tsc -b && vite build`。
-
-验证：`scripts/smoke_web_api.py` 共 44 项断言，**零 API 费用**即可复现
-SSE/取消/产物 Range/进度优先级/逐页索引/续跑参数。
-
-## 前端体验：四条机制性缺陷（2026-09-18 **已修**，方案见 `docs/前端体验改进方案.md`）
-
-- **阶段与总进度只有一处定义**：`web/app.py` 的 `PHASES`（9 阶段，带权重/有无页数/
-  卡住阈值），`/api/options` 下发给前端渲染步骤条；总进度由后端 `_phase_overall_pct` 算，
-  **单调不减**；没有逐页进度的阶段只走到该阶段起点（不编造进度）。
-- **数字人阶段的进度靠"旁路取数"**：批量路径是"一个进程跑完 N 页、之后才逐页 report"，
-  所以真正在跑的 5~10 分钟里 progress.jsonl 零记录（实测 14 条记录时间戳全是同一秒）。
-  现在由 `talking_gen._monitor_batch_progress` 后台线程轮询 `musetalk_batch_output()`
-  算出的预期产物路径 —— **不改 MuseTalk**。旧文件靠 `mtime + 1.0 >= started` 排除。
-- **SSE 帧逻辑抽成了 `_sse_frames()`**（含心跳注释帧 + 断流重连配合）：
-  一是因为 **TestClient 对流式响应是缓冲的**，测心跳必须直驱生成器；
-  二是帧格式以后只有一处定义。心跳间隔可用 `PAPER2VIDEO_SSE_KEEPALIVE` 覆盖。
-- **凭据按任务注入**：`_JOB_KEYS[job_id]`（原先是进程级 `_SESSION_KEYS` ⇒ 多人共用一份，
-  "最后输入的人覆盖所有人"）。回落 .env 时必须写 run.log，让回落路径可见。
-- **产物/逐页刷新的三个触发点**（换对象 / 状态或阶段变化 / 运行中每 5 秒轮询）：
-  只依赖 `job.status` 是单点设计，SSE 一断就永久冻结 —— 凡"只在 X 变化时刷新"都要加轮询兜底。
-- 跑测试要 `CODEBUDDY_SAFE_DELETE_ENABLED=0`（沙箱批量删除守卫会拦测试自己的 rmtree）。
-
-- **数字人阶段的进度是「批量跑完后一次性补报」**：`talking_gen.py:536-568` 先让 MuseTalk 一个进程
-  跑完 N 页，**之后**才逐页取回产物并 `report()`。实测 14 条记录时间戳全为 `22:58:21`（相差 1~2 ms）。
-  后果三连：进度条停在 100%、阶段名停在上一阶段、`stalled_seconds` 涨到 600+ 触发**「疑似卡住」误报**。
-  要真实进度只能**旁路取数**（轮询 `musetalk_batch_output()` 算出的预期产物路径，不改 MuseTalk）。
-- **进度条口径错误**：`done = talking_done || tts_done` ÷ 总页数，一个条要表达 6 个阶段；
-  实测序列含 **100% → 7% 的回跳**，且 stage 1 的 `total=0` 所以条是空的。应改**阶段加权**。
-- **SSE 断流即冻结**：`App.tsx` 的 `es.onerror = () => es.close()` **禁用了 EventSource 自带重连**，
-  且不提示；而产物/逐页素材**只在 `job.status` 变化时拉一次** → 断流后唯一触发点永不到来，
-  产物区要手动刷新才出现。**"单一触发点 + 静默失败"是同一类坏味道**，凡"只在 X 变化时刷新"都要加轮询兜底。
-- **`_SESSION_KEYS` 是进程级全局**（`/api/key/verify` 与建任务都写它）→ **多人共用一份 key**：
-  迁学校服务器前必须改成按 `job_id` 注入。
-
-## 结构化层（`scripts/paper_struct.py`，2026-09-18 跑通）
-
-链路：输入 → `paper_ingest` 提取（零成本）→ **`paper_struct` LLM 结构化**（花钱）→ `main.tex`。
-**分层是刻意的**：出问题能立刻定位是"没提对"还是"没排对"，不用一起返工。
-
-实测（《议程设置》PDF，8283 字符）：20 秒 / **10482 token** → **tectonic 编译成功**，
-7 个 `\section` + 10 个 `\subsection`，`finish_reason=stop`。
-
-**输出上限 65536**（`PAPER2VIDEO_MAX_TOKENS` 可覆盖）。长论文会撞上限：实测一篇 24 页/
-6.6 万字符的论文把 32768 用满（思维链占大头），main.tex 断在半张表上、
-**没有 \end{document}**，而它正是下游生成幻灯片的输入 —— 尾部内容静默缺失。
-`paper_struct` 现已：撞上限**续写**（最多 3 轮）→ 仍不全则**截到最后一个
-环境配平点 + 补 \end{document}**（实测只丢 1.3%、编译通过）。
-
-prompt 必须写死的四条（均为实测得来）：
-1. 中文必须 `ctex`；表格必须 `tabularray` 的 `tblr`（`tabular` 与 ctex 宏包级冲突）
-2. **真实论文标题无样式标记**（heading=0），靠内容语义与数字序号识别章节
-3. 不得编造数据/文献/图表
-4. **不得"顺手纠正"原文** —— 加这条后保真度全面提升（见跨项目记忆）
-
-配套 `scripts/check_struct_fidelity.py` 做双向保真度检查（漏 + 编）。
-**主指标必须用固定长度窗口**，不能用整句比对：两边切句方式不同、摘要前缀有无不同，
-整句比对会产生大量假阴性，而**假警报比不报更糟**（会让人不再信任报告）。
-口径：保留率 93.7% / 可溯源率 93.4%。
+- **接法是"云端只造一次音色、逐页仍本地 Qwen3-TTS 克隆"**（不是逐页调云端 TTS）：
+  全片同一人声；免费期结束/断网/无 key 都不影响出片。地基已实测（f0 差 53 Hz）。
+- `MIMO_API_KEY` 在服务端 `.env`；参考文本写死在 `mimo_voice.REF_TEXTS`（**必须由我们
+  给定**并放 assistant —— 用 `optimize_text_preview=True` 会让 ref_text 失控，只能回头靠
+  ASR 转写，而 ASR 在本项目里是已知会转错的）。
+- **限时免费 ⇒ 必须有回落**：`resolve()` 任何失败都回落内置音色，原因进响应与 run.log。
+- **已生成的音色不需要 key**（缓存命中即可用）⇒ 攒下的音色资产长期有效。
+  缓存 `jobs/_voices/<sha1>.wav|.txt|.json`，key = kind|voice|prompt|lang。
+- ⚠️ `pipeline.py` 的 `ref_audio` 与 `ref_text` 曾各自 `or lang[...]` 回落 ⇒ 自定义音频 +
+  没给文本时会把**档位那段的文本**配上去，克隆失真且**不报错**。已改成 ref_text 跟着
+  ref_audio 走（无文本则保持 None 交给 ASR）。
+- 预置音色 8 个（中英男女各 2）；**不用 `mimo_default`**（因集群而异，同一份配置在不同
+  部署上会出不同音色）。

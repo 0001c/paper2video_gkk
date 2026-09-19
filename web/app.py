@@ -9,9 +9,13 @@
 3. **流水线走子进程，且不经 shell**。显存释放靠进程退出保证；
    `create_subprocess_exec(argv...)` 而不是 `shell=True`，
    因为本机 MSYS 的 `cd` 遇到含中文的路径会失败，且 shell 会引入转义问题。
-4. **不需要的开关绝不暴露**。例如 `--if_tree_search`：
-   `pipeline.py:31` 那行 import 是注释掉的，而默认值 True 会走 `latex_code_gen`
-   → 直接 NameError。所以它在这里被**写死为 False**，不出现在任何表单里。
+4. **开关可以暴露，但必须能被指纹看见**。`--if_tree_search`（幻灯片布局微调）
+   曾经写死 False，理由是"默认值 True 会 NameError"—— 那个崩溃点来自上游
+   `pipeline.py` 里一条引用被注释掉 import 的 else 分支，而我们这边已合并成单分支，
+   它早就不存在了。现在它是**可配置项、默认关**（成本确定、收益未实测）。
+   ⚠️ 一旦某个开关会改变产物，它就必须同时进入 `artifact_cache` 的指纹字段表 ——
+   否则产物缓存会拿别的设置下产出的结果当成自己的（静默错配）。
+   反之不影响产物的开关**不要**加进字段表，否则白花一次钱。
 
 启动：
     python web/app.py            # 默认 127.0.0.1:8848
@@ -922,8 +926,12 @@ _CURRENT = {"job_id": None, "proc": None}
 def _build_argv(job):
     """把任务配置翻译成流水线参数。
 
-    ⚠️ `--if_tree_search False` 是**必须**的（默认值 True 会 NameError），
-    所以它写死在这里，不从请求里读。
+    ⚠️ `--if_tree_search` 以前是写死的常量，现在**从配置读、默认 False**。
+    读而不是写死之后有两条连带要求（都不是可选的）：
+      · 它必须进 `artifact_cache` 的指纹字段表 —— 它改变幻灯片产物；
+      · 值必须归一成 bool —— 否则 True/"True"/1 会算出三个不同的缓存键。
+    默认值刻意与上游 argparse 的 default=True **相反**：上游默认开，
+    而这步每张溢出页要多一次带图 VLM 调用，收益没实测过，所以默认不开。
     """
     cfg = job["config"]
     argv = [
@@ -939,7 +947,9 @@ def _build_argv(job):
         "--paper_type", cfg["paper_type"],
         "--talking_profile", cfg.get("talking_profile", "musetalk-local"),
         "--gpu_list", "0",
-        "--if_tree_search", "False",
+        # 必须显式传：上游 argparse 的默认值是 True，不传就等于每篇都开。
+        "--if_tree_search",
+        "True" if _as_bool(cfg.get("if_tree_search"), False) else "False",
     ]
     if cfg.get("reuse_script"):
         argv += ["--reuse_script", "True"]
@@ -953,6 +963,28 @@ def _build_argv(job):
         if cfg.get("ref_text"):
             argv += ["--ref_text", cfg["ref_text"]]
     return argv
+
+
+def _as_bool(value, default=False):
+    """把表单/JSON 里的开关值归一成真正的 bool。
+
+    为什么必须有这一步：`if_tree_search` 会进产物指纹，而 ``True`` / ``"True"`` /
+    ``"true"`` / ``1`` 在指纹里是**四个不同的值** —— 行为完全相同却互相不命中，
+    症状是"缓存时灵时不灵"，比彻底不命中难查得多。
+    前端传布尔、CLI 传字符串，两种都要能接住。
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "on", "y"):
+        return True
+    if text in ("0", "false", "no", "off", "n", ""):
+        return False
+    return default
 
 
 def _artifact_facts(job):
@@ -985,6 +1017,10 @@ def _artifact_facts(job):
         #    否则"换了 VLM 但缓存不失效"，产物与配置不符且不报错。
         "vlm_model": "deepseek-flash",
         "talking_profile": cfg.get("talking_profile", "musetalk-local"),
+        # 幻灯片布局微调（树搜索）：它真的改变 stage 1 的幻灯片产物
+        # （溢出页多出 4 个宽度候选、由 VLM 选一张），所以**必须在指纹里**。
+        # 归一成 bool —— 见 _as_bool 的说明。
+        "if_tree_search": _as_bool(cfg.get("if_tree_search"), False),
     }
 
 
@@ -1120,6 +1156,13 @@ async def _run_job(job):
         else:
             _log_line(log, "[keys] ⚠️ 本任务没有随请求提供 API key，"
                            "将使用进程环境里的 OPENAI_API_KEY（来源可能是仓库根的 .env）")
+        # 开了树搜索必须留痕：它是唯一会**额外花钱**的开关，而它的表现是
+        # "这次明显更慢 + 多出几次调用"。事后没人能解释那次耗时的时候，
+        # 这一行就是唯一的答案。
+        if _as_bool((job.get("config") or {}).get("if_tree_search"), False):
+            _log_line(log, "[toggle] 已开启「幻灯片布局微调（树搜索）」—— "
+                           "每张内容溢出的幻灯片会多 4 次编译 / 4 次渲染 / "
+                           "1 次带图 VLM 调用，本次耗时与费用都会高于默认值")
         # 音色用了哪个、还是回落了 —— 必须写进日志：
         # 使用者选了"冰糖"却听到原来的男声时，唯一能自证的就是这一行。
         _log_line(log, "[voice] {}".format(
@@ -1314,8 +1357,21 @@ async def api_options():
             "limits": {"min_s": mimo_voice.MIN_SECONDS, "max_s": mimo_voice.MAX_SECONDS},
             "accept_audio": [".wav", ".mp3", ".m4a", ".flac", ".ogg"],
         },
-        # 明确告知前端：这个开关不存在，不要试图暴露
-        "hidden_flags": {"if_tree_search": "写死 False（默认值 True 会 NameError）"},
+        # 可选开关由后端下发（前端只渲染，别硬编码）：文案、默认值、成本口径
+        # 都跟着实现走 —— 开关的语义最容易在前后端各写一份之后悄悄分叉。
+        "toggles": [
+            {
+                "key": "if_tree_search",
+                "label": "幻灯片布局微调（树搜索）",
+                "default": False,
+                "note": "论文的核心机制之一，但默认关闭",
+                "hint": "编译后用 Overfull 警告定位内容溢出的页，为每页生成 4 个图片宽度"
+                        "候选（×1 / 0.75 / 0.5 / 0.25），由视觉模型挑一张再重排版。"
+                        "会明显多花时间与调用：每张溢出页 4 次 LaTeX 编译 + 4 次渲染 "
+                        "+ 1 次带图 VLM 调用。关掉不影响出片，只是不做这步事后微调。",
+                "cost": "每张溢出页 +4 次编译 / +4 次渲染 / +1 次带图 VLM 调用",
+            },
+        ],
     }
 
 

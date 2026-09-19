@@ -34,6 +34,19 @@ type Opt = { value: string; label: string };
    两边各存一份"阶段权重"是这类进度条最容易漂的地方。 */
 type Phase = { key: string; label: string; weight: number; has_pages: boolean; unit: string };
 
+/* 可选开关（/api/options.toggles）—— 同样由后端下发。
+   开关的**语义**最容易在前后端各写一份之后悄悄分叉：后端改了默认值或成本口径，
+   界面还在说旧话。所以这里只负责渲染，文案一个字都不本地硬编码。
+   `default` 也是后端给的：它是"不传这个字段时后端会怎么做"的唯一真相。 */
+type Toggle = {
+  key: string;
+  label: string;
+  default: boolean;
+  note?: string;
+  hint?: string;
+  cost?: string;
+};
+
 type Options = {
   presets: (Opt & { slide_lang: string; script_lang: string })[];
   slide_langs: Opt[];
@@ -41,6 +54,9 @@ type Options = {
   paper_types: Opt[];
   accept_formats: string[];
   phases: Phase[];
+  /* 可选：后端老版本没有这个字段（静态前端由后端直接服务，两边短暂不同步是常态），
+     所以标成可选并在渲染时 `?? []`，只少不崩。 */
+  toggles?: Toggle[];
   voice: Voices;
 };
 
@@ -303,6 +319,10 @@ export default function App() {
   const [slideLang, setSlideLang] = useState("en");
   const [scriptLang, setScriptLang] = useState("zh");
   const [paperType, setPaperType] = useState("auto");
+  /* 幻灯片布局微调（树搜索）—— 默认关，与后端 `_build_argv` 的默认值一致。
+     两边默认值必须相同：界面显示"未勾选"而后端当成 True 跑，就是在
+     使用者不知情的情况下多花钱，且看不出来。 */
+  const [ifTreeSearch, setIfTreeSearch] = useState(false);
 
   // ③ API key
   // 初值从浏览器本地存储回填（storage.ts 是唯一入口）：刷新页面后不用重填。
@@ -536,6 +556,10 @@ export default function App() {
         slide_lang: slideLang,
         script_lang: scriptLang,
         paper_type: paperType,
+        // 幻灯片布局微调（树搜索）。**必须显式传**：后端读不到这个字段时按
+        // 默认 False 处理，但把"界面上的勾选状态"原样送到后端，才谈得上
+        // "所见即所跑"。它也进了产物指纹，所以关/开产出的幻灯片不会互相命中。
+        if_tree_search: ifTreeSearch,
         reuse_script: false,
         // 音色：只提交"选择"，参考音频/文本由后端解析（能把失败回落成内置音色，
         // 并把实际用了哪个音色回给界面 —— 见响应里的 voice_note）。
@@ -552,6 +576,7 @@ export default function App() {
       else MessagePlugin.info(`已入队 · 音色：${data.voice_note}`);
     }
   }, [ingest, portraitFile, apiKey, apiBase, slideLang, scriptLang, paperType,
+      ifTreeSearch,
       voiceMode, presetPick, designPrompt, uploadSpec, uploadText, voiceSpecNow]);
 
   // 任务列表：每 5 秒刷新。本地工具，这点开销可以忽略，
@@ -646,6 +671,10 @@ export default function App() {
   const p = job?.progress;
   const pct = job?.status === "done" ? 100 : p?.overall_pct ?? legacyPct(p);
   const phases: Phase[] = opts?.phases ?? [];
+  /* 树搜索开关的文案来自后端。取不到就整块不渲染（老后端），
+     而不是用本地硬编码的文案顶上 —— 那样两边会各说各话。 */
+  const treeToggle: Toggle | undefined =
+    (opts?.toggles ?? []).find((t) => t.key === "if_tree_search");
   const curIdx = p?.phase_index ?? -1;
   const stalled = !!p?.stalled;
   const countTotal = p?.count_total ?? p?.page_total ?? 0;
@@ -884,6 +913,36 @@ export default function App() {
             </div>
           </div>
         </div>
+        {/* 幻灯片布局微调（树搜索）：论文的核心机制之一，但默认关。
+            文案、默认值、成本口径全部来自 /api/options.toggles —— 见 Toggle 的说明。 */}
+        {treeToggle && (
+          <div className="grid" style={{ marginTop: 16 }}>
+            <div className="field">
+              <label>{treeToggle.label}</label>
+              <label className="checkline">
+                <input
+                  type="checkbox"
+                  checked={ifTreeSearch}
+                  onChange={(e) => setIfTreeSearch(e.target.checked)}
+                />
+                <span>
+                  开启{treeToggle.note ? `（${treeToggle.note}）` : ""}
+                </span>
+              </label>
+              {treeToggle.hint && <div className="hint">{treeToggle.hint}</div>}
+              {/* 成本只在开启时用强调色说出来：关着的时候反复念成本是噪音。 */}
+              {ifTreeSearch && treeToggle.cost && (
+                <div className="notice warn" style={{ marginTop: 8 }}>
+                  <span>
+                    <b>本次会额外消耗</b>　{treeToggle.cost}。
+                    耗时与费用都会明显高于默认设置，且只在<b>内容溢出</b>的幻灯片上发生
+                    （没有溢出就没有额外调用）。
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
         <div className="notice info">
           <span>
             注意：预设「英文幻灯片 + 中文讲解」中，<b>幻灯片仍是英文</b>，只有讲稿与字幕是中文。

@@ -678,9 +678,18 @@ def test_pages_and_rerun(app):
                             "--reuse_script" in argv
                             and argv[argv.index("--reuse_script") + 1] == "True",
                             "argv 尾部=%s" % argv[-2:])
-                ok &= check("argv 里 --if_tree_search 恒为 False",
-                            argv[argv.index("--if_tree_search") + 1] == "False",
-                            "（默认值 True 会 NameError，必须写死）")
+                tree_val = argv[argv.index("--if_tree_search") + 1]
+                ok &= check("argv 里 --if_tree_search 默认 False"
+                            "（上游 argparse 的默认值是 True，不显式传就等于每篇都开）",
+                            tree_val == "False", "值=%s" % tree_val)
+                # 不带 config 时默认关；带了 True 就必须是 True。
+                # 只测默认值会漏掉"读了 config 但读错字段/读错布尔口径"这种情况。
+                tree_job = dict(nj, config=dict(nj.get("config") or {},
+                                                if_tree_search=True))
+                tree_argv = app._ORIG_BUILD_ARGV(tree_job)
+                ok &= check("开启后命令行里是 True（界面勾了就真的会按开启跑）",
+                            tree_argv[tree_argv.index("--if_tree_search") + 1] == "True",
+                            "值=True")
 
             bad = client.post("/api/jobs/not_a_job/rerun", json={})
             ok &= check("对不存在的任务续跑返回 404", bad.status_code == 404,
@@ -1471,6 +1480,81 @@ def _cleanup_orphan_jobs(app, started_at=None):
 
 
 
+def _final_sweep(app, verbose=True):
+    """收尾清扫：把测试自己的痕迹删掉，并**如实报告删不掉的那些**。
+
+    为什么需要这一步（2026-09-19 实测）：各处清理都写了
+    `shutil.rmtree(..., ignore_errors=True)` —— 这是对的（清理失败不该把测试
+    搞崩），但 Windows 上删除偶发失败（新建文件被索引/杀软短暂占用），
+    `ignore_errors` 会**静默吞掉**。实测连跑几次就在 `jobs/` 里攒下 7 个
+    `smoke_cache_*` 目录 + 一批缓存条目，而它们的危害是**延迟**出现的：
+    下一次跑同一组时命中上次遗留 → 断言"第一次跑必须未命中"失败 → 假失败
+    （本文件里已经出现过两次同款现象）。所以这里**必删、必报**。
+
+    删除判据只看证据，不看通配模式：
+      · `jobs/smoke_*` —— **测试独占的命名空间**。判据成立的理由是"应用从不产生
+        这个名字"（全仓库搜过：只有本测试文件用 `smoke_` 前缀）。这与
+        "禁止按前缀删共享目录"并不矛盾 —— 那条禁止的是删**别人的**命名空间
+        （`job_`），而这里删的正是测试自己的。
+      · 缓存条目：`manifest.from_job == "smoke"`（模块级往返造的那条）或
+        没有 manifest 的（手工造的假条目）。**有任务引用的一律不碰。**
+
+    返回 `(删掉的, 没删掉的)`，两者都会被打印。
+    """
+    import artifact_cache as ac
+
+    removed, blocked, referenced_left = [], [], []
+    for name in sorted(os.listdir(app.JOBS_ROOT)):
+        if not name.startswith("smoke_"):
+            continue
+        path = os.path.join(app.JOBS_ROOT, name)
+        shutil.rmtree(path, ignore_errors=True)
+        (removed if not os.path.exists(path) else blocked).append(name)
+
+    referenced = set()
+    try:
+        plan = ac.plan_gc(app.JOBS_ROOT)
+        for kind in ("struct", "deck"):
+            referenced |= set(plan["referenced"].get(kind) or [])
+    except Exception:
+        pass
+
+    for kind in ("struct", "deck"):
+        base = os.path.join(ac.CACHE_ROOT, kind)
+        for name in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+            path = os.path.join(base, name)
+            manifest_path = os.path.join(path, "manifest.json")
+            manifest = {}
+            if os.path.isfile(manifest_path):
+                try:
+                    with io.open(manifest_path, encoding="utf-8") as handle:
+                        manifest = json.load(handle) or {}
+                except Exception:
+                    manifest = {}
+            if name in referenced:
+                # 「有任务引用」是**按规矩保留**，不是删不掉 —— 这两件事必须分开报，
+                # 否则会让人以为清扫失败了（本项目的教训：detail 要写观察到的事实）。
+                referenced_left.append("%s/%s" % (kind, name))
+                continue
+            if manifest.get("from_job") != "smoke" and os.path.isfile(manifest_path):
+                continue                      # 不是测试造的（真任务的缓存），不碰
+            shutil.rmtree(path, ignore_errors=True)
+            (removed if not os.path.exists(path) else blocked).append(
+                "%s/%s" % (kind, name))
+
+    if verbose and (removed or blocked or referenced_left):
+        print()
+        print("[收尾] 清掉测试痕迹 %d 项%s"
+              % (len(removed), "：" + "、".join(removed[:8]) if removed else ""))
+        if referenced_left:
+            print("       按规矩保留 %d 项（有任务引用，测试不该碰）：%s"
+                  % (len(referenced_left), "、".join(referenced_left[:4])))
+        if blocked:
+            print("       ⚠️ 删不掉 %d 项（下次跑可能命中它们 → 假失败）：%s"
+                  % (len(blocked), "、".join(blocked[:8])))
+    return removed, blocked
+
+
 # ──────────────────────────────────────────────────────────────
 # ⑩ 音色：解析/回落/缓存/透传（2026-09-19）
 #
@@ -2129,7 +2213,27 @@ def test_artifact_cache_and_reuse(app):
 
     base_facts = {"source_sha1": "aaa", "main_tex_sha1": "mmm", "paper_type": "auto",
                   "slide_lang": "en", "script_lang": "zh", "llm_model": "deepseek-flash",
-                  "vlm_model": "deepseek-flash", "talking_profile": "musetalk-local"}
+                  "vlm_model": "deepseek-flash", "talking_profile": "musetalk-local",
+                  "if_tree_search": False}
+
+    # ── A0. 字段表 ↔ 事实上报 必须一一对应 ──
+    # 这是本组最值钱的守卫：指纹有**两个**独立的地方在写（artifact_cache 的字段表、
+    # app._artifact_facts 的上报）。两边各写一份就一定会漂移，而漂移的两种方向
+    # 分别对应"静默出错"与"白花钱"——
+    #   加了上报却没进表 → 那个字段不参与指纹 → 输入不同却命中；
+    #   进了表却没人上报 → 那个字段恒为 None → 形同摆设。
+    real_facts = app._artifact_facts(
+        {"id": "smoke_facts", "config": {}, "paper_latex_root": ""})
+    supplied = set(real_facts)
+    declared = (set(ac.STRUCT_FIELDS) | set(ac.DECK_FIELDS)) - {"v"}
+    ok &= check("_artifact_facts 上报的字段与两份字段表完全一致（防两边各写一份而漂移）",
+                supplied == declared,
+                "%d 个上报 / %d 个在表里；差异 %s"
+                % (len(supplied), len(declared), sorted(supplied ^ declared) or "无"))
+    ok &= check("字段表里每个字段都有人上报（恒为 None 的字段等于摆设）",
+                not (declared - supplied), sorted(declared - supplied) or "无")
+    ok &= check("上报的每个字段都在表里（漏进表 = 输入不同却命中）",
+                not (supplied - declared), sorted(supplied - declared) or "无")
 
     # ── A. 指纹的字段覆盖（正反两面）──
     ok &= check("同一份输入算两次得到同一个键（否则永远命中不了）",
@@ -2155,6 +2259,11 @@ def test_artifact_cache_and_reuse(app):
         ok &= check("struct 指纹对 %s **不**敏感（它不影响 main.tex，敏感就是白花钱）" % field,
                     ac.struct_key(dict(base_facts, **{field: "other"})) == ac.struct_key(base_facts),
                     "改 %s 后键没变" % field)
+    # 树搜索是**幻灯片布局微调**：它在 stage 1 之后跑，改的是幻灯片本身，
+    # 碰不到 main.tex ⇒ 对 struct 不该敏感（否则"只是想试试树搜索"会白花一次结构化的钱）。
+    ok &= check("struct 指纹对 if_tree_search **不**敏感（它改的是幻灯片，不是 main.tex）",
+                ac.struct_key(dict(base_facts, if_tree_search=True)) == ac.struct_key(base_facts),
+                "改 if_tree_search 后键没变")
 
     # deck 的输入：main.tex + 两种语言 + 论文类型 + 两个模型 + 数字人档位
     for field in ("main_tex_sha1", "slide_lang", "script_lang", "paper_type",
@@ -2162,10 +2271,34 @@ def test_artifact_cache_and_reuse(app):
         ok &= check("deck 指纹对 %s 敏感" % field,
                     ac.deck_key(dict(base_facts, **{field: "other"})) != ac.deck_key(base_facts),
                     "改 %s 后键变了" % field)
+    # 这条是"开关变可配置"必须同步的**唯一硬要求**：树搜索真的改变幻灯片产物
+    # （溢出页多出 4 个宽度候选、由 VLM 选一张），所以开/关产出的幻灯片不能互相命中。
+    # 漏了它，就会出现"关着开关生成的幻灯片被开着开关的任务当成自己的缓存"。
+    ok &= check("deck 指纹对 if_tree_search 敏感（开/关产出的幻灯片不能互相命中）",
+                ac.deck_key(dict(base_facts, if_tree_search=True)) != ac.deck_key(base_facts),
+                "True 与 False 得到不同的键")
     for field in ("portrait_sha1", "ref_audio_sha1", "voice_note", "job_id"):
         ok &= check("deck 指纹对 %s **不**敏感（换头像/换声音不该废掉幻灯片与讲稿）" % field,
                     ac.deck_key(dict(base_facts, **{field: "xxx"})) == ac.deck_key(base_facts),
                     "改 %s 后键没变" % field)
+
+    # 开关值的**归一化**：前端传布尔、CLI 传字符串，两种都得归一成同一个 bool。
+    # 不归一的话 True / "True" / 1 是三个不同的键 —— 行为完全一样却互相不命中，
+    # 表现是"缓存时灵时不灵"，比彻底不命中难查得多。
+    def _facts_with(value):
+        return app._artifact_facts({"id": "smoke_facts",
+                                    "config": {} if value is None
+                                    else {"if_tree_search": value},
+                                    "paper_latex_root": ""})
+
+    on_keys = {ac.deck_key(_facts_with(v)) for v in (True, "True", "true", 1)}
+    ok &= check("开关值归一化：True / \"True\" / \"true\" / 1 得到同一个键",
+                len(on_keys) == 1, "得到 %d 个不同的键" % len(on_keys))
+    ok &= check("归一化不会把「关」当成「开」（False / None / 未填 同键，且与 True 不同键）",
+                ac.deck_key(_facts_with(False)) == ac.deck_key(_facts_with(None))
+                == ac.deck_key(_facts_with("0"))
+                and ac.deck_key(_facts_with(False)) != ac.deck_key(_facts_with(True)),
+                "关的三种写法同键，与开不同键")
 
     ok &= check("两类指纹不会互相撞（同一份 facts）",
                 ac.struct_key(base_facts) != ac.deck_key(base_facts), "不同")
@@ -2370,6 +2503,30 @@ def test_artifact_cache_and_reuse(app):
             key_c = (job_c.get("cache") or {}).get("deck_key")
             if key_c:
                 made_cache.add("deck/" + key_c)
+
+            # ── 第四例：打开树搜索 ──
+            # 判据不是"跑得对不对"（本组用假流水线），而是这条链有没有断在中间：
+            # 界面勾选 → 请求 config → 任务记录 → _build_argv → 命令行 → 日志。
+            # 断在任何一环的症状都是"勾了但没生效"，而且不报错。
+            alt_tree = dict(config, if_tree_search=True)
+            jid_d, job_d, log_d = run_job(client, alt_tree, "D")
+            ok &= check("开了树搜索就不再命中（它改变幻灯片内容，不许复用关着时产出的）",
+                        (job_d.get("cache") or {}).get("deck_hit") is not True,
+                        "deck_hit=%s" % ((job_d.get("cache") or {}).get("deck_hit")))
+            ok &= check("开了树搜索：设置留在任务记录里（事后能解释为什么更慢、更贵）",
+                        (job_d.get("config") or {}).get("if_tree_search") is True,
+                        "config.if_tree_search=%s"
+                        % ((job_d.get("config") or {}).get("if_tree_search"),))
+            d_argv = app._ORIG_BUILD_ARGV(job_d)
+            ok &= check("开了树搜索：真实命令行里是 --if_tree_search True",
+                        d_argv[d_argv.index("--if_tree_search") + 1] == "True",
+                        "值=%s" % d_argv[d_argv.index("--if_tree_search") + 1])
+            ok &= check("开了树搜索：日志写明本次会多花钱（它唯一会额外付费的开关）",
+                        "[toggle] 已开启" in log_d,
+                        [l for l in log_d.splitlines() if "[toggle]" in l][:1])
+            key_d = (job_d.get("cache") or {}).get("deck_key")
+            if key_d:
+                made_cache.add("deck/" + key_d)
     finally:
         app._build_argv = saved_build
         _cleanup_new(app, jobs_before)          # 人像文件也在 jobs/ 下，一并按差集清掉
@@ -2395,6 +2552,20 @@ def test_artifact_cache_and_reuse(app):
     ok &= check("缓存回写用的是查询时那个键（写入键≠查询键会让缓存永远不命中）",
                 "key=cache_info.get" in app_src, "publish 调用带 key=")
     ok &= check("有新接口可以只读地看缓存现状", '"/api/cache"' in app_src, "GET /api/cache")
+    # 开关类守卫：`if_tree_search` 从"写死的常量"变成"可配置项"之后，
+    # 下面两条任一被改坏都**不会报错**，只会静默给出错误产物或白花钱。
+    ok &= check("静态守卫：if_tree_search 在 DECK_FIELDS 里（漏了 = 开关关着产出的幻灯片"
+                "会被开着的任务命中）",
+                "if_tree_search" in ac.DECK_FIELDS, "在 deck 字段表里")
+    ok &= check("静态守卫：if_tree_search **不**在 STRUCT_FIELDS 里"
+                "（它不改变 main.tex，加进去就是白花钱）",
+                "if_tree_search" not in ac.STRUCT_FIELDS, "不在 struct 字段表里")
+    ok &= check("静态守卫：_build_argv 从 config 读它，而不是写死常量"
+                "（写死就无法从界面开启）",
+                '_as_bool(cfg.get("if_tree_search")' in app_src, "从 config 读")
+    ok &= check("静态守卫：默认值是 False（与上游 argparse 的 True 相反，"
+                "所以必须显式传下去）",
+                '_as_bool(cfg.get("if_tree_search"), False)' in app_src, "默认 False")
     return ok
 
 
@@ -2420,6 +2591,9 @@ def main():
         print()
         print("   （已清理 %d 个测试孤儿任务目录：%s）" % (len(orphan), ", ".join(orphan)))
         print("   （说明有测试的清理不完整 —— 不影响结果，但值得顺手补上）")
+    # 收尾清扫必须在汇总**之前**：它清掉的是"下一次跑会命中、进而造成假失败"的东西，
+    # 这份报告本身就是判断"套件干不干净"的依据。
+    _final_sweep(app)
     print()
     print("=" * 66)
     if FAILURES:

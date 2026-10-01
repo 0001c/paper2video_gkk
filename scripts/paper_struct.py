@@ -152,7 +152,7 @@ def strip_code_fence(text):
     return text.strip()
 
 
-def call_llm(system_prompt, user_prompt, model=None, max_tokens=65536,
+def call_llm(system_prompt, user_prompt, model=None, max_tokens=None,
              temperature=0.2, timeout=900):
     """调用 OpenAI 兼容接口。返回 (正文, usage)。
 
@@ -171,13 +171,16 @@ def call_llm(system_prompt, user_prompt, model=None, max_tokens=65536,
 
     client = OpenAI(api_key=api_key, base_url=base_url or None, timeout=timeout)
     model = model or DEFAULT_MODEL
+    # 未知服务商模型由其默认输出上限决定，不强塞 DeepSeek 的 65536 上限。
+    if max_tokens is None and model in ('deepseek-flash', 'deepseek-v4-flash', 'deepseek-chat', 'deepseek-reasoner'):
+        max_tokens = int(os.environ.get('PAPER2VIDEO_MAX_TOKENS') or '65536')
 
     started = time.time()
     resp = client.chat.completions.create(
         model=model,
         messages=[{"role": "system", "content": system_prompt},
                   {"role": "user", "content": user_prompt}],
-        max_tokens=max_tokens,
+        **({'max_tokens': max_tokens} if max_tokens is not None else {}),
         temperature=temperature,
     )
     elapsed = time.time() - started
@@ -330,7 +333,7 @@ def _continue_tex(tex, info, model, max_tokens, max_rounds=3):
     return tex, info
 
 
-def structurize(source, out_dir, model=None, max_tokens=65536,
+def structurize(source, out_dir, model=None, max_tokens=None,
                 do_compile=True, keep_text=False, text_file=None):
     """完整流程：提取 → 结构化 → 落盘 → （可选）编译验证。"""
     os.makedirs(out_dir, exist_ok=True)
@@ -422,7 +425,7 @@ def main(argv=None):
                                                       "struct_out"),
                         help="输出目录")
     parser.add_argument("--model", default=None, help="模型名（默认 deepseek-flash）")
-    parser.add_argument("--max-tokens", type=int, default=65536)
+    parser.add_argument("--max-tokens", type=int, default=None, help='覆盖模型默认输出上限；DeepSeek 默认 65536')
     parser.add_argument("--no-compile", action="store_true", help="跳过 tectonic 编译")
     parser.add_argument("--text-file", help="使用已选定的课程正文（UTF-8），不重新提取整个源文件")
     args = parser.parse_args(argv)

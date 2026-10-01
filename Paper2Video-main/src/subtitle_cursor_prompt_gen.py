@@ -99,7 +99,17 @@ def subtitle_cursor_gen(slide_imgs_dir, prompt_path, model_config, retries=None,
         os.environ.get("PAPER2VIDEO_VLM_RETRIES", "3"))
     last_note = ""
     for attempt in range(1, attempts + 1):
-        response = agent.step(messages)
+        try:
+            response = agent.step(messages)
+        except Exception as exc:
+            # 并发可能触发服务商限流；仅重试瞬时错误，鉴权／参数错误立即报告。
+            from openai import APIConnectionError, APITimeoutError
+            transient = getattr(exc, 'status_code', None) in (429, 500, 502, 503, 504) or isinstance(exc, (APIConnectionError, APITimeoutError))
+            if not transient or attempt >= attempts:
+                raise
+            print('[subtitle_cursor_gen] 请求暂时失败，第 {}/{} 次，{}s 后重试'.format(attempt, attempts, 3 * attempt), flush=True)
+            time.sleep(3 * attempt)
+            continue
         # 双重防御：response 或 response.msg 都可能是 None
         content = getattr(getattr(response, "msg", None), "content", None)
         if content and content.strip():

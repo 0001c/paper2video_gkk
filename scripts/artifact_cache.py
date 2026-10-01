@@ -43,12 +43,12 @@ import time
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE_ROOT = os.path.join(REPO_ROOT, "jobs", "_cache")
 
-CACHE_VERSION = "2"
+CACHE_VERSION = "3"
 
 # ── 指纹字段表（规矩 1：显式、写死）──
 # struct：结构化只看「正文 + 论文类型 + 用哪个模型」。刻意**不含**人像/音色/语言
 # —— 那些不影响 main.tex，含进来会让"只换个头像"也白花一次结构化的钱。
-STRUCT_FIELDS = ("v", "source_sha1", "paper_type", "llm_model", "struct_mode")
+STRUCT_FIELDS = ("v", "source_sha1", "paper_type", "llm_model", "struct_mode", "model_api_base")
 # deck：幻灯片与讲稿看「main.tex + 两种语言 + 论文类型 + 两个模型 + 数字人档位
 # + 是否开树搜索 + 工程里有哪些图」。同样刻意**不含**人像/音色：
 # 换头像换声音不影响这几页幻灯片与讲稿。
@@ -68,7 +68,7 @@ STRUCT_FIELDS = ("v", "source_sha1", "paper_type", "llm_model", "struct_mode")
 DECK_FIELDS = ("v", "main_tex_sha1", "slide_lang", "script_lang",
                "slide_prompt_sha1", "script_prompt_sha1", "slide_count", "paper_type",
                "llm_model", "vlm_model", "talking_profile", "if_tree_search",
-               "figures", "course_plan_sha")
+               "figures", "course_plan_sha", "model_api_base", "script_generation_version")
 
 # deck 缓存里复用什么（前两项是 stage 2 读幻灯片的输入，第三项是讲稿）
 DECK_SLIDES_DIR = "slide_imgs"

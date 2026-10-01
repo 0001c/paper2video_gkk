@@ -6,8 +6,8 @@ type Review = { version: string; pages: string[]; editable: boolean;
   timing: { estimated_minutes: number; actual_minutes: number | null; target_minutes: number | null;
     pages: { planned_minutes: number; estimated_minutes: number; actual_seconds: number | null; section: string }[] } | null };
 
-export function ReviewPanel({ jobId, apiKey, apiBase, onJob, onSaved }: {
-  jobId: string; apiKey: string; apiBase: string; onJob: (id: string) => void; onSaved: () => void;
+export function ReviewPanel({ jobId, apiKey, apiBase, concurrency, onJob, onSaved }: {
+  jobId: string; apiKey: string; apiBase: string; concurrency: number; onJob: (id: string) => void; onSaved: () => void;
 }) {
   const [review, setReview] = useState<Review | null>(null);
   const [pages, setPages] = useState<string[]>([]);
@@ -16,6 +16,7 @@ export function ReviewPanel({ jobId, apiKey, apiBase, onJob, onSaved }: {
   const [busy, setBusy] = useState(false);
   const [accepted, setAccepted] = useState(false);
   const [success, setSuccess] = useState("");
+  const [refreshPrompt, setRefreshPrompt] = useState(true);
   const lock = useRef(false);
   const generation = useRef(0);
   const load = () => runExclusive(lock, setBusy, async () => {
@@ -28,10 +29,10 @@ export function ReviewPanel({ jobId, apiKey, apiBase, onJob, onSaved }: {
   const apply = (action: "save" | "render" | "regenerate") => runExclusive(lock, setBusy, async () => {
     if (!review) return;
     setError(""); setSuccess("");
-    if (action === "regenerate" && !window.confirm(`重新生成第 ${selected + 1} 页讲稿会调用模型，可能产生 API 费用。其余页会保留，是否继续？`)) return;
+    if (action === "regenerate" && !window.confirm(`重新生成第 ${selected + 1} 页讲稿会调用任务保存的讲稿模型，可能产生 API 费用。${refreshPrompt ? "使用该内容类型的最新模板替换任务旧提示词。" : "沿用任务原提示词。"}其余页会保留，是否继续？`)) return;
     const body = { version: review.version, pages };
     const { data } = action === "save" ? await api.put(`/api/jobs/${jobId}/review`, body)
-      : await api.post(`/api/jobs/${jobId}/review/run`, { ...body, action, page_ids: action === "regenerate" ? [selected] : [], api_key: apiKey || undefined, api_base: apiBase || undefined });
+      : await api.post(`/api/jobs/${jobId}/review/run`, { ...body, action, page_ids: action === "regenerate" ? [selected] : [], api_key: apiKey || undefined, api_base: apiBase || undefined, refresh_prompt: refreshPrompt, script_concurrency: concurrency });
     if (action === "save") { setReview(data); setPages(data.pages); setAccepted(false); setSuccess("讲稿已保存，历史版本可回溯。修改页的旧音频将在下次生成时更新。"); onSaved(); }
     else onJob(data.job_id);
   }, (e) => setError(errorMessage(e)));
@@ -58,6 +59,7 @@ export function ReviewPanel({ jobId, apiKey, apiBase, onJob, onSaved }: {
         {timing?.pages[selected] && <p className="hint">本页预算 {timing.pages[selected].planned_minutes.toFixed(1)} 分钟，讲稿估算 {timing.pages[selected].estimated_minutes.toFixed(1)} 分钟{timing.pages[selected].actual_seconds != null ? `，实际音频 ${(timing.pages[selected].actual_seconds! / 60).toFixed(1)} 分钟` : ""}（保存后更新估算）。</p>}
         </div>
       </div>
+      <label className="checkrow"><input type="checkbox" checked={refreshPrompt} disabled={!review.editable || busy} onChange={(e) => setRefreshPrompt(e.target.checked)} />重写时使用当前内容类型的最新讲稿模板（替换任务旧提示词）</label>
       <div className="actions"><Button variant="outline" disabled={!review.editable || busy} onClick={() => apply("save")}>保存全部讲稿修改</Button><Button variant="outline" disabled={!review.editable || busy || !apiKey.trim()} onClick={() => apply("regenerate")}>调用模型重写本页</Button></div>
       <label className="checkrow"><input type="checkbox" checked={accepted} disabled={!review.editable || busy} onChange={(e) => setAccepted(e.target.checked)} />已核对所有课件和讲稿，确认开始配音与合片</label>
       <div className="actions"><Button theme="primary" loading={busy} disabled={!review.editable || !accepted || busy} onClick={() => apply("render")}>确认并生成配音视频</Button></div>

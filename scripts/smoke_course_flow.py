@@ -126,8 +126,14 @@ def main():
         check(client.put(route, json={'version': current['version'], 'pages': current['pages']}).status_code == 409, '共享产物被占用时禁止保存')
         render_job['status'] = 'canceled'
         web._save_job(render_job)
-        rewrite = client.post(route + '/run', json={'version': current['version'], 'pages': current['pages'], 'action': 'regenerate', 'page_ids': [1]})
+        old_prompt_path = job['config']['script_prompt_path']
+        old_prompt = Path(old_prompt_path).read_text(encoding='utf-8')
+        rewrite = client.post(route + '/run', json={'version': current['version'], 'pages': current['pages'], 'action': 'regenerate', 'page_ids': [1], 'refresh_prompt': True})
         rewrite_job = web._load_job(rewrite.json()['job_id'])
+        check(rewrite_job['config']['script_prompt_path'] != old_prompt_path
+              and Path(old_prompt_path).read_text(encoding='utf-8') == old_prompt
+              and '正在给学生上这门课' in Path(rewrite_job['config']['script_prompt_path']).read_text(encoding='utf-8'),
+              '重写可换用最新角色模板，原任务提示词快照保持不变')
         rewrite_job['status'] = 'failed'
         web._save_job(rewrite_job)
         retry_source = Path(rewrite_job['paper_latex_root'], 'main.tex')

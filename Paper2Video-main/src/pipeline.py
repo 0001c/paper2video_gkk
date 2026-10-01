@@ -182,6 +182,7 @@ if __name__ == '__main__':
                         help='stage 2：若讲稿文件已存在且校验通过，跳过 VLM 调用\n（讲稿生成是唯一必须联网付费的一步，补跑时可省这一次费用）')
     parser.add_argument('--beamer_templete_prompt', type=str, default=None)
     parser.add_argument('--course_plan', type=str, default=None, help='已审核课程教案 JSON')
+    parser.add_argument('--script_concurrency', type=int, choices=range(1, 9), default=3, help='讲稿 API 同时请求数（1～8），不影响本地 GPU 串行')
     parser.add_argument('--review_before_render', type=str2bool, default=False)
     parser.add_argument('--regenerate_pages', type=str, default=None, help='课程局部重写的零基页索引 JSON')
     parser.add_argument('--require_reuse_script', type=str2bool, default=False,
@@ -379,13 +380,13 @@ if __name__ == '__main__':
             if course_plan:
                 subtitle, usage_subtitle = course.generate_script(course_plan, slide_image_dir,
                     prompt_path, agent_config_v, args.result_dir, subtitle_cursor_gen,
-                    selected=json.loads(args.regenerate_pages) if args.regenerate_pages else None)
+                    selected=json.loads(args.regenerate_pages) if args.regenerate_pages else None, workers=args.script_concurrency)
             elif args.regenerate_pages:
                 subtitle, usage_subtitle = course.generate_selected(slide_image_dir, prompt_path,
-                    agent_config_v, args.result_dir, subtitle_cursor_gen, json.loads(args.regenerate_pages))
+                    agent_config_v, args.result_dir, subtitle_cursor_gen, json.loads(args.regenerate_pages), workers=args.script_concurrency)
             else:
-                subtitle, usage_subtitle = subtitle_cursor_gen(
-                    slide_image_dir, prompt_path, agent_config_v)
+                subtitle, usage_subtitle = course.generate_script(None,
+                    slide_image_dir, prompt_path, agent_config_v, args.result_dir, subtitle_cursor_gen, workers=args.script_concurrency)
             # 显式 utf-8：读回处固定用 utf-8，写入端不该依赖环境默认编码
             with open(subtitle_cursor_save_path, "w", encoding="utf-8") as f:
                 f.write(subtitle)

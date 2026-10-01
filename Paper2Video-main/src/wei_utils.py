@@ -124,7 +124,7 @@ def _max_output_tokens():
 
 def get_agent_config(model_type):
     agent_config = {}
-    if model_type in _OPENAI_COMPATIBLE_ALIASES:
+    if model_type in _OPENAI_COMPATIBLE_ALIASES or os.environ.get('PAPER2VIDEO_FORCE_COMPATIBLE') == '1':
         # camel 的 OPENAI_COMPATIBLE_MODEL 分支会创建 OpenAI 客户端，
         # base_url / api_key 从环境变量读取。pv_env 已把 .env 里的
         # OPENAI_API_BASE / OPENAI_API_KEY 同步到多个候选变量名上。
@@ -136,8 +136,9 @@ def get_agent_config(model_type):
             "model_type": model_type,
             "model_platform": ModelPlatformType.OPENAI_COMPATIBLE_MODEL,
             "model_config": {**ChatGPTConfig().as_dict(),
-                             "max_tokens": _max_output_tokens()},
+                             **({"max_tokens": _max_output_tokens()} if model_type in _OPENAI_COMPATIBLE_ALIASES else {})},
             "max_images": 99,   # DeepSeek-V4.1-Flash 支持 1M 上下文，可整篇论文+全部幻灯片
+            "url": os.environ.get('OPENAI_COMPATIBLE_MODEL_API_BASE') or os.environ.get('OPENAI_BASE_URL'),
         }
     elif model_type == 'qwen':
         agent_config = {

@@ -5,6 +5,7 @@ import { api, applyTemplate, errorMessage, runExclusive } from "./flow";
 import { CoursePanel, defaultCourse, type CourseSettings, type CoursePlan } from "./CoursePanel";
 import { ReviewPanel } from "./ReviewPanel";
 import { ThemeToggle } from "./ThemeToggle";
+import { ModelSettings } from "./ModelSettings";
 
 /* ─────────────────────────────────────────────────────────────
    接口层。三个注意点：
@@ -139,6 +140,8 @@ type Progress = {
   page_total?: number | null;
   phase_elapsed_s?: number | null;
   phase_expected_s?: number | null;
+  phase_remaining_s?: number | null;
+  script_concurrency?: number;
   /* 兼容字段（后端仍下发）：旧口径的页数计数 */
   tts_done: number;
   talking_done: number;
@@ -178,7 +181,7 @@ type Job = {
   resumed_from?: string;
   config?: { generate_talking?: boolean; content_profile?: string; slide_lang?: string;
     script_lang?: string; slide_count?: number; voice_note?: string; talking_note?: string;
-    review_before_render?: boolean; target_minutes?: number | null };
+    review_before_render?: boolean; target_minutes?: number | null; text_model?: string; vision_model?: string; script_concurrency?: number };
 };
 
 type RerunPlan = {
@@ -421,6 +424,10 @@ export default function App() {
   const [rememberKey, setRememberKey] = useState(initialCreds.remember);
   const [keyCheck, setKeyCheck] = useState<{ ok: boolean; message: string; kind: string } | null>(null);
   const [checking, setChecking] = useState(false);
+  const [textModel, setTextModel] = useState(initialDraft.textModel ?? "deepseek-flash");
+  const [visionModel, setVisionModel] = useState(initialDraft.visionModel ?? "deepseek-flash");
+  const [scriptConcurrency, setScriptConcurrency] = useState(initialDraft.scriptConcurrency ?? 3);
+  const [languageNotice, setLanguageNotice] = useState("");
 
   // ④ 运行
   // jobId 也持久化：刷新页面（或误关标签）后自动回到原来那个任务 ——
@@ -569,7 +576,7 @@ export default function App() {
   useEffect(() => {
     verifyVersion.current += 1;
     setKeyCheck(null);
-  }, [apiKey, apiBase]);
+  }, [apiKey, apiBase, textModel]);
 
   // 凭据变化就写回本地（含"关掉记住"时清除）。
   // 放在这里而不是 submit 里：使用者在自检时填了 key 却还没建任务就刷新，
@@ -599,7 +606,7 @@ export default function App() {
     const used = slides;
     const factor = sys?.perf_factor ?? 1;
     const durationScale = courseEnabled && coursePlan ? Math.max(1, coursePlan.planned_minutes / (used * 0.5)) : 1;
-    const seconds = (used * perSlide * durationScale + cal.fixed_s + cal.script_api_s) * factor;
+    const seconds = (used * perSlide * durationScale + cal.fixed_s) * factor;
     return {
       slides,
       lo: Math.max(1, Math.round((seconds * 0.8) / 60)),
@@ -662,10 +669,10 @@ export default function App() {
       presetSpec: presetPick ? JSON.stringify(presetPick.spec) : initialDraft.presetSpec || "",
       designPrompt, uploadText, paperName: paperFile?.name || initialDraft.paperName || "",
       portraitName: portraitFile?.name || initialDraft.portraitName || "",
-      courseEnabled, courseSettings: JSON.stringify(courseSettings) });
+      courseEnabled, courseSettings: JSON.stringify(courseSettings), textModel, visionModel, scriptConcurrency });
   }, [preset, slideLang, scriptLang, contentProfile, scriptPrompt, slidePrompt,
     promptTemplate, slidePromptTemplate, slideCount, generateTalking, ifTreeSearch, voiceMode,
-    presetPick, designPrompt, uploadText, paperFile, portraitFile, initialDraft, courseEnabled, courseSettings]);
+    presetPick, designPrompt, uploadText, paperFile, portraitFile, initialDraft, courseEnabled, courseSettings, textModel, visionModel, scriptConcurrency]);
 
   const doIngest = useCallback(async () => runExclusive(ingestLock, setIngesting, async () => {
     if (!paperFile) return MessagePlugin.warning("请先选择内容文件");
@@ -685,9 +692,9 @@ export default function App() {
   const verifyKey = useCallback(async () => runExclusive(verifyLock, setChecking, async () => {
     setKeyCheck(null);
     const version = verifyVersion.current;
-    const { data } = await api.post("/api/key/verify", { api_key: apiKey, api_base: apiBase });
+    const { data } = await api.post("/api/key/verify", { api_key: apiKey, api_base: apiBase, model: textModel });
     if (version === verifyVersion.current) setKeyCheck(data);
-  }, reportError), [apiKey, apiBase]);
+  }, reportError), [apiKey, apiBase, textModel]);
 
   const submit = useCallback(async () => runExclusive(submitLock, setSubmitting, async () => {
     setSubmitPhase("正在准备…");
@@ -754,6 +761,9 @@ export default function App() {
       api_base: apiBase || undefined,
       course_plan_token: courseEnabled ? coursePlan?.token : undefined,
       config: {
+        text_model: textModel,
+        vision_model: visionModel,
+        script_concurrency: scriptConcurrency,
         stages: ["1", "2", "3"],
         slide_lang: slideLang,
         script_lang: scriptLang,
@@ -787,7 +797,7 @@ export default function App() {
   }, reportError), [ingest, portraitFile, generateTalking, apiKey, apiBase, slideLang, scriptLang,
       contentProfile, scriptPrompt, slidePrompt, slideCount, opts, ifTreeSearch,
       voiceMode, presetPick, designPrompt, uploadSpec, uploadText, voiceSpecNow, selectJob,
-      courseEnabled, coursePlan, courseSettings]);
+      courseEnabled, coursePlan, courseSettings, textModel, visionModel, scriptConcurrency]);
 
   // 任务列表：每 5 秒刷新。本地工具，这点开销可以忽略，
   // 换来的是"后端重启前留下的任务也能看到最新状态"。
@@ -936,8 +946,11 @@ export default function App() {
     if (!p) return "";
     const parts: string[] = [];
     if (p.phase_elapsed_s != null) parts.push(`已用 ${fmtMin(p.phase_elapsed_s)}`);
-    if (p.phase_expected_s != null) parts.push(`约 ${fmtMin(p.phase_expected_s)}（粗估）`);
-    if (countTotal > 0) parts.push(`第 ${countDone} / ${countTotal} ${countUnit}`);
+    if (p.phase_key === "script") {
+      parts.push(p.phase_remaining_s != null ? `预计剩余 ${fmtMin(p.phase_remaining_s)}（按本次速度动态估算）` : "完成首批页面后估算剩余时间");
+      if (p.script_concurrency) parts.push(`并发 ${p.script_concurrency}`);
+    } else if (p.phase_expected_s != null) parts.push(`阶段总耗时约 ${fmtMin(p.phase_expected_s)}（粗估）`);
+    if (countTotal > 0) parts.push(`已完成 ${countDone} / ${countTotal} ${countUnit}`);
     return parts.join(" · ");
   }, [p, countTotal, countDone, countUnit]);
 
@@ -947,6 +960,8 @@ export default function App() {
   if (!ingest || ingest.error) missing.push("选择内容文件并完成提取预览");
   if (courseEnabled && !coursePlan) missing.push("预览并确认教案和时间分配");
   if (!apiKey.trim()) missing.push("填写 API Key");
+  if (!textModel.trim() || !visionModel.trim()) missing.push("选择文字和视觉模型");
+  if (!Number.isInteger(scriptConcurrency) || scriptConcurrency < 1 || scriptConcurrency > 8) missing.push("填写 1～8 的整数并发数");
   if (!slidePrompt.trim() || slidePrompt.length > (opts?.slide_prompt_max_chars ?? 30000)) missing.push("检查幻灯片提示词");
   if (!scriptPrompt.trim() || scriptPrompt.length > (opts?.script_prompt_max_chars ?? 20000)) missing.push("检查讲稿提示词");
   if (!Number.isInteger(slideCount) || Number(slideCount) < (opts?.slide_count?.min ?? 4)
@@ -1332,8 +1347,14 @@ export default function App() {
 
       <div className="course-switch">
         <label className="checkrow"><input type="checkbox" checked={courseEnabled} onChange={(e) => { setCourseEnabled(e.target.checked); setCoursePlan(null); }} />设置教学范围与目标时长（适用于课程授课）</label>
-        {courseEnabled && <button type="button" className="linkbtn" onClick={() => { setPreset("zh_all"); setSlideLang("zh"); setScriptLang("zh"); }}>使用中文授课语言推荐</button>}
+        {courseEnabled && <button type="button" className="linkbtn" onClick={() => {
+          const already = slideLang === "zh" && scriptLang === "zh";
+          setPreset(opts?.presets.find((v) => v.slide_lang === "zh" && v.script_lang === "zh")?.value ?? "custom");
+          setSlideLang("zh"); setScriptLang("zh");
+          setLanguageNotice(already ? "当前已是中文课件 + 中文讲解，无需更改。" : "已应用：中文课件 + 中文讲解，语言设置和默认模板已同步。自定义提示词保留，请重新确认教案。");
+        }}>使用中文授课语言推荐</button>}
       </div>
+        {languageNotice && courseEnabled && <p className="notice info" role="status">{languageNotice}</p>}
       {courseEnabled && <CoursePanel ingestId={ingest?.ingest_id} settings={courseSettings} onSettings={setCourseSettings}
         slideCount={slideCount} scriptLang={scriptLang} onPlan={setCoursePlan} />}
 
@@ -1536,8 +1557,9 @@ export default function App() {
             <input type="text" value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder="https://api.deepseek.com" />
           </div>
         </div>
+        <ModelSettings apiKey={apiKey} apiBase={apiBase} textModel={textModel} visionModel={visionModel} concurrency={scriptConcurrency} onText={setTextModel} onVision={setVisionModel} onConcurrency={setScriptConcurrency} />
         <div className="actions">
-          <Button variant="outline" loading={checking} disabled={!apiKey.trim()} onClick={verifyKey}>连接自检</Button>
+          <Button variant="outline" loading={checking} disabled={!apiKey.trim() || !textModel.trim()} onClick={verifyKey}>连接自检（文字模型）</Button>
           <label className="checkline">
             <input
               type="checkbox"
@@ -1591,7 +1613,7 @@ export default function App() {
         </p>
         {generateTalking && !portraitFile && <p className="hint">未选择人像，实际将生成无数字人小窗的视频。</p>}
         <p className="hint">
-          {est ? `完整流程生成耗时粗估 ${est.lo}～${est.hi} 分钟（${est.slides} 页），不代表成片播放时长；长课需实际标定。` : "正在读取耗时估算信息。"}
+          {courseEnabled ? "长课程尚无生成耗时标定；讲稿阶段按本次接口速度动态估计剩余时间，配音合片以实际进度为准。" : est ? `本地配音与合片参考 ${est.lo}～${est.hi} 分钟（${est.slides} 页），不含课件与讲稿的接口等待时间，不代表成片播放时长。` : "生成等待时间以任务实际进度为准。"}
           {` 当前 ${activeCount} 个任务执行中、${queuedCount} 个排队中；新任务会串行排队。`}
         </p>
         <div className="actions">
@@ -1630,22 +1652,23 @@ export default function App() {
             此任务：{job.config.slide_lang}/{job.config.script_lang}
             {` · 目标 ${job.config.slide_count || "未记录"} 页 · ${job.config.voice_note || "内置默认音色"}`}
             {` · ${job.config.talking_note || (job.config.generate_talking ? "已启用数字人" : "无数字人")}`}
+            {` · 文字模型 ${job.config.text_model || "原默认模型"} · 讲稿模型 ${job.config.vision_model || "原默认模型"}`}
             <br />这是创建时保存的配置，新建任务中的修改不影响它。
           </p>
         )}
         {filesError && <div className="notice err" role="alert"><span>产物读取失败：{filesError}</span><Button variant="outline" onClick={() => setFilesVersion((value) => value + 1)}>重试读取</Button></div>}
-        {job && !running && visiblePages?.pages?.length > 0 && <ReviewPanel key={job.id} jobId={job.id} apiKey={apiKey} apiBase={apiBase} onJob={selectJob} onSaved={() => setFilesVersion((v) => v + 1)} />}
+        {job && !running && visiblePages?.pages?.length > 0 && <ReviewPanel key={job.id} jobId={job.id} apiKey={apiKey} apiBase={apiBase} concurrency={job.config?.script_concurrency ?? 3} onJob={selectJob} onSaved={() => setFilesVersion((v) => v + 1)} />}
 
         {job && (
           <div style={{ marginTop: 18 }}>
             <div className="statusline">
               <span className={"dot " + (job.status === "done" ? "ok" : job.status === "failed" ? "err" : "run")} />
-              <span>{job.phase || job.status}</span>
+              <span>{p?.phase || job.phase || job.status}</span>
               <span className="tail">
                 {`总进度 ${pct}%`}
                 {running && phaseHint ? `　${phaseHint}` : ""}
                 {job.elapsed_min ? `　已跑 ${job.elapsed_min} min` : ""}
-                {job.exit_code !== undefined && job.exit_code !== 0 ? `　退出码 ${job.exit_code}` : ""}
+                {job.exit_code != null && job.exit_code !== 0 ? `　退出码 ${job.exit_code}` : ""}
               </span>
             </div>
 
@@ -1909,9 +1932,9 @@ export default function App() {
         单卡串行执行 · 页面可关闭，任务在后端继续
         <br />
         <span className="est">
-          {est ? (
+          {est && !courseEnabled ? (
             <>
-              本篇预计{" "}
+              本地配音与合片参考{" "}
               <b>
                 {est.lo}~{est.hi} 分钟
               </b>
@@ -1923,10 +1946,10 @@ export default function App() {
               {"）"}
             </>
           ) : (
-            "一次生成约 15~25 分钟"
+            "生成等待时间以任务实际进度为准；讲稿阶段显示动态剩余时间。"
           )}
         </span>
-        {est ? (
+        {est && !courseEnabled ? (
           <span className="basis">
             {`　标定基准：${est.anchoredOn} · 实际以生成页数为准；此估算对应新任务草稿`}
           </span>

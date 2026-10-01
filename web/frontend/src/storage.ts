@@ -109,6 +109,9 @@ export type Draft = {
   portraitName: string;
   courseEnabled?: boolean;
   courseSettings?: string;
+  textModel?: string;
+  visionModel?: string;
+  scriptConcurrency?: number;
 };
 
 export function loadDraft(): Partial<Draft> {
@@ -117,7 +120,7 @@ export function loadDraft(): Partial<Draft> {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
     const draft: Record<string, unknown> = {};
     for (const key of ["preset", "scriptPrompt", "slidePrompt", "scriptTemplate", "slideTemplate",
-      "presetSpec", "designPrompt", "uploadText", "paperName", "portraitName", "courseSettings"]) {
+      "presetSpec", "designPrompt", "uploadText", "paperName", "portraitName", "courseSettings", "textModel", "visionModel"]) {
       if (typeof raw[key] === "string") draft[key] = raw[key];
     }
     for (const key of ["slideLang", "scriptLang"]) {
@@ -133,6 +136,7 @@ export function loadDraft(): Partial<Draft> {
     if (Number.isInteger(raw.slideCount) && raw.slideCount >= 4 && raw.slideCount <= 40) {
       draft.slideCount = raw.slideCount;
     }
+    if (Number.isInteger(raw.scriptConcurrency) && raw.scriptConcurrency >= 1 && raw.scriptConcurrency <= 8) draft.scriptConcurrency = raw.scriptConcurrency;
     return draft;
   } catch { return {}; }
 }

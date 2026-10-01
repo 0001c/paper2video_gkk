@@ -54,6 +54,7 @@ sys.path.insert(0, P2V_SRC)
 # 结构化进度的读写约定与流水线共用同一个模块（progress_report），
 # 避免两边对字段名/取值的理解跑偏。放 import 在这里是因为它依赖上面的 sys.path。
 import progress_report                                    # noqa: E402
+import pv_env                                             # noqa: E402
 import mimo_voice                                         # noqa: E402
 import artifact_cache                                     # noqa: E402
 import paper_figures                                      # noqa: E402
@@ -120,6 +121,10 @@ class ReviewRunRequest(ReviewRequest):
     page_ids: list[int] = Field(default_factory=list, max_length=40)
     api_key: str | None = Field(default=None, max_length=2000)
     api_base: str | None = Field(default=None, max_length=2000)
+    refresh_prompt: bool = False
+    text_model: str | None = Field(default=None, min_length=1, max_length=200)
+    vision_model: str | None = Field(default=None, min_length=1, max_length=200)
+    script_concurrency: int = Field(default=3, ge=1, le=8)
 
 
 class PrepareRetryRequest(BaseModel):
@@ -141,6 +146,9 @@ async def api_prepare_retry(job_id: str, payload: PrepareRetryRequest, request: 
         if not os.path.isfile(os.path.join(src.get('paper_latex_root') or '', 'main.tex')) and not os.path.isfile(src.get('source_path') or ''):
             raise HTTPException(409, detail='原素材不可用，请重新上传')
         config = dict(src['config'])
+        _normalize_models(config)
+        if payload.api_base:
+            config['model_api_base'] = _model_base(payload.api_base)
         config.update(result_dir=result, reuse_script=False, require_reuse_script=False,
                       review_before_render=True, stages=['2'] if os.path.isfile(os.path.join(result, 'slides_rendered.pdf')) else ['1', '2'])
         # 局部重写失败后继续重写原来选中的页，保留其它已审核的讲稿。
@@ -255,6 +263,13 @@ async def api_run_review(job_id: str, payload: ReviewRunRequest, request: Reques
     async with _JOB_LOCK:
         job = _load_job(job_id)
         text = _check_review(job, payload)
+        checked = dict(job.get('config') or {})
+        checked.update(script_concurrency=payload.script_concurrency)
+        for field in ('text_model', 'vision_model'):
+            if getattr(payload, field) is not None:
+                checked[field] = getattr(payload, field)
+        _normalize_models(checked)
+        _model_base(payload.api_base)
         if payload.action == "regenerate":
             if not payload.page_ids or len(set(payload.page_ids)) != len(payload.page_ids) or any(i < 0 or i >= len(payload.pages) for i in payload.page_ids):
                 raise HTTPException(422, detail="page_ids：请选择有效且不重复的零基页索引")
@@ -266,7 +281,10 @@ async def api_run_review(job_id: str, payload: ReviewRunRequest, request: Reques
             "plan_token": plan["token"], "reuse_script": payload.action == "render",
             "stages": ["2", "3"] if payload.action == "render" else ["2"],
             "review_pages": payload.page_ids if payload.action == "regenerate" else None,
-            "api_key": payload.api_key, "api_base": payload.api_base})
+            "api_key": payload.api_key, "api_base": payload.api_base,
+            "refresh_script_prompt": payload.refresh_prompt and payload.action == 'regenerate',
+            "text_model": payload.text_model, "vision_model": payload.vision_model,
+            "script_concurrency": payload.script_concurrency})
         return response
 
 # ──────────────────────────────────────────────────────────────
@@ -388,6 +406,18 @@ def _normalize_script_prompt(config):
             status_code=400,
             detail="讲稿提示词必须保留页分隔符 ### 和‘讲稿 | 光标目标’输出格式")
     return profile, prompt
+
+
+def _normalize_models(config):
+    for field, env in (('text_model', 'PAPER2VIDEO_LLM_MODEL'), ('vision_model', 'PAPER2VIDEO_VLM_MODEL')):
+        name = config.get(field) or os.environ.get(env, 'deepseek-flash')
+        if not isinstance(name, str) or not name.strip() or len(name) > 200 or any(ord(c) < 32 for c in name):
+            raise HTTPException(422, detail=field + '：模型 ID 必须为 1～200 字符且不能包含控制字符')
+        config[field] = name.strip()
+    value = config.get('script_concurrency', 3)
+    if type(value) is not int or not 1 <= value <= 8:
+        raise HTTPException(422, detail='script_concurrency：必须为 1～8 的整数')
+    config['script_concurrency'] = value
 
 
 def _normalize_slide_prompt(config, profile):
@@ -806,7 +836,7 @@ PHASES = (
     ("extract",  "分析内容",     0.02, False, "",   180),
     ("struct",   "结构化正文",   0.10, False, "",   300),
     ("slides",   "生成幻灯片",   0.09, False, "",   300),
-    ("script",   "生成讲稿",     0.05, False, "",   300),
+    ("script",   "生成讲稿",     0.05, True,  "页", 300),
     ("tts",      "合成语音",     0.29, True,  "页", 180),
     ("cursor",   "光标定位",     0.05, True,  "条", 600),
     ("talking",  "生成数字人",   0.32, True,  "页", 420),
@@ -841,7 +871,7 @@ def _phase_expected_s(phase_key, total_pages, script_lang):
             return None
         return int(per_slide * _PHASE_PAGE_SHARE[phase_key] * total_pages)
     if phase_key == "script":
-        return CALIBRATION.get("script_api_s")
+        return None  # 逐页请求的耗时受模型、长度、并发影响；用本次完成速度估算剩余时间。
     return _PHASE_FIXED_S.get(phase_key)
 
 
@@ -958,8 +988,9 @@ def _progress_from_jsonl(job, job_dir):
         # 光标阶段报的 total 是"指令条数"（实测 18），单位完全不同 ——
         # 早期把两者的 total 混在一起来取 max，会得到"18 页"这种荒谬结论，
         # 而界面上"第 k/18 页"看起来还挺正常，最难发现。
-        if phase in ("tts", "talking") and isinstance(total, int) and total > 0:
-            info["total_pages"] = max(info["total_pages"], total)
+        pages = rec.get('total_pages') if phase == 'script' else total
+        if phase in ("script", "tts", "talking") and isinstance(pages, int) and pages > 0:
+            info["total_pages"] = max(info["total_pages"], pages)
         if isinstance(done, int):
             prev_done, prev_total = info["counts"].get(phase, (0, 0))
             info["counts"][phase] = (max(prev_done, done),
@@ -979,6 +1010,7 @@ def _progress_from_jsonl(job, job_dir):
         info["unknown_phase"] = raw
 
     ts = records[-1].get("ts")
+    info['script_stats'] = records[-1] if raw == 'script' else None
     if isinstance(ts, (int, float)):
         # 用最后一条**记录**的时间戳判断"还在不在动"，比日志 mtime 更贴切：
         # 日志里混着各子进程的输出，而进度是流水线自己写的。
@@ -1059,6 +1091,15 @@ def read_progress(job):
     }
 
     found = _progress_from_jsonl(job, job_dir) or _progress_from_log(job, job_dir)
+    # 旧版课程任务只打印逐页完成日志：为正在运行／旧任务补齐计数与活动时间。
+    if found and found.get('phase_key') == 'script' and not (found.get('counts') or {}).get('script', (0, 0))[1]:
+        log_path = os.path.join(job_dir, 'run.log')
+        if os.path.isfile(log_path):
+            matches = re.findall(r'\[course\] 讲稿 (\d+)/(\d+) 已保存', _read_log_text(log_path))
+            if matches:
+                d, t = map(int, matches[-1])
+                found.setdefault('counts', {})['script'] = (d, t)
+                found['stalled_seconds'] = int(max(0, time.time() - os.path.getmtime(log_path)))
     info["counts"] = found.get("counts") if found else None
     if found:
         for key in ("tts_done", "talking_done", "total_pages"):
@@ -1147,6 +1188,14 @@ def read_progress(job):
 
     info["phase_expected_s"] = _phase_expected_s(
         phase_key, info["total_pages"], config.get("script_lang", "en"))
+    info['phase_remaining_s'] = None
+    if phase_key == 'script' and not finished:
+        stats = (found or {}).get('script_stats') or {}
+        generated, elapsed = stats.get('generated_done', 0), stats.get('generation_elapsed_s', 0)
+        remaining = max(0, (info.get('count_total') or 0) - (info.get('count_done') or 0))
+        if generated > 0 and elapsed > 0:
+            info['phase_remaining_s'] = round(elapsed / generated * remaining)
+        info['script_concurrency'] = stats.get('concurrency') or config.get('script_concurrency', 1)
 
     # 卡住判据**按阶段给上限**：数字人阶段本来就是"几分钟没有新记录"，
     # 用同一个阈值会在整个数字人阶段持续误报「疑似卡住」。
@@ -1329,6 +1378,9 @@ def _build_argv(job):
         "--script_lang", cfg["script_lang"],
         "--paper_type", "auto",
         "--slide_count", str(cfg.get("slide_count", 12)),
+        "--model_name_t", cfg.get('text_model') or os.environ.get('PAPER2VIDEO_LLM_MODEL', 'deepseek-flash'),
+        "--model_name_v", cfg.get('vision_model') or os.environ.get('PAPER2VIDEO_VLM_MODEL', 'deepseek-flash'),
+        "--script_concurrency", str(cfg.get('script_concurrency', 3)),
         "--talking_profile", cfg.get("talking_profile", "musetalk-local"),
         "--gpu_list", "0",
         # 必须显式传：上游 argparse 的默认值是 True，不传就等于每篇都开。
@@ -1429,12 +1481,10 @@ def _artifact_facts(job):
                                    cfg.get("slide_prompt_path"))),
         "slide_count": int(cfg.get("slide_count", 12)),
         "course_plan_sha": cfg.get("course_plan_sha"),
-        "llm_model": os.environ.get("PAPER2VIDEO_LLM_MODEL", "deepseek-flash"),
-        # ⚠️ VLM 实际用的是 pipeline.py 里的 argparse 默认值。仓库根 `.env` 那行
-        #    `PAPER2VIDEO_VLM_MODEL` **没有任何代码读它**（全仓库搜过，已核实）——
-        #    别以为它在生效。哪天把它接上，必须同时加进这里的字段表，
-        #    否则"换了 VLM 但缓存不失效"，产物与配置不符且不报错。
-        "vlm_model": "deepseek-flash",
+        "llm_model": cfg.get('text_model') or os.environ.get("PAPER2VIDEO_LLM_MODEL", "deepseek-flash"),
+        "vlm_model": cfg.get('vision_model') or os.environ.get('PAPER2VIDEO_VLM_MODEL', 'deepseek-flash'),
+        "model_api_base": cfg.get('model_api_base') or os.environ.get('OPENAI_BASE_URL') or os.environ.get('OPENAI_API_BASE'),
+        "script_generation_version": 2,
         "talking_profile": cfg.get("talking_profile", "musetalk-local"),
         # 幻灯片布局微调（树搜索）：它真的改变 stage 1 的幻灯片产物
         # （溢出页多出 4 个宽度候选、由 VLM 选一张），所以**必须在指纹里**。
@@ -1520,7 +1570,7 @@ async def _prepare_latex(job, job_dir, log, env):
         return False
 
     argv = [VENV_PY, "-u", os.path.join(SCRIPTS, "paper_struct.py"),
-            source, "--out", job_dir]
+            source, "--out", job_dir, '--model', job['config'].get('text_model') or os.environ.get('PAPER2VIDEO_LLM_MODEL', 'deepseek-flash')]
     if job.get("config", {}).get("course_plan_path"):
         argv += ["--text-file", os.path.join(job_dir, "ingest", "paper_text.md")]
     _log_line(log, "[struct] 正在把 {} 转成 LaTeX 工程（一次 API 调用，约 1~2 分钟）".format(
@@ -1577,6 +1627,7 @@ async def _run_job(job):
     _save_job(job)
 
     env = dict(os.environ)
+    env['PAPER2VIDEO_FORCE_COMPATIBLE'] = '1'  # 网页填写的服务商端点统一使用 OpenAI 兼容协议。
     # P1：告诉流水线把结构化进度写到哪里。未设置该环境变量时，
     # 流水线**不生成任何额外文件**（命令行直接跑 pipeline.py 行为完全不变）。
     env["PAPER2VIDEO_PROGRESS_FILE"] = os.path.join(job_dir, "progress.jsonl")
@@ -1605,10 +1656,11 @@ async def _run_job(job):
     if keys.get("api_key"):
         env["OPENAI_API_KEY"] = keys["api_key"]
         env["OPENAI_COMPATIBLE_MODEL_API_KEY"] = keys["api_key"]
-    if keys.get("api_base"):
-        env["OPENAI_API_BASE"] = keys["api_base"]
-        env["OPENAI_BASE_URL"] = keys["api_base"]
-        env["OPENAI_COMPATIBLE_MODEL_API_BASE"] = keys["api_base"]
+    model_base = keys.get('api_base') or job['config'].get('model_api_base')
+    if model_base:
+        env["OPENAI_API_BASE"] = model_base
+        env["OPENAI_BASE_URL"] = model_base
+        env["OPENAI_COMPATIBLE_MODEL_API_BASE"] = model_base
 
     started = time.time()
     # 产物缓存（阶段 3）的决策与结果，最后会记进任务记录。
@@ -1865,6 +1917,46 @@ async def api_options():
             },
         ],
     }
+
+
+class ModelListRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    api_key: str = Field(min_length=1, max_length=2000)
+    api_base: str = Field(default='', max_length=2000)
+
+
+def _model_base(value):
+    from urllib.parse import urlsplit
+    if value is not None and (not isinstance(value, str) or len(value) > 2000 or any(ord(c) < 32 for c in value)):
+        raise HTTPException(422, detail='api_base：必须为不超过 2000 字符的服务地址')
+    base = (value or '').strip().rstrip('/')
+    if base:
+        try:
+            parsed = urlsplit(base)
+        except ValueError:
+            raise HTTPException(422, detail='api_base：服务地址无效')
+        if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise HTTPException(422, detail='api_base：请填写不含凭据、查询参数的 HTTP(S) 服务地址')
+    return base
+
+
+@app.post('/api/models')
+async def api_models(payload: ModelListRequest, request: Request):
+    _local_write(request)
+    base = _model_base(payload.api_base)
+    def fetch():
+        import pv_env  # noqa: F401
+        from openai import OpenAI
+        with OpenAI(api_key=payload.api_key.strip(), base_url=base or None, timeout=15, max_retries=0) as client:
+            data = client.models.list().data
+            return sorted({m.id for m in data if isinstance(m.id, str) and 0 < len(m.id) <= 200 and not any(ord(c) < 32 for c in m.id)})[:500]
+    try:
+        ids = await asyncio.to_thread(fetch)
+        return {'ok': True, 'models': ids, 'message': '已获取 {} 个模型；服务商列表通常不标注视觉能力，请确认讲稿模型支持图像。'.format(len(ids))}
+    except Exception as exc:
+        code = getattr(exc, 'status_code', None)
+        message = '鉴权失败，请检查 API Key' if code in (401, 403) else '该服务未提供可读取的模型列表，或连接超时；可以手动输入模型 ID。'
+        return {'ok': False, 'models': [], 'message': message}
 
 
 @app.post("/api/key/verify")
@@ -2232,6 +2324,8 @@ async def api_create_job(payload: dict):
     # 所以"谁的任务用谁的 key"。仍然只放进程内存，不落盘。
 
     config = dict(payload.get("config") or {})
+    _normalize_models(config)
+    config['model_api_base'] = _model_base(payload.get('api_base')) or os.environ.get('OPENAI_BASE_URL') or os.environ.get('OPENAI_API_BASE')
 
     # 数字人是可选增强项。即使界面勾着开关，只要没有有效人像就自动关闭，
     # stage 3 仍会继续做“幻灯片 + 音频 + 光标 + 字幕”的完整合片。
@@ -2431,6 +2525,12 @@ async def api_rerun_job(job_id: str, payload: dict):
                             detail="原任务没有 result 目录，无法续跑（可能从未开始）")
 
     config = dict(src_job.get("config") or {})
+    for field in ('text_model', 'vision_model', 'script_concurrency'):
+        if payload.get(field) is not None:
+            config[field] = payload[field]
+    _normalize_models(config)
+    if payload.get('api_base'):
+        config['model_api_base'] = _model_base(payload['api_base'])
     portrait = payload.get("portrait_path") or src_job.get("ref_img")
     portrait = portrait if portrait and os.path.isfile(portrait) else None
     generate_talking = _as_bool(
@@ -2470,6 +2570,12 @@ async def api_rerun_job(job_id: str, payload: dict):
     if os.path.isdir(src_ingest):                 # ingest 很小（正文），复制一份
         shutil.copytree(src_ingest, os.path.join(new_dir, "ingest"),
                         dirs_exist_ok=True)
+
+    if _as_bool(payload.get('refresh_script_prompt'), False) and not config['reuse_script']:
+        prompt = _script_prompt_text(config.get('content_profile', 'paper'), config.get('script_lang', 'zh'))
+        target = os.path.join(new_dir, 'script_prompt.txt')
+        Path(target).write_text(prompt, encoding='utf-8')
+        config.update(script_prompt_path=target, script_prompt_sha1=artifact_cache.digest_file(target))
 
     job = {
         "id": new_id,

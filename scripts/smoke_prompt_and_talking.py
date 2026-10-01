@@ -6,6 +6,7 @@
 import asyncio
 import importlib.util
 import io
+import json
 import os
 import shutil
 import sys
@@ -110,9 +111,9 @@ async def main_async():
               and bool(cfg.get("slide_prompt_sha1")))
 
         argv = web._build_argv(job)
-        check("命令行关闭数字人但仍保留 stage 3",
+        check("准备任务关闭数字人并在配音合片前暂停审核",
               argv[argv.index("--generate_talking") + 1] == "False"
-              and '"3"' in argv[argv.index("--stage") + 1])
+              and json.loads(argv[argv.index("--stage") + 1]) == ['1', '2'])
         check("命令行传提示词文件且不传空人像",
               argv[argv.index("--script_prompt_file") + 1] == prompt_path
               and "--ref_img" not in argv)

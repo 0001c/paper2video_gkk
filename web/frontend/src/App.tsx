@@ -1633,7 +1633,7 @@ export default function App() {
           </p>
         )}
         {filesError && <div className="notice err" role="alert"><span>产物读取失败：{filesError}</span><Button variant="outline" onClick={() => setFilesVersion((value) => value + 1)}>重试读取</Button></div>}
-        {job && !running && visiblePages?.pages?.length > 0 && <ReviewPanel key={job.id} jobId={job.id} apiKey={apiKey} apiBase={apiBase} onJob={selectJob} />}
+        {job && !running && visiblePages?.pages?.length > 0 && <ReviewPanel key={job.id} jobId={job.id} apiKey={apiKey} apiBase={apiBase} onJob={selectJob} onSaved={() => setFilesVersion((v) => v + 1)} />}
 
         {job && (
           <div style={{ marginTop: 18 }}>

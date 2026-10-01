@@ -94,7 +94,10 @@ def _course_source(work):
         return text_file.read_text(encoding="utf-8")
     root = (_content_meta(work) or {}).get("latex_root")
     if root and Path(root, "main.tex").is_file():
-        return Path(root, "main.tex").read_text(encoding="utf-8")
+        try:
+            return course.latex_source(root)
+        except (ValueError, OSError, UnicodeError) as exc:
+            raise HTTPException(422, detail=str(exc))
     raise HTTPException(422, detail="section_ids：没有可读取的正文，请重新提取或上传选定小节")
 
 

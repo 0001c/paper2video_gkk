@@ -6,8 +6,8 @@ type Review = { version: string; pages: string[]; editable: boolean;
   timing: { estimated_minutes: number; actual_minutes: number | null; target_minutes: number | null;
     pages: { planned_minutes: number; estimated_minutes: number; actual_seconds: number | null; section: string }[] } | null };
 
-export function ReviewPanel({ jobId, apiKey, apiBase, onJob }: {
-  jobId: string; apiKey: string; apiBase: string; onJob: (id: string) => void;
+export function ReviewPanel({ jobId, apiKey, apiBase, onJob, onSaved }: {
+  jobId: string; apiKey: string; apiBase: string; onJob: (id: string) => void; onSaved: () => void;
 }) {
   const [review, setReview] = useState<Review | null>(null);
   const [pages, setPages] = useState<string[]>([]);
@@ -32,11 +32,12 @@ export function ReviewPanel({ jobId, apiKey, apiBase, onJob }: {
     const body = { version: review.version, pages };
     const { data } = action === "save" ? await api.put(`/api/jobs/${jobId}/review`, body)
       : await api.post(`/api/jobs/${jobId}/review/run`, { ...body, action, page_ids: action === "regenerate" ? [selected] : [], api_key: apiKey || undefined, api_base: apiBase || undefined });
-    if (action === "save") { setReview(data); setPages(data.pages); setAccepted(false); setSuccess("讲稿已保存，历史版本可回溯。修改页的旧音频将在下次生成时更新。"); }
+    if (action === "save") { setReview(data); setPages(data.pages); setAccepted(false); setSuccess("讲稿已保存，历史版本可回溯。修改页的旧音频将在下次生成时更新。"); onSaved(); }
     else onJob(data.job_id);
   }, (e) => setError(errorMessage(e)));
   const timing = review?.timing;
   const delta = timing?.actual_minutes != null && timing.target_minutes ? (timing.actual_minutes - timing.target_minutes) / timing.target_minutes : null;
+  const estimatedDelta = timing?.target_minutes ? (timing.estimated_minutes - timing.target_minutes) / timing.target_minutes : null;
   return <section className="review-panel" aria-label="课件与讲稿审核">
     <div className="section-head"><h2 className="section-title">课件与讲稿审核</h2><Button variant="text" disabled={busy} onClick={() => {
       if (pages.join('\n') !== review?.pages.join('\n') && !window.confirm('重新读取会放弃未保存的讲稿编辑，是否继续？')) return;
@@ -49,6 +50,7 @@ export function ReviewPanel({ jobId, apiKey, apiBase, onJob }: {
     {review && <>
       {timing && <div className="notice info"><span>讲稿预算约 {timing.estimated_minutes} 分钟{timing.target_minutes ? ` · 目标 ${timing.target_minutes} 分钟` : ""}{timing.actual_minutes != null ? ` · 已合成音频 ${timing.actual_minutes} 分钟` : " · 实际时长将在音频生成后显示"}{delta != null ? ` · 偏差 ${(delta * 100).toFixed(1)}%` : ""}</span></div>}
       {delta != null && Math.abs(delta) > 0.1 && <p className="notice warn">实际时长超出目标 ±10%。可调整相应页讲稿，再重新配音合片；系统不会强行放慢语音或重复内容。</p>}
+      {delta == null && estimatedDelta != null && Math.abs(estimatedDelta) > 0.1 && <p className="notice warn">当前讲稿估算与目标相差 {(estimatedDelta * 100).toFixed(1)}%。请在配音前检查讲稿是否覆盖教学内容，并按需要补充讲解或调整长度；此估算仍需用实际音频校准。</p>}
       <div className="field"><label htmlFor="review-page">查看页码</label><select id="review-page" value={selected} disabled={busy} onChange={(e) => setSelected(Number(e.target.value))}>{pages.map((_, i) => <option key={i} value={i}>第 {i + 1} 页{timing?.pages[i] ? ` · ${timing.pages[i].section}` : ""}</option>)}</select></div>
       <div className="review-grid">
         <a href={`/api/jobs/${jobId}/files/slide_imgs/${selected + 1}.png?v=${review.version}`} target="_blank" rel="noreferrer"><img alt={`第 ${selected + 1} 页课件`} src={`/api/jobs/${jobId}/files/slide_imgs/${selected + 1}.png?v=${review.version}`} /></a>

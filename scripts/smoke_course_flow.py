@@ -38,6 +38,19 @@ def main():
         web.mimo_voice.CACHE_DIR = os.path.join(work, '_voices')
         web._QUEUE = asyncio.Queue()
         client = TestClient(web.app, client=('127.0.0.1', 50000))
+        tex_root = Path(work, 'tex')
+        tex_root.mkdir()
+        (tex_root / 'main.tex').write_text('\\chapter{第一章}\n\\input{section}\n', encoding='utf-8')
+        (tex_root / 'section.tex').write_text('\\section{集合}\n集合定义。', encoding='utf-8')
+        expanded = course.latex_source(tex_root)
+        check(len(course.source_sections(expanded)) == 3 and '集合定义' in expanded, 'LaTeX 子文件展开后可以按章节选范围')
+        for reference in ('../outside', 'main'):
+            (tex_root / 'section.tex').write_text('\\input{' + reference + '}', encoding='utf-8')
+            try:
+                course.latex_source(tex_root)
+                raise AssertionError('危险引用未拒绝')
+            except ValueError:
+                check(True, 'LaTeX 越界和循环引用被拒绝')
         text = '# 第一章\n章节导读\n## 1.1 基本概念\n' + '介绍概念和原理。' * 70 + '\n## 1.2 例题\n' + '源材料例题的步骤。' * 90
         sections = course.source_sections(text)
         parent, child = sections[1], sections[2]

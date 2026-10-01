@@ -28,16 +28,43 @@ def read_json(filename, default=None):
         return default
 
 
+def latex_source(root):
+    """读取工程内的普通 input/include，不执行 TeX，不允许引用工程外文件。"""
+    root = Path(root).resolve()
+    budget = 0
+    references = re.compile(r"\\(?:input|include)\s*(?:\{([^}]+)\}|([^\s{}]+))")
+    def read(path, active):
+        nonlocal budget
+        path = path.resolve()
+        if not path.is_relative_to(root) or path in active or len(active) >= 16:
+            raise ValueError('section_ids：LaTeX 引用越界、循环或嵌套过深，请上传选定小节的 PDF/Word')
+        if not path.is_file() or path.stat().st_size > 2000000:
+            raise ValueError('section_ids：LaTeX 子文件缺失或过大，请上传完整工程或选定小节的 PDF/Word')
+        text = path.read_text(encoding='utf-8')
+        budget += len(text)
+        if budget > 2000000:
+            raise ValueError('section_ids：LaTeX 工程展开超过 2000000 字符，请拆分素材')
+        text = re.sub(r'(?<!\\)%[^\n]*', '', text)
+        def expand(match):
+            name = (match.group(1) or match.group(2)).strip()
+            child = path.parent / name
+            if not child.suffix:
+                child = child.with_suffix('.tex')
+            return '\n' + read(child, [*active, path]) + '\n'
+        return references.sub(expand, text)
+    return read(root / 'main.tex', [])
+
+
 def source_sections(text):
     """仅识别有明确标记的标题；无标题时提供完整材料，不猜测分页范围。"""
-    matches = list(re.finditer(r"(?m)^(?:#{1,6}\s+(.+)|\\(?:sub)*section\*?\{([^}]+)\}|((?:第[一二三四五六七八九十百\d]+[章节]|\d+\.\d+(?:\.\d+)?)\s+[^\n]{1,100}))\s*$", text))
+    matches = list(re.finditer(r"(?m)^(?:#{1,6}\s+(.+)|\\(?:chapter|(?:sub)*section)\*?\{([^}]+)\}|((?:第[一二三四五六七八九十百\d]+[章节]|\d+\.\d+(?:\.\d+)?)\s+[^\n]{1,100}))\s*$", text))
     result = [{"id": "all", "title": "全部材料", "start": 0, "end": len(text), "chars": len(text)}]
     def level(match):
         raw = match.group(0)
         if raw.startswith('#'):
             return len(raw) - len(raw.lstrip('#'))
         if raw.startswith('\\'):
-            return raw.count('sub') + 1
+            return 0 if raw.startswith('\\chapter') else raw.count('sub') + 1
         return raw.split()[0].count('.') + 1
     for i, match in enumerate(matches[:200]):
         end = next((m.start() for m in matches[i + 1:] if level(m) <= level(match)), len(text))

@@ -136,6 +136,26 @@ def main():
                 assert requests[1]['max_tokens'] == 2048
                 routed = get_agent_config('gpt-4o')
                 assert routed['model_platform'].value == 'openai-compatible-model' and not routed['model_config'].get('max_tokens')
+            import subtitle_cursor_prompt_gen as script_gen
+            from PIL import Image
+            image = tmp / 'test-image.png'
+            Image.new('RGB', (2, 2)).save(image)
+            limited = RuntimeError('模拟限流')
+            limited.status_code = 429
+            answer = SimpleNamespace(msg=SimpleNamespace(content='知识解释。 | no'), info={})
+            with patch.object(script_gen.ModelFactory, 'create'), patch.object(script_gen, 'ChatAgent') as agent, patch.object(script_gen.time, 'sleep') as wait:
+                agent.return_value.step.side_effect = [limited, answer]
+                generated, _ = script_gen.subtitle_cursor_gen(str(tmp), str(prompt), {'model_platform': 'stub', 'model_type': 'stub'}, retries=2, image_paths=[str(image)])
+                assert generated == '知识解释。 | no' and agent.return_value.step.call_count == 2 and wait.call_count == 1
+                unauthorized = RuntimeError('模拟鉴权失败')
+                unauthorized.status_code = 401
+                agent.return_value.step.side_effect = unauthorized
+                wait.reset_mock()
+                try:
+                    script_gen.subtitle_cursor_gen(str(tmp), str(prompt), {'model_platform': 'stub', 'model_type': 'stub'}, image_paths=[str(image)])
+                    raise AssertionError('鉴权错误未报告')
+                except RuntimeError:
+                    assert not wait.called
             client = TestClient(web.app, client=('127.0.0.1', 50000))
             class Provider(BaseHTTPRequestHandler):
                 def log_message(self, *args):

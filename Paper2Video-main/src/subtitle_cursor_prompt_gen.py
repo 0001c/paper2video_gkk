@@ -86,7 +86,9 @@ def subtitle_cursor_gen(slide_imgs_dir, prompt_path, model_config, retries=None,
     slide_image_list = sorted(slide_image_list, key=lambda x: int(re.search(r'\d+', x).group()))
 
     images = []
-    for idx, img_path in enumerate(slide_image_list): images.append(Image.open(img_path))
+    for img_path in slide_image_list:
+        with Image.open(img_path) as img:
+            images.append(img.copy())  # 立即释放文件句柄；失败与并发请求也不能锁住课件文件。
 
     # 把「共几张、一张都不能少」写进请求：prompt 模板是静态文件，不知道张数，
     # 而漏页是最典型的输出缺陷，明确告知张数能显著降低它。

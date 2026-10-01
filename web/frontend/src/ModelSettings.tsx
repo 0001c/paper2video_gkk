@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Button } from "tdesign-react";
+import { Button, Select } from "tdesign-react";
 import { api, errorMessage } from "./flow";
 
 export function ModelSettings({ apiKey, apiBase, textModel, visionModel, concurrency, onText, onVision, onConcurrency }: {
@@ -32,13 +32,15 @@ export function ModelSettings({ apiKey, apiBase, textModel, visionModel, concurr
       {[["文字模型", "text-model", textModel, onText], ["讲稿 / 视觉模型", "vision-model", visionModel, onVision]].map(([label, id, value, onChange]) => {
         const change = onChange as (v: string) => void;
         const selected = value as string;
-        return <div className="field" key={id as string}><label htmlFor={id as string}>{label as string}</label>
-          <input id={id as string} type="text" list="provider-models" value={selected} maxLength={200}
-            placeholder="搜索或输入模型 ID" autoComplete="off" onChange={(e) => change(e.target.value)} />
+        const options = [...new Set([...models, selected].filter(Boolean))].map((v) => ({ label: v, value: v }));
+        return <div className="field" key={id as string} ref={(el) => { el?.querySelector('input')?.setAttribute('id', id as string); }}><label htmlFor={id as string}>{label as string}</label>
+          <Select
+            value={selected} options={options} filterable creatable placeholder="搜索或输入模型 ID"
+            popupProps={{ overlayStyle: { maxWidth: "calc(100vw - 32px)" }, overlayInnerStyle: { maxWidth: "calc(100vw - 32px)" } }}
+            onChange={(v) => change(String(v))} onCreate={(v) => change(String(v).trim())} />
         </div>;
       })}
     </div>
-    <datalist id="provider-models">{models.map((id) => <option key={id} value={id} />)}</datalist>
     {message && <p className="hint" role="status">{message}</p>}
     {models.length > 0 && [textModel, visionModel].some((v) => !models.includes(v)) && <p className="notice warn">当前选择未全部出现在服务商模型列表中，请核对模型 ID；手动输入的模型仍可使用。</p>}
     <p className="hint">文字模型用于正文结构化和课件生成；讲稿模型必须支持图像输入。这里的选择用于新任务，审核重写使用所选任务保存的模型。</p>

@@ -4,6 +4,7 @@ import { clearCredentials, loadCredentials, loadDraft, loadJobId, loadView, save
 import { api, applyTemplate, errorMessage, runExclusive } from "./flow";
 import { CoursePanel, defaultCourse, type CourseSettings, type CoursePlan } from "./CoursePanel";
 import { ReviewPanel } from "./ReviewPanel";
+import { ThemeToggle } from "./ThemeToggle";
 
 /* ─────────────────────────────────────────────────────────────
    接口层。三个注意点：
@@ -969,7 +970,7 @@ export default function App() {
   return (
     <div className="sheet">
       <header className="masthead">
-        <h1>内容自动讲解视频</h1>
+        <div className="masthead-top"><h1>内容自动讲解视频</h1><ThemeToggle /></div>
         <p className="sub">
           上传文档、电子书、教材或故事内容，生成带配音、光标指引和可选数字人的讲解视频
         </p>

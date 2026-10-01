@@ -55,6 +55,7 @@ import progress_report                                    # noqa: E402
 import mimo_voice                                         # noqa: E402
 import artifact_cache                                     # noqa: E402
 import paper_figures                                      # noqa: E402
+from script_validation import validate_script_output      # noqa: E402
 
 os.makedirs(JOBS_ROOT, exist_ok=True)
 app = FastAPI(title="Paper2Video Web", version="0.1.0")
@@ -1134,6 +1135,8 @@ def _build_argv(job):
         argv += ["--slide_prompt_file", slide_prompt_file]
     if cfg.get("reuse_script"):
         argv += ["--reuse_script", "True"]
+    if cfg.get("require_reuse_script"):
+        argv += ["--require_reuse_script", "True"]
     # 原始论文文件：流水线会从它提取插图放进工程（幻灯片里才有 \includegraphics，
     # 树搜索也才可能有活干）。源文件不可用时流水线会给出可读提示、不影响出片。
     # ⚠️ 刻意**不**把它放进产物指纹 —— 它对应的"图集"由 `figures` 字段表示。
@@ -1868,7 +1871,8 @@ async def api_voice_generate(payload: dict):
         "cached": bool(data.get("cached")),
         "duration_s": data.get("duration_s"),
         "ref_text": data["ref_text"],
-        "sample_url": "/api/voices/{}/sample".format(data["key"]),
+        "sample_url": "/api/voices/{}/sample?v={}".format(
+            data["key"], os.stat(data["ref_audio"]).st_mtime_ns),
         "script_lang": data["lang"],
         "kind": data["kind"],
         "voice": data.get("voice"),
@@ -2104,6 +2108,58 @@ async def api_create_job(payload: dict):
             "talking_note": talking_note}
 
 
+def _rerun_plan(job):
+    """只读预检；与流水线共用讲稿校验，确认后再次检查产物版本与共享目录占用。"""
+    result = _result_dir(job)
+    slide_dir = os.path.join(result, "slide_imgs")
+    slide_names = sorted(n for n in os.listdir(slide_dir) if n.lower().endswith(".png")) \
+        if os.path.isdir(slide_dir) else []
+    slides_ready = bool(slide_names) and all(
+        os.path.isfile(os.path.join(slide_dir, "{}.png".format(i)))
+        for i in range(1, len(slide_names) + 1))
+    script_file = os.path.join(result, "subtitle_w_cursor.txt")
+    text, reason, reusable = "", "没有可复用的讲稿，需要重新生成（可能产生 API 费用）", False
+    if os.path.isfile(script_file):
+        try:
+            with io.open(script_file, encoding="utf-8") as handle:
+                text = handle.read()
+            reusable, invalid = validate_script_output(text, len(slide_names))
+            reusable = reusable and bool(text.strip()) and slides_ready
+            reason = "讲稿校验通过，可复用讲稿并重做配音和视频" if reusable else \
+                "讲稿无法复用：{}；重新生成可能产生 API 费用".format(invalid or "幻灯片不完整")
+        except (OSError, UnicodeError):
+            reason = "讲稿文件无法读取，重新生成可能产生 API 费用"
+    can_rerun = job.get("status") in ("done", "failed", "canceled") and slides_ready
+    if not slides_ready:
+        reason = "幻灯片尚未完整生成，请新建任务重新生成内容"
+    elif job.get("status") not in ("done", "failed", "canceled"):
+        reason = "原任务尚未结束，暂不能重做"
+    result_key = os.path.normcase(os.path.realpath(result))
+    for other in _list_jobs():
+        if other.get("status") in ("running", "queued") and \
+                os.path.normcase(os.path.realpath(_result_dir(other))) == result_key:
+            can_rerun = False
+            reason = "有运行或排队任务正在使用同一份产物，请等待其结束后再重做"
+            break
+    versions = []
+    for name in slide_names:
+        stat = os.stat(os.path.join(slide_dir, name))
+        versions.append((name, stat.st_size, stat.st_mtime_ns))
+    token = hashlib.sha256(json.dumps({"id": job["id"], "status": job.get("status"),
+        "config": job.get("config"), "script": text, "slides": versions},
+        sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+    return {"job_id": job["id"], "source_name": job.get("source_name") or "",
+            "can_rerun": can_rerun, "can_reuse_script": reusable,
+            "reason": reason, "token": token,
+            "overwrite": ["配音", "光标数据", "数字人视频", "合成视频"],
+            "generate_talking": _as_bool((job.get("config") or {}).get("generate_talking"), True)}
+
+
+@app.get("/api/jobs/{job_id}/rerun-plan")
+async def api_rerun_plan(job_id: str):
+    return _rerun_plan(_load_job(job_id))
+
+
 @app.post("/api/jobs/{job_id}/rerun")
 async def api_rerun_job(job_id: str, payload: dict):
     """从已有任务续跑（默认只重跑 stage 2/3，并复用已有讲稿）。
@@ -2117,6 +2173,14 @@ async def api_rerun_job(job_id: str, payload: dict):
     于是 stage 1 已生成的幻灯片与讲稿就地重用（动辄几百 MB~GB，复制没必要）。
     """
     src_job = _load_job(job_id)
+    if payload.get("plan_token") or _as_bool(payload.get("require_reuse_script"), False):
+        plan = _rerun_plan(src_job)
+        if not plan["can_rerun"]:
+            raise HTTPException(status_code=409, detail=plan["reason"])
+        if payload.get("plan_token") != plan["token"]:
+            raise HTTPException(status_code=409, detail="原任务产物已变化，请关闭确认框并重新检查")
+        if _as_bool(payload.get("reuse_script"), True) and not plan["can_reuse_script"]:
+            raise HTTPException(status_code=409, detail=plan["reason"])
     # 用 _result_dir 而不是拼 job_dir/result：这样"续跑的续跑"也能找到真正的产物目录
     # （否则第二次续跑会指向第一个续跑任务的空 result 目录）。
     src_result = _result_dir(src_job)
@@ -2140,7 +2204,9 @@ async def api_rerun_job(job_id: str, payload: dict):
         config["talking_note"] = "已关闭数字人；将生成幻灯片讲解视频"
     config.update({
         "stages": payload.get("stages") or ["2", "3"],
-        "reuse_script": payload.get("reuse_script", True),
+        "reuse_script": _as_bool(payload.get("reuse_script"), True),
+        "require_reuse_script": _as_bool(payload.get("reuse_script"), True)
+            and bool(payload.get("plan_token")),
         "result_dir": src_result,
         "generate_talking": generate_talking,
     })
@@ -2250,9 +2316,13 @@ def _sse_frames(job_id, is_disconnected, keepalive):
                 "progress": read_progress(job),
                 "exit_code": job.get("exit_code"),
                 "elapsed_min": job.get("elapsed_min"),
+                "queue_ahead": job.get("queue_ahead") if job.get("status") == "queued" else 0,
                 # 续跑关系要推给前端：续跑任务的产物与原任务**共享**，
                 # 界面上得说清楚，否则用户不知道产物在哪、也想不到"重跑会覆盖原任务的那份"。
                 "resumed_from": job.get("resumed_from"),
+                "config": {key: (job.get("config") or {}).get(key) for key in (
+                    "generate_talking", "content_profile", "slide_lang", "script_lang",
+                    "slide_count", "voice_note", "talking_note")},
             }
             body = json.dumps(payload, ensure_ascii=False)
             if body != last:                       # 只在变化时推，减少噪音

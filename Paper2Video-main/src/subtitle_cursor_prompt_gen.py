@@ -10,39 +10,7 @@ from camel.agents import ChatAgent
 from camel.messages import BaseMessage
 from camel.types import ModelPlatformType
 from wei_utils import get_agent_config
-
-
-def validate_script_output(text, expected_slides):
-    """校验 VLM 产出的讲稿是否**结构完整**。返回 ``(是否合格, 问题说明)``。
-
-    为什么不能只判空：实测踩到过 —— VLM 返回了一个**非空但被截断**的响应，
-    末尾停在 ``... | "Paper``（引号没闭合），而当时只判了空，于是截断结果被
-    当成正常讲稿写盘：12 页讲稿只剩 8 页、TTS 只合成 8 段音频，一直到最后
-    出片才发现少了一半内容。**非空 ≠ 完整**。
-
-    三项结构性检查（都很便宜，且与语言无关）：
-
-    * **引号成对** —— 新 prompt 要求光标目标写成 ``"幻灯片原文"``，截断时
-      最容易表现为引号落单；
-    * **页数不少于幻灯片张数** —— 漏页是最典型的截断形态；
-    * **每页至少有一行 ``讲稿 | 目标``** —— 防止出现空页。
-    """
-    issues = []
-    stripped = str(text).strip()
-
-    if stripped.count('"') % 2 != 0:
-        issues.append("引号不成对（疑似截断）")
-
-    pages = [page for page in stripped.split("###") if page.strip()]
-    if len(pages) < expected_slides:
-        issues.append("页数 {} 少于幻灯片张数 {}".format(len(pages), expected_slides))
-
-    blank = [idx + 1 for idx, page in enumerate(pages)
-             if not any("|" in line for line in page.splitlines())]
-    if blank:
-        issues.append("第 {} 页没有任何「讲稿 | 目标」行".format(blank))
-
-    return (not issues), "；".join(issues)
+from script_validation import validate_script_output
 
 
 def _empty_response_hint(response, model_config):

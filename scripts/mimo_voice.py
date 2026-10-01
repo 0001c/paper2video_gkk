@@ -353,6 +353,12 @@ def voices_for(script_lang):
     presets = [{"label": v["label"], "gender": v["gender"], "lang": v["lang"],
                 "kind": "preset", "spec": {"kind": "preset", "voice": v["id"]}}
                for v in PRESET_VOICES if v["lang"] == script_lang]
+    for item in presets:
+        saved = cached(cache_key("preset", item["spec"]["voice"], None, script_lang))
+        if saved:
+            item["sample_url"] = "/api/voices/{}/sample".format(saved["key"])
+            item["duration_s"] = saved.get("duration_s")
+            item["ref_text"] = saved.get("ref_text")
     custom = []
     for item in list_cached():
         kind = item.get("kind")
@@ -367,7 +373,7 @@ def voices_for(script_lang):
             spec = {"kind": "design", "prompt": item.get("prompt"), "voice": item.get("voice")}
             label = "我的音色 · {}".format((item.get("prompt") or "?")[:18])
         custom.append({"label": label, "kind": kind, "lang": item.get("lang"),
-                       "duration_s": item.get("duration_s"), "spec": spec,
+                        "duration_s": item.get("duration_s"), "ref_text": item.get("ref_text"), "spec": spec,
                        "sample_url": "/api/voices/{}/sample".format(item["key"])})
     return {"presets": presets, "custom": custom}
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Button, MessagePlugin, Radio, RadioGroup, Select } from "tdesign-react";
-import { clearCredentials, loadCredentials, loadJobId, saveCredentials, saveJobId } from "./storage";
+import { Button, Dialog, MessagePlugin, Radio, RadioGroup, Select } from "tdesign-react";
+import { clearCredentials, loadCredentials, loadDraft, loadJobId, loadView, saveCredentials, saveDraft, saveJobId, saveView } from "./storage";
+import { api, applyTemplate, errorMessage, runExclusive } from "./flow";
 
 /* ─────────────────────────────────────────────────────────────
    接口层。三个注意点：
@@ -12,20 +13,7 @@ import { clearCredentials, loadCredentials, loadJobId, saveCredentials, saveJobI
       浏览器的启发式缓存会让"刚生成的产物"看不见 —— 表现与"要手动刷新页面"
       完全一样，最难查（后端明明已经返回了新列表）。
    ───────────────────────────────────────────────────────────── */
-const api = {
-  get: (p: string) => fetch(p, { cache: "no-store" }).then((r) => r.json()),
-  post: (p: string, body?: unknown) =>
-    fetch(p, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    }).then(async (r) => ({ status: r.status, data: await r.json().catch(() => ({})) })),
-  postForm: (p: string, form: FormData) =>
-    fetch(p, { method: "POST", body: form }).then(async (r) => ({
-      status: r.status,
-      data: await r.json().catch(() => ({})),
-    })),
-};
+const reportError = (error: unknown) => { void MessagePlugin.error(errorMessage(error)); };
 
 type Opt = { value: string; label: string };
 
@@ -90,6 +78,7 @@ type VoiceItem = {
   gender?: string;
   duration_s?: number | null;
   sample_url?: string;
+  ref_text?: string | null;
   spec: VoiceSpec;
 };
 
@@ -184,7 +173,19 @@ type Job = {
   /* 续跑出来的任务：值是原任务 id。产物与原任务**共享**
      （后端不复制 result 目录，只在 config.result_dir 里指过去）。 */
   resumed_from?: string;
-  config?: { generate_talking?: boolean; content_profile?: string };
+  config?: { generate_talking?: boolean; content_profile?: string; slide_lang?: string;
+    script_lang?: string; slide_count?: number; voice_note?: string; talking_note?: string };
+};
+
+type RerunPlan = {
+  job_id: string;
+  can_rerun: boolean;
+  can_reuse_script: boolean;
+  reason: string;
+  token: string;
+  source_name: string;
+  overwrite: string[];
+  generate_talking: boolean;
 };
 
 /** 实时连接的可用状态。断流必须**看得见** ——
@@ -205,12 +206,16 @@ type StreamState = "idle" | "connecting" | "live" | "retrying";
 function useJobStream(jobId: string | null) {
   const [job, setJob] = useState<Job | null>(null);
   const [streamState, setStreamState] = useState<StreamState>("idle");
+  const [streamError, setStreamError] = useState("");
   const attemptRef = useRef(0);
   // 终态之后**不再重连**：服务端推完终态那一帧就会正常关闭流，浏览器把它当 error →
   // 若继续重连，已完成的任务会被每 5 秒重连一次，在服务端留下一串无意义的请求。
   const terminalRef = useRef(false);
 
   useEffect(() => {
+    setJob(null);
+    setStreamError("");
+    attemptRef.current = 0;
     if (!jobId) {
       setJob(null);
       setStreamState("idle");
@@ -228,12 +233,32 @@ function useJobStream(jobId: string | null) {
         attemptRef.current = 0;
         setStreamState("live");
       };
+      es.addEventListener("error", (event) => {
+        // 后端的命名 error 帧与网络断流不同：不存在的任务不应无限重连。
+        if (!(event instanceof MessageEvent) || !event.data || !alive) return;
+        try {
+          const data = JSON.parse(event.data);
+          if (!data.error) return;
+          terminalRef.current = true;
+          if (timer) window.clearTimeout(timer);
+          setStreamError(data.error);
+          setStreamState("idle");
+          es?.close();
+        } catch { /* 非业务错误由 onerror 的退避处理 */ }
+      });
       es.onmessage = (ev) => {
         try {
           const d = JSON.parse(ev.data);
-          if (d.error) return;
+          if (!alive) return;
+          if (d.error) {
+            setStreamError(d.error);
+            terminalRef.current = true;
+            setStreamState("idle");
+            es?.close();
+            return;
+          }
           if (["done", "failed", "canceled"].includes(d.status)) terminalRef.current = true;
-          setJob((prev) => ({ ...(prev ?? { id: jobId }), ...d }));
+          setJob((prev) => ({ ...(prev?.id === jobId ? prev : {}), ...d, id: jobId }));
         } catch {
           /* 单条解析失败不该中断整个流 */
         }
@@ -264,7 +289,7 @@ function useJobStream(jobId: string | null) {
     };
   }, [jobId]);
 
-  return { job, streamState };
+  return { job: job?.id === jobId ? job : null, streamState, streamError };
 }
 
 /* 拖放上传区 */
@@ -274,6 +299,7 @@ function Dropzone(props: {
   accept?: string;
   picked: string | null;
   onPick: (f: File) => void;
+  disabled?: boolean;
 }) {
   const [over, setOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -286,7 +312,17 @@ function Dropzone(props: {
       )}
       <div
         className={"dropzone" + (over ? " over" : "")}
-        onClick={() => inputRef.current?.click()}
+        role="button"
+        tabIndex={props.disabled ? -1 : 0}
+        aria-label={props.label || props.hint}
+        aria-disabled={props.disabled}
+        onClick={() => !props.disabled && inputRef.current?.click()}
+        onKeyDown={(e) => {
+          if (!props.disabled && ["Enter", " "].includes(e.key)) {
+            e.preventDefault();
+            inputRef.current?.click();
+          }
+        }}
         onDragOver={(e) => {
           e.preventDefault();
           setOver(true);
@@ -296,7 +332,7 @@ function Dropzone(props: {
           e.preventDefault();
           setOver(false);
           const f = e.dataTransfer.files?.[0];
-          if (f) props.onPick(f);
+          if (f && !props.disabled) props.onPick(f);
         }}
       >
         <div className="big">{props.picked ? "已选择" : "拖入文件，或点击选择"}</div>
@@ -306,11 +342,13 @@ function Dropzone(props: {
       <input
         ref={inputRef}
         type="file"
+        disabled={props.disabled}
         accept={props.accept}
         style={{ display: "none" }}
         onChange={(e) => {
           const f = e.target.files?.[0];
           if (f) props.onPick(f);
+          e.target.value = "";
         }}
       />
     </div>
@@ -318,8 +356,30 @@ function Dropzone(props: {
 }
 
 export default function App() {
+  const initialDraft = useMemo(loadDraft, []);
   const [opts, setOpts] = useState<Options | null>(null);
   const [sys, setSys] = useState<SysInfo | null>(null);
+  const [initError, setInitError] = useState("");
+  const [sysError, setSysError] = useState("");
+  const [jobsError, setJobsError] = useState("");
+  const [filesError, setFilesError] = useState("");
+  const [view, setView] = useState<"new" | "detail" | "history">(loadView);
+  useEffect(() => { saveView(view); }, [view]);
+  const detailRef = useRef<HTMLElement>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitPhase, setSubmitPhase] = useState("");
+  const submitLock = useRef(false);
+  const ingestLock = useRef(false);
+  const voiceLock = useRef(false);
+  const verifyLock = useRef(false);
+  const verifyVersion = useRef(0);
+  const rerunLock = useRef(false);
+  const cancelLock = useRef(false);
+  const initLock = useRef(false);
+  const [initializing, setInitializing] = useState(false);
+  const [canceling, setCanceling] = useState(false);
+  const [rerunPlan, setRerunPlan] = useState<RerunPlan | null>(null);
+  const [regenerateScript, setRegenerateScript] = useState(false);
 
   // ① 素材
   const [paperFile, setPaperFile] = useState<File | null>(null);
@@ -329,18 +389,18 @@ export default function App() {
   const [ingesting, setIngesting] = useState(false);
 
   // ② 语言与类型
-  const [preset, setPreset] = useState("zh");
-  const [slideLang, setSlideLang] = useState("en");
-  const [scriptLang, setScriptLang] = useState("zh");
-  const [contentProfile, setContentProfile] = useState<ScriptPromptProfile["value"]>("paper");
-  const [scriptPrompt, setScriptPrompt] = useState("");
-  const [slidePrompt, setSlidePrompt] = useState("");
-  const [slideCount, setSlideCount] = useState(12);
-  const [generateTalking, setGenerateTalking] = useState(true);
+  const [preset, setPreset] = useState(initialDraft.preset ?? "zh");
+  const [slideLang, setSlideLang] = useState(initialDraft.slideLang ?? "en");
+  const [scriptLang, setScriptLang] = useState(initialDraft.scriptLang ?? "zh");
+  const [contentProfile, setContentProfile] = useState<ScriptPromptProfile["value"]>(initialDraft.contentProfile ?? "paper");
+  const [scriptPrompt, setScriptPrompt] = useState(initialDraft.scriptPrompt ?? "");
+  const [slidePrompt, setSlidePrompt] = useState(initialDraft.slidePrompt ?? "");
+  const [slideCount, setSlideCount] = useState<number | "">(initialDraft.slideCount ?? 12);
+  const [generateTalking, setGenerateTalking] = useState(initialDraft.generateTalking ?? true);
   /* 幻灯片布局微调（树搜索）—— 默认关，与后端 `_build_argv` 的默认值一致。
      两边默认值必须相同：界面显示"未勾选"而后端当成 True 跑，就是在
      使用者不知情的情况下多花钱，且看不出来。 */
-  const [ifTreeSearch, setIfTreeSearch] = useState(false);
+  const [ifTreeSearch, setIfTreeSearch] = useState(initialDraft.ifTreeSearch ?? false);
 
   // ③ API key
   // 初值从浏览器本地存储回填（storage.ts 是唯一入口）：刷新页面后不用重填。
@@ -364,18 +424,36 @@ export default function App() {
   // ④ 音色。四种来源最终都归结为"一份参考音频 + 它的参考文本"：
   //    default 用内置（零依赖）、preset 用 MiMo 预置音色、design 用描述生成、
   //    upload 用使用者自己的音频。生成与缓存都在后端（同一个音色只生成一次）。
-  const [voiceMode, setVoiceMode] = useState<VoiceSpec["kind"]>("default");
+  const [voiceMode, setVoiceMode] = useState<VoiceSpec["kind"]>(initialDraft.voiceMode ?? "default");
   // 直接存整条候选（而不是只存音色名）：候选里已经带了后端组装好的 spec，
   // "上传的音频"这类候选根本没有音色名，只存名字就没法还原成 spec。
   const [presetPick, setPresetPick] = useState<VoiceItem | null>(null);
-  const [designPrompt, setDesignPrompt] = useState("");
+  const [designPrompt, setDesignPrompt] = useState(initialDraft.designPrompt ?? "");
   const [uploadSpec, setUploadSpec] = useState<VoiceSpec | null>(null);
-  const [uploadText, setUploadText] = useState("");
+  const [uploadText, setUploadText] = useState(initialDraft.uploadText ?? "");
   const [uploadInfo, setUploadInfo] = useState<any | null>(null);
   const [preview, setPreview] = useState<any | null>(null);
   const [voiceBusy, setVoiceBusy] = useState(false);
+  const voiceContext = `${voiceMode}|${scriptLang}|${designPrompt}|${JSON.stringify(presetPick?.spec)}`;
+  const voiceContextRef = useRef(voiceContext);
+  voiceContextRef.current = voiceContext;
+  useEffect(() => { setPreview(null); }, [voiceContext]);
 
-  const { job, streamState } = useJobStream(jobId);
+  const { job, streamState, streamError } = useJobStream(jobId);
+  const [filesJobId, setFilesJobId] = useState<string | null>(null);
+  const [filesVersion, setFilesVersion] = useState(0);
+  const visibleArtifacts = filesJobId === jobId ? artifacts : [];
+  const visiblePages = filesJobId === jobId ? pages : null;
+
+  const selectJob = useCallback((id: string) => {
+    setJobId(id);
+    setView("detail");
+  }, []);
+  useEffect(() => {
+    if (view === "detail") detailRef.current?.scrollIntoView({
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start",
+    });
+  }, [view, jobId]);
 
   // 候选音色：预置 + 我保存过的（按讲稿语言过滤，后端已组装好 spec）
   const voiceList: VoiceItem[] = useMemo(() => {
@@ -386,6 +464,13 @@ export default function App() {
 
   const sameSpec = (a: VoiceSpec | null, b: VoiceSpec) =>
     JSON.stringify(a) === JSON.stringify(b);
+
+  const restoredVoice = useRef(false);
+  useEffect(() => {
+    if (!opts || restoredVoice.current) return;
+    restoredVoice.current = true;
+    setPresetPick(voiceList.find((it) => JSON.stringify(it.spec) === initialDraft.presetSpec) ?? null);
+  }, [opts, voiceList, initialDraft.presetSpec]);
 
   // 讲稿语言一变，选中的预置音色很可能已不在候选里（中英是两组不同的音色），
   // 这时必须清掉 —— 否则会提交一个跨语言的音色，音色和发音都会打折扣。
@@ -410,37 +495,41 @@ export default function App() {
   // 试听 = 让后端生成（或取缓存）这段参考音频，然后直接播它。
   // 听参考音频 = 听最终音色（逐页合成只是把同一音色套到别的文本上）。
   const genVoice = useCallback(
-    async (force: boolean) => {
-      setVoiceBusy(true);
+    async (force: boolean) => runExclusive(voiceLock, setVoiceBusy, async () => {
+      const context = voiceContextRef.current;
+      if (voiceMode === "preset" && presetPick?.sample_url) {
+        setPreview({ ...presetPick, ref_text: presetPick.ref_text || presetPick.spec.ref_text, cached: true });
+        return;
+      }
+      const selected = voiceMode === "preset" ? presetPick?.spec : { kind: "design", prompt: designPrompt };
+      if (!selected || selected.kind === "upload") throw new Error("请重新选择音色");
       const { data } = await api.post("/api/voices/generate", {
-        kind: voiceMode === "design" ? "design" : "preset",
-        voice: presetPick?.spec.voice,
-        prompt: designPrompt || undefined,
+        ...selected,
         lang: scriptLang,
         force,
       });
-      setVoiceBusy(false);
       if (!data.ok) {
         MessagePlugin.error(`${data.error || "生成失败"}${data.detail ? "：" + data.detail : ""}`);
         return;
       }
-      setPreview(data);
+      if (context === voiceContextRef.current) setPreview(data);
+      await refreshOptions();
       MessagePlugin.success(
         data.cached ? "已取回这个音色（缓存命中，未调用接口）"
                     : "音色已生成并保存 —— 以后再用它不会重复调用接口",
       );
-    },
+    }, reportError),
     [voiceMode, presetPick, designPrompt, scriptLang],
   );
 
   const uploadVoice = useCallback(
-    async (f: File) => {
-      setVoiceBusy(true);
+    async (f: File) => runExclusive(voiceLock, setVoiceBusy, async () => {
+      setUploadSpec(null);
+      setUploadInfo(null);
       const form = new FormData();
       form.append("paper", f);                 // 字段名沿用上传接口的约定
       form.append("ref_text", uploadText);
       const { status, data } = await api.postForm("/api/voices/upload", form);
-      setVoiceBusy(false);
       if (status !== 200 || !data.ok) {
         setUploadSpec(null);
         setUploadInfo(null);
@@ -449,14 +538,27 @@ export default function App() {
       setUploadSpec(data.spec);
       setUploadInfo(data);
       MessagePlugin.success(`参考音频已就绪（${data.duration_s ?? "?"} 秒）`);
-    },
+      await refreshOptions();
+    }, reportError),
     [uploadText],
   );
 
+  async function refreshOptions() {
+    try { setOpts(await api.get("/api/options")); setInitError(""); }
+    catch (error) { setInitError(errorMessage(error)); }
+  }
+  const initialize = useCallback(() => runExclusive(initLock, setInitializing, async () => {
+    await Promise.all([
+      refreshOptions(),
+      api.get("/api/system/info").then((data) => { setSys(data); setSysError(""); })
+        .catch((error) => setSysError(errorMessage(error))),
+    ]);
+  }, reportError), []);
+  useEffect(() => { void initialize(); }, [initialize]);
   useEffect(() => {
-    api.get("/api/options").then(setOpts).catch(() => {});
-    api.get("/api/system/info").then(setSys).catch(() => {});
-  }, []);
+    verifyVersion.current += 1;
+    setKeyCheck(null);
+  }, [apiKey, apiBase]);
 
   // 凭据变化就写回本地（含"关掉记住"时清除）。
   // 放在这里而不是 submit 里：使用者在自检时填了 key 却还没建任务就刷新，
@@ -482,11 +584,8 @@ export default function App() {
     const rawPerSlide = scriptLang === "zh" ? cal.zh_per_slide_s : cal.en_per_slide_s;
     // 标定中数字人约占每页耗时的 38%；关闭数字人时扣掉这一段。
     const perSlide = rawPerSlide * (generateTalking && portraitFile ? 1 : 0.62);
-    const chars: number | undefined = ingest?.chars;
-    const slides = chars
-      ? Math.min(24, Math.max(6, Math.round(chars / cal.chars_per_slide)))
-      : null;
-    const used = slides ?? 12;                    // 还没提取时按典型长度估
+    const slides = Number(slideCount) || 12;
+    const used = slides;
     const factor = sys?.perf_factor ?? 1;
     const seconds = (used * perSlide + cal.fixed_s + cal.script_api_s) * factor;
     return {
@@ -496,13 +595,16 @@ export default function App() {
       factor,
       anchoredOn: cal.anchored_on,
     };
-  }, [sys, scriptLang, ingest, generateTalking, portraitFile]);
+  }, [sys, scriptLang, slideCount, generateTalking, portraitFile]);
 
   // 预设变化时同步两个轴 —— 但要保留"单独指定某一轴"的能力，
   // 所以这里只在预设变化的那一刻同步，之后用户手动改的轴不再被覆盖。
+  const appliedPreset = useRef(initialDraft.preset ?? "");
   useEffect(() => {
+    if (appliedPreset.current === preset) return;
     const p = opts?.presets.find((x) => x.value === preset);
     if (p) {
+      appliedPreset.current = preset;
       setSlideLang(p.slide_lang);
       setScriptLang(p.script_lang);
     }
@@ -515,8 +617,13 @@ export default function App() {
     return profile?.prompts?.[scriptLang] ?? "";
   }, [opts, contentProfile, scriptLang]);
 
+  const previousScriptTemplate = useRef(initialDraft.scriptTemplate ?? "");
   useEffect(() => {
-    if (promptTemplate) setScriptPrompt(promptTemplate);
+    if (promptTemplate) {
+      const previous = previousScriptTemplate.current;
+      setScriptPrompt((current) => applyTemplate(current, previous, promptTemplate));
+      previousScriptTemplate.current = promptTemplate;
+    }
   }, [promptTemplate]);
 
   const slidePromptTemplate = useMemo(
@@ -526,36 +633,60 @@ export default function App() {
     [opts, contentProfile, slideLang],
   );
 
+  const previousSlideTemplate = useRef(initialDraft.slideTemplate ?? "");
   useEffect(() => {
-    if (slidePromptTemplate) setSlidePrompt(slidePromptTemplate);
+    if (slidePromptTemplate) {
+      const previous = previousSlideTemplate.current;
+      setSlidePrompt((current) => applyTemplate(current, previous, slidePromptTemplate));
+      previousSlideTemplate.current = slidePromptTemplate;
+    }
   }, [slidePromptTemplate]);
 
-  const doIngest = useCallback(async () => {
+  useEffect(() => {
+    saveDraft({ preset, slideLang, scriptLang, contentProfile, scriptPrompt, slidePrompt,
+      scriptTemplate: promptTemplate || initialDraft.scriptTemplate || "",
+      slideTemplate: slidePromptTemplate || initialDraft.slideTemplate || "",
+      slideCount: Number(slideCount) || 12, generateTalking, ifTreeSearch, voiceMode,
+      presetSpec: presetPick ? JSON.stringify(presetPick.spec) : initialDraft.presetSpec || "",
+      designPrompt, uploadText, paperName: paperFile?.name || initialDraft.paperName || "",
+      portraitName: portraitFile?.name || initialDraft.portraitName || "" });
+  }, [preset, slideLang, scriptLang, contentProfile, scriptPrompt, slidePrompt,
+    promptTemplate, slidePromptTemplate, slideCount, generateTalking, ifTreeSearch, voiceMode,
+    presetPick, designPrompt, uploadText, paperFile, portraitFile, initialDraft]);
+
+  const doIngest = useCallback(async () => runExclusive(ingestLock, setIngesting, async () => {
     if (!paperFile) return MessagePlugin.warning("请先选择内容文件");
-    setIngesting(true);
     setIngest(null);
     const form = new FormData();
     form.append("paper", paperFile);
     const { status, data } = await api.postForm("/api/ingest", form);
-    setIngesting(false);
     if (status !== 200 || !data.ok) {
       setIngest({ error: data.error || "提取失败", hint: data.hint });
       return;
     }
     setIngest(data);
-  }, [paperFile]);
+  }, reportError), [paperFile]);
 
-  const verifyKey = useCallback(async () => {
-    setChecking(true);
+  const verifyKey = useCallback(async () => runExclusive(verifyLock, setChecking, async () => {
+    setKeyCheck(null);
+    const version = verifyVersion.current;
     const { data } = await api.post("/api/key/verify", { api_key: apiKey, api_base: apiBase });
-    setChecking(false);
-    setKeyCheck(data);
-  }, [apiKey, apiBase]);
+    if (version === verifyVersion.current) setKeyCheck(data);
+  }, reportError), [apiKey, apiBase]);
 
-  const submit = useCallback(async () => {
+  const submit = useCallback(async () => runExclusive(submitLock, setSubmitting, async () => {
+    setSubmitPhase("正在准备…");
+    if (ingestLock.current || voiceLock.current) throw new Error("请等待文件提取或音色准备完成");
     if (!ingest || ingest.error) return MessagePlugin.warning("请先上传内容文件并完成提取预览");
     if (!apiKey) return MessagePlugin.warning("请填写 API Key（幻灯片与讲稿生成需要）");
     if (!scriptPrompt.trim()) return MessagePlugin.warning("讲稿提示词不能为空");
+    if (!slidePrompt.trim() || slidePrompt.length > (opts?.slide_prompt_max_chars ?? 30000)) {
+      return MessagePlugin.warning("请填写有效的幻灯片提示词，并检查字符上限");
+    }
+    if (!Number.isInteger(slideCount) || Number(slideCount) < (opts?.slide_count?.min ?? 4)
+        || Number(slideCount) > (opts?.slide_count?.max ?? 40)) {
+      return MessagePlugin.warning("幻灯片页数必须为允许范围内的整数");
+    }
     if (scriptPrompt.length > (opts?.script_prompt_max_chars ?? 20000)) {
       return MessagePlugin.warning(`讲稿提示词最多 ${opts?.script_prompt_max_chars ?? 20000} 字符`);
     }
@@ -579,6 +710,7 @@ export default function App() {
     const talkingWillRun = generateTalking && !!portraitFile;
     let portraitPath: string | undefined;
     if (talkingWillRun && portraitFile) {
+      setSubmitPhase("正在上传人像…");
       const form = new FormData();
       form.append("paper", portraitFile);
       const up = await api.postForm("/api/portrait", form);
@@ -591,6 +723,7 @@ export default function App() {
       MessagePlugin.info("未上传人像，本次将自动跳过数字人并生成幻灯片讲解视频");
     }
 
+    setSubmitPhase("正在创建任务…");
     const { status, data } = await api.post("/api/jobs", {
       ingest_id: ingest.ingest_id,
       portrait_path: portraitPath,
@@ -624,7 +757,7 @@ export default function App() {
       },
     });
     if (status !== 200) return MessagePlugin.error(data.detail || "创建任务失败");
-    setJobId(data.job_id);
+    selectJob(data.job_id);
     setArtifacts([]);
     // 音色的最终结论必须回显：使用者选了"冰糖"却听到原来的男声时，
     // 这一句就是唯一能解释原因的地方。
@@ -633,18 +766,21 @@ export default function App() {
       else MessagePlugin.info(`已入队 · 音色：${data.voice_note}`);
     }
     if (data.talking_note) MessagePlugin.info(data.talking_note);
-  }, [ingest, portraitFile, generateTalking, apiKey, apiBase, slideLang, scriptLang,
+  }, reportError), [ingest, portraitFile, generateTalking, apiKey, apiBase, slideLang, scriptLang,
       contentProfile, scriptPrompt, slidePrompt, slideCount, opts, ifTreeSearch,
-      voiceMode, presetPick, designPrompt, uploadSpec, uploadText, voiceSpecNow]);
+      voiceMode, presetPick, designPrompt, uploadSpec, uploadText, voiceSpecNow, selectJob]);
 
   // 任务列表：每 5 秒刷新。本地工具，这点开销可以忽略，
   // 换来的是"后端重启前留下的任务也能看到最新状态"。
   useEffect(() => {
+    let alive = true;
     const load = () =>
-      api.get("/api/jobs").then((d) => setJobs(d.jobs || [])).catch(() => {});
+      api.get("/api/jobs").then((d) => {
+        if (alive) { setJobs(d.jobs || []); setJobsError(""); }
+      }).catch((error) => { if (alive) setJobsError(errorMessage(error)); });
     load();
     const timer = window.setInterval(load, 5000);
-    return () => window.clearInterval(timer);
+    return () => { alive = false; window.clearInterval(timer); };
   }, []);
 
   // 产物与逐页素材的刷新。
@@ -660,19 +796,33 @@ export default function App() {
   const runningNow = !!job && ["running", "queued"].includes(job.status);
   const phaseKeyNow = job?.progress?.phase_key || "";
   useEffect(() => {
+    setFilesJobId(null);
+    setArtifacts([]);
+    setPages(null);
+    setFilesError("");
     if (!jobId) {
       setArtifacts([]);
       setPages(null);
       return;
     }
     let alive = true;
-    const load = () => {
-      api.get(`/api/jobs/${jobId}/artifacts`)
-        .then((d) => alive && setArtifacts(d.artifacts || []))
-        .catch(() => {});
-      api.get(`/api/jobs/${jobId}/pages`)
-        .then((d) => alive && setPages(d))
-        .catch(() => alive && setPages(null));
+    let loading = false;
+    const load = async () => {
+      if (loading) return;
+      loading = true;
+      try {
+        const [files, pageData] = await Promise.all([
+          api.get(`/api/jobs/${jobId}/artifacts`), api.get(`/api/jobs/${jobId}/pages`),
+        ]);
+        if (alive) {
+          setArtifacts(files.artifacts || []);
+          setPages(pageData);
+          setFilesJobId(jobId);
+          setFilesError("");
+        }
+      } catch (error) {
+        if (alive) setFilesError(errorMessage(error));
+      } finally { loading = false; }
     };
     load();
     let timer: number | undefined;
@@ -681,28 +831,39 @@ export default function App() {
       alive = false;
       if (timer) window.clearInterval(timer);
     };
-  }, [jobId, job?.status, phaseKeyNow, runningNow]);
+  }, [jobId, job?.status, phaseKeyNow, runningNow, filesVersion]);
 
   // 续跑：默认只重跑 stage 2/3 且复用已有讲稿。
   // 讲稿生成是整条链路里唯一付费的一步（占约 76% token），复用即零 API 费用。
   // 凭据要一起带上：服务端把 key 挂在**任务**上（不落盘），重启服务后
   // 内存里那份就没了；而前端本地存着，随手带上最省事。
-  const doRerun = useCallback(async (id: string) => {
-    setRerunning(true);
-    const { status, data } = await api.post(`/api/jobs/${id}/rerun`, {
+  const prepareRerun = useCallback(async (id: string) => runExclusive(rerunLock, setRerunning, async () => {
+    const plan = await api.get(`/api/jobs/${id}/rerun-plan`);
+    setRegenerateScript(false);
+    setRerunPlan(plan);
+  }, reportError), []);
+
+  const doRerun = useCallback(async () => runExclusive(rerunLock, setRerunning, async () => {
+    if (!rerunPlan) return;
+    const { status, data } = await api.post(`/api/jobs/${rerunPlan.job_id}/rerun`, {
       api_key: apiKey || undefined,
       api_base: apiBase || undefined,
+      plan_token: rerunPlan.token,
+      reuse_script: !regenerateScript,
+      require_reuse_script: !regenerateScript,
     });
-    setRerunning(false);
     if (status !== 200) {
       MessagePlugin.error(data.detail || "续跑失败");
       return;
     }
-    setJobId(data.job_id);
+    setRerunPlan(null);
+    selectJob(data.job_id);
     setArtifacts([]);
     setPages(null);
-    MessagePlugin.success("已入队：只重跑 stage 2/3，复用已有讲稿（本次不产生 API 费用）");
-  }, [apiKey, apiBase]);
+    MessagePlugin.success(regenerateScript
+      ? "已入队：重新生成讲稿和视频，将调用模型接口"
+      : "已入队：复用讲稿并重做配音和视频；若讲稿失效会停止，不会自动重新生成");
+  }, reportError), [apiKey, apiBase, rerunPlan, regenerateScript, selectJob]);
 
   // 产物链接：逐段转义，但要保留路径分隔符（数字人产物是多层目录）
   const fileUrl = useCallback(
@@ -717,11 +878,12 @@ export default function App() {
       status
     ] || "err";
 
-  const cancel = useCallback(async () => {
+  const cancel = useCallback(async () => runExclusive(cancelLock, setCanceling, async () => {
     if (!jobId) return;
+    if (!window.confirm(`取消任务 ${jobId}？已生成的产物会保留。`)) return;
     await api.post(`/api/jobs/${jobId}/cancel`);
     MessagePlugin.info("已请求取消");
-  }, [jobId]);
+  }, reportError), [jobId]);
 
   // ── 进度：**全部由后端算**（overall_pct），前端不再自己拼 done/total ──
   // 旧公式 `talking_done || tts_done` 造成两个可见的错：幻灯片/讲稿阶段永远是 0%，
@@ -755,6 +917,20 @@ export default function App() {
   }, [p, countTotal, countDone, countUnit]);
 
   const running = job && ["running", "queued"].includes(job.status);
+  const missing: string[] = [];
+  if (!opts || initError) missing.push("加载服务配置");
+  if (!ingest || ingest.error) missing.push("选择内容文件并完成提取预览");
+  if (!apiKey.trim()) missing.push("填写 API Key");
+  if (!slidePrompt.trim() || slidePrompt.length > (opts?.slide_prompt_max_chars ?? 30000)) missing.push("检查幻灯片提示词");
+  if (!scriptPrompt.trim() || scriptPrompt.length > (opts?.script_prompt_max_chars ?? 20000)) missing.push("检查讲稿提示词");
+  if (!Number.isInteger(slideCount) || Number(slideCount) < (opts?.slide_count?.min ?? 4)
+      || Number(slideCount) > (opts?.slide_count?.max ?? 40)) missing.push("填写有效的整数页数");
+  if (voiceMode === "preset" && !presetPick) missing.push("选择音色");
+  if (voiceMode === "design" && !designPrompt.trim()) missing.push("填写音色描述");
+  if (voiceMode === "upload" && !uploadSpec) missing.push("上传参考音频");
+  const ready = missing.length === 0 && !ingesting && !voiceBusy;
+  const queuedCount = jobs.filter((item) => item.status === "queued").length;
+  const activeCount = jobs.filter((item) => item.status === "running").length;
 
   // 核心数描述。实测本机 os.cpu_count / psutil / NUMBER_OF_PROCESSORS
   // 三者都是 8（BIOS 关了超线程），此时"8核/8线程"是冗余的，只报线程数。
@@ -819,6 +995,28 @@ export default function App() {
         </div>
       </header>
 
+      <nav className="view-tabs" aria-label="任务导航">
+        <button type="button" aria-pressed={view === "new"} onClick={() => setView("new")}>新建任务</button>
+        <button type="button" aria-pressed={view === "detail"} disabled={!jobId} onClick={() => setView("detail")}>任务详情</button>
+        <button type="button" aria-pressed={view === "history"} onClick={() => setView("history")}>任务记录</button>
+      </nav>
+      {(initError || sysError) && (
+        <div className="notice err" role="alert">
+          <span>{initError ? `服务配置加载失败：${initError}` : `硬件信息读取失败：${sysError}`}</span>
+          <Button variant="outline" loading={initializing} onClick={initialize}>重新连接</Button>
+        </div>
+      )}
+      <div hidden={view !== "new"}>
+      <p className="hint">这里的设置只用于新任务，不会更改已创建的任务。文字设置自动保存为本机草稿。</p>
+      {(!paperFile && initialDraft.paperName || !portraitFile && initialDraft.portraitName) && (
+        <div className="notice info">
+          <span>已恢复文字设置。浏览器不能恢复文件选择，请重新选择
+            {!paperFile && initialDraft.paperName ? `内容文件「${initialDraft.paperName}」` : ""}
+            {!portraitFile && initialDraft.portraitName ? ` 人像「${initialDraft.portraitName}」` : ""}。
+          </span>
+        </div>
+      )}
+      <fieldset className="draft-fields" disabled={submitting}>
       {/* ① 素材 */}
       <section className="section">
         <div className="section-head">
@@ -836,7 +1034,9 @@ export default function App() {
               hint=".docx / .doc / .pdf / .tex / .zip"
               accept=".docx,.doc,.pdf,.tex,.zip"
               picked={paperFile?.name ?? null}
+              disabled={ingesting || submitting}
               onPick={(f) => {
+                if (ingestLock.current || submitLock.current) return;
                 // 图片显然是误放（多半是想传人像）：当场说清，
                 // 而不是传上去再由后端报"无法识别的文件格式"。
                 if (/\.(png|jpe?g|webp|bmp|gif)$/i.test(f.name)) {
@@ -866,6 +1066,7 @@ export default function App() {
                 hint="上传正面人像图；留空会自动跳过数字人"
                 accept="image/*"
                 picked={portraitFile?.name ?? null}
+                disabled={submitting}
                 onPick={(f) => {
                   setPortraitFile(f);
                   setPortraitInfo(null); // 换图后旧的校验结果作废
@@ -904,7 +1105,7 @@ export default function App() {
         </div>
 
         <div className="actions">
-          <Button theme="primary" variant="outline" loading={ingesting} onClick={doIngest}>
+          <Button theme="primary" variant="outline" loading={ingesting} disabled={!paperFile || submitting} onClick={doIngest}>
             提取并预览
           </Button>
           <span style={{ fontSize: 12, color: "var(--paper-ink-faint)" }}>
@@ -957,7 +1158,7 @@ export default function App() {
             <Select
               value={preset}
               onChange={(v) => setPreset(v as string)}
-              options={(opts?.presets ?? []).map((x) => ({ label: x.label, value: x.value }))}
+              options={[...(opts?.presets ?? []).map((x) => ({ label: x.label, value: x.value })), { label: "自定义语言组合", value: "custom" }]}
               style={{ width: "100%" }}
             />
             <div className="hint">预设会同时设定下面两个轴，之后可单独覆盖</div>
@@ -966,7 +1167,7 @@ export default function App() {
             <label>幻灯片语言</label>
             <Select
               value={slideLang}
-              onChange={(v) => setSlideLang(v as string)}
+              onChange={(v) => { setSlideLang(v as string); setPreset("custom"); }}
               options={(opts?.slide_langs ?? []).map((x) => ({ label: x.label, value: x.value }))}
               style={{ width: "100%" }}
             />
@@ -975,7 +1176,7 @@ export default function App() {
             <label>讲稿语言</label>
             <Select
               value={scriptLang}
-              onChange={(v) => setScriptLang(v as string)}
+              onChange={(v) => { setScriptLang(v as string); setPreset("custom"); }}
               options={(opts?.script_langs ?? []).map((x) => ({ label: x.label, value: x.value }))}
               style={{ width: "100%" }}
             />
@@ -1005,15 +1206,21 @@ export default function App() {
               min={opts?.slide_count?.min ?? 4}
               max={opts?.slide_count?.max ?? 40}
               value={slideCount}
-              onChange={(e) => setSlideCount(Number(e.target.value) || 12)}
+              step={1}
+              onChange={(e) => setSlideCount(e.target.value === "" ? "" : Number(e.target.value))}
               onBlur={() => setSlideCount(Math.min(
                 opts?.slide_count?.max ?? 40,
-                Math.max(opts?.slide_count?.min ?? 4, slideCount || 12),
+                Math.max(opts?.slide_count?.min ?? 4, Math.round(Number(slideCount) || 12)),
               ))}
             />
             <div className="hint">包含封面和结束页，可设置 4～40 页</div>
           </div>
         </div>
+        <details className="advanced-settings">
+          <summary>高级设置：提示词与布局</summary>
+          {(scriptPrompt !== promptTemplate || slidePrompt !== slidePromptTemplate) && (
+            <p className="hint">正在使用自定义提示词。切换语言或内容类型会保留你的编辑；如需新模板，请点击对应的“应用当前模板”。</p>
+          )}
         <div className="field" style={{ marginTop: 16 }}>
           <div className="prompt-head">
             <label>幻灯片生成提示词（可编辑）</label>
@@ -1035,7 +1242,7 @@ export default function App() {
               disabled={!slidePromptTemplate || slidePrompt === slidePromptTemplate}
               onClick={() => setSlidePrompt(slidePromptTemplate)}
             >
-              恢复当前模板
+              应用当前模板
             </Button>
             <span className="hint">
               可修改内容结构、视觉风格和信息密度；页数会作为强约束自动附加。
@@ -1064,7 +1271,7 @@ export default function App() {
               disabled={!promptTemplate || scriptPrompt === promptTemplate}
               onClick={() => setScriptPrompt(promptTemplate)}
             >
-              恢复当前模板
+              应用当前模板
             </Button>
             <span className="hint">
               可修改角色、语气、详略与受众；请保留 <code>###</code> 页分隔和
@@ -1094,6 +1301,7 @@ export default function App() {
               {ifTreeSearch && <span className="option-active">已开启，将增加生成时间</span>}
           </div>
         )}
+        </details>
       </section>
 
       {/* ③ 音色 —— 四种来源最终都归结为"一份参考音频 + 它的参考文本"。
@@ -1113,9 +1321,9 @@ export default function App() {
         <div className="field">
           <label>讲稿由谁来讲</label>
           <RadioGroup value={voiceMode} onChange={(v) => { setVoiceMode(v as VoiceSpec["kind"]); setPreview(null); }}>
-            <Radio value="default">内置默认音色（零依赖，不会失败）</Radio>
-            <Radio value="preset" disabled={!opts?.voice?.available}>
-              预置音色（推荐 · 中英男女各 2 个）
+            <Radio value="default">内置默认音色（无需联网）</Radio>
+            <Radio value="preset" disabled={!opts?.voice?.available && !voiceList.some((item) => item.sample_url)}>
+              预置 / 已保存音色
             </Radio>
             <Radio value="design" disabled={!opts?.voice?.available}>
               用一句话描述生成
@@ -1127,7 +1335,7 @@ export default function App() {
         {voiceMode === "default" && (
           <div className="hint" style={{ marginTop: 10 }}>
             用讲稿语言对应的内置参考音频（现在是{scriptLang === "zh" ? "中文" : "英文"}）。
-            它不联网、不需要 key，也永远不会失败 —— 想换人声就选上面任意一项。
+            不需要额外音色接口凭据；想换人声可以选择其他音色来源。
           </div>
         )}
 
@@ -1145,12 +1353,13 @@ export default function App() {
                 options={voiceList.map((it) => ({
                   label: it.label + (it.duration_s ? ` · ${it.duration_s}s` : ""),
                   value: JSON.stringify(it.spec),
+                  disabled: !opts?.voice?.available && !it.sample_url,
                 }))}
                 style={{ width: "100%" }}
               />
               <div className="hint">
-                只列出与讲稿语言相同的音色 —— 跨语言克隆会让音色和发音都打折扣；
-                列表末尾是"我保存过的音色"（设计出来的、上传过的）。
+                预置和设计音色按讲稿语言筛选；列表末尾是已保存的设计音色和上传音频。
+                上传音频的语言请自行核对，跨语言克隆可能影响发音。
               </div>
             </div>
             <div className="field">
@@ -1162,7 +1371,7 @@ export default function App() {
                   disabled={!presetPick}
                   onClick={() => genVoice(false)}
                 >
-                  生成并试听
+                  {presetPick?.sample_url ? "试听已保存音色" : "生成并试听"}
                 </Button>
                 <span className="hint">同一个音色只生成一次，之后走缓存</span>
               </div>
@@ -1216,6 +1425,7 @@ export default function App() {
               label="参考音频"
               hint="5~15 秒、单人、无背景音乐；wav / mp3 / m4a / flac"
               accept="audio/*"
+              disabled={voiceBusy || submitting}
               picked={uploadInfo ? `已就绪 · ${uploadInfo.duration_s} 秒` : null}
               onPick={uploadVoice}
             />
@@ -1247,7 +1457,7 @@ export default function App() {
               </span>
             </div>
             <audio controls src={preview.sample_url} style={{ width: "100%", marginTop: 6 }} />
-            <div className="hint" style={{ marginTop: 6 }}>它念的是：{preview.ref_text}</div>
+            {preview.ref_text && <div className="hint" style={{ marginTop: 6 }}>参考文本：{preview.ref_text}</div>}
           </div>
         )}
         {voiceMode === "upload" && uploadInfo && (
@@ -1269,6 +1479,9 @@ export default function App() {
           音色只影响讲稿的说话人。生成动作每个内容任务最多一次（同一个音色之后走缓存），
           写在服务端的 <code>MIMO_API_KEY</code> 上，不需要你额外配置。
         </div>
+        {voiceMode === "upload" && !uploadSpec && initialDraft.voiceMode === "upload" && (
+          <p className="hint">已恢复参考文本，请重新上传参考音频。</p>
+        )}
       </section>
 
       {/* ④ API key */}
@@ -1291,7 +1504,7 @@ export default function App() {
           </div>
         </div>
         <div className="actions">
-          <Button variant="outline" loading={checking} onClick={verifyKey}>连接自检</Button>
+          <Button variant="outline" loading={checking} disabled={!apiKey.trim()} onClick={verifyKey}>连接自检</Button>
           <label className="checkline">
             <input
               type="checkbox"
@@ -1333,25 +1546,58 @@ export default function App() {
         )}
       </section>
 
-      {/* ④ 运行 */}
-      <section className="section">
+      </fieldset>
+      <section className="section submit-section" aria-label="创建新任务">
+        <h2 className="section-title">确认并生成</h2>
+        <p>
+          幻灯片：{slideLang === "zh" ? "中文" : "英文"} · 讲解：{scriptLang === "zh" ? "中文" : "英文"}
+          {` · ${slideCount || "待填写"} 页 · 数字人${generateTalking && portraitFile ? "启用" : "关闭"}`}
+          {` · 音色：${voiceMode === "default" ? "内置默认" : voiceMode === "preset" ? presetPick?.label || "未选择" : voiceMode === "design" ? "描述生成" : "上传参考音频"}`}
+        </p>
+        {generateTalking && !portraitFile && <p className="hint">未选择人像，实际将生成无数字人小窗的视频。</p>}
+        <p className="hint">
+          {est ? `按目标 ${est.slides} 页估算约 ${est.lo}～${est.hi} 分钟；实际页数与耗时可能不同。` : "正在读取耗时估算信息。"}
+          {` 当前 ${activeCount} 个任务执行中、${queuedCount} 个排队中；新任务会串行排队。`}
+        </p>
+        <div className="actions">
+          <Button theme="primary" loading={submitting} disabled={!ready || submitting} onClick={submit}>
+            {submitting ? submitPhase || "正在准备…" : activeCount || queuedCount ? "加入生成队列" : "开始生成"}
+          </Button>
+          <span className="hint" role="status">
+            {missing.length ? `还需：${missing.join("；")}` : ingesting || voiceBusy ? "正在准备素材，请稍候" : "素材已就绪，可以创建新任务"}
+          </span>
+        </div>
+      </section>
+      </div>
+
+      {/* 已创建任务的详情与新任务草稿独立 */}
+      <section className="section" ref={detailRef} hidden={view !== "detail"}>
         <div className="section-head">
-          <span className="section-num">5</span>
-          <h2 className="section-title">运行</h2>
-          <span className="section-note">{running ? "任务执行中" : "未运行"}</span>
+          <h2 className="section-title">任务详情</h2>
+          <span className="section-note">{jobId || "尚未选择任务"}</span>
         </div>
 
         <div className="actions">
-          <Button theme="primary" disabled={!!running} onClick={submit}>
-            开始生成
-          </Button>
-          {running && <Button variant="outline" onClick={cancel}>取消</Button>}
+          {running && <Button theme="danger" variant="outline" loading={canceling} onClick={cancel}>取消此任务</Button>}
+          {job && !running && <Button variant="outline" loading={rerunning} onClick={() => prepareRerun(job.id)}>重做配音和视频</Button>}
           {job?.queue_ahead ? (
             <span style={{ fontSize: 12, color: "var(--paper-ink-faint)" }}>
               队列中，前面还有 {job.queue_ahead} 个任务
             </span>
           ) : null}
         </div>
+        {jobId && !job && !streamError && <p role="status">正在读取任务详情…</p>}
+        {streamError && <div className="notice err" role="alert"><span>{streamError}，请到任务记录选择其他任务。</span></div>}
+        {streamState === "retrying" && !job && <div className="notice warn">连接失败，正在重试。请检查服务是否运行。</div>}
+        {job?.config && (
+          <p className="hint">
+            此任务：{job.config.slide_lang}/{job.config.script_lang}
+            {` · 目标 ${job.config.slide_count || "未记录"} 页 · ${job.config.voice_note || "内置默认音色"}`}
+            {` · ${job.config.talking_note || (job.config.generate_talking ? "已启用数字人" : "无数字人")}`}
+            <br />这是创建时保存的配置，新建任务中的修改不影响它。
+          </p>
+        )}
+        {filesError && <div className="notice err" role="alert"><span>产物读取失败：{filesError}</span><Button variant="outline" onClick={() => setFilesVersion((value) => value + 1)}>重试读取</Button></div>}
 
         {job && (
           <div style={{ marginTop: 18 }}>
@@ -1360,7 +1606,7 @@ export default function App() {
               <span>{job.phase || job.status}</span>
               <span className="tail">
                 {`总进度 ${pct}%`}
-                {phaseHint ? `　${phaseHint}` : ""}
+                {running && phaseHint ? `　${phaseHint}` : ""}
                 {job.elapsed_min ? `　已跑 ${job.elapsed_min} min` : ""}
                 {job.exit_code !== undefined && job.exit_code !== 0 ? `　退出码 ${job.exit_code}` : ""}
               </span>
@@ -1431,11 +1677,11 @@ export default function App() {
         {job && (
           <div style={{ marginTop: 20 }}>
             <div className="statusline" style={{ marginBottom: 4 }}>
-              <span className={"dot " + (artifacts.length ? (job.status === "done" ? "ok" : "run") : "wait")} />
+              <span className={"dot " + (visibleArtifacts.length ? (job.status === "done" ? "ok" : "run") : "wait")} />
               <span>产物</span>
               <span className="tail">
-                {artifacts.length ? `${artifacts.length} 项` : "尚未生成"}
-                {running && artifacts.length ? "　（每 5 秒刷新）" : ""}
+                {visibleArtifacts.length ? `${visibleArtifacts.length} 项` : "尚未生成"}
+                {running && visibleArtifacts.length ? "　（每 5 秒刷新）" : ""}
               </span>
               {job.resumed_from && (
                 <span className="section-note" style={{ marginLeft: 8 }}>
@@ -1443,9 +1689,9 @@ export default function App() {
                 </span>
               )}
             </div>
-            {artifacts.length > 0 ? (
+            {visibleArtifacts.length > 0 ? (
               <div className="artifacts">
-                {artifacts.map((a) => (
+                {visibleArtifacts.map((a) => (
                   <a key={a.name} href={`/api/jobs/${jobId}/files/${encodeURIComponent(a.name)}`} target="_blank" rel="noreferrer">
                     <span>{a.name}</span>
                     <span className="sz">{a.size_mb} MB</span>
@@ -1458,7 +1704,7 @@ export default function App() {
               </div>
             )}
             {(() => {
-              const video = artifacts.find((a) => a.name === "3_merage.mp4");
+              const video = visibleArtifacts.find((a) => a.name === "3_merage.mp4");
               return video ? (
                 <video
                   key={video.version || video.size_bytes}
@@ -1475,34 +1721,34 @@ export default function App() {
 
         {/* P1 逐页素材浏览：服务端已把命名规则不一致的产物索引到一起
             （幻灯片 1.png 起、音频 0.wav 起、数字人还多一层参考图目录）。 */}
-        {pages?.total > 0 && (
+        {visiblePages?.total > 0 && (
           <div style={{ marginTop: 22 }}>
             <div className="statusline" style={{ marginBottom: 6 }}>
               <span className="dot ok" />
               <span>逐页素材</span>
-              <span className="tail">共 {pages.total} 页 · 点图看大图</span>
+              <span className="tail">共 {visiblePages.total} 页 · 点图看大图</span>
             </div>
-            {pages.slides_pdf || pages.script_txt || pages.cursor_json ? (
+            {visiblePages.slides_pdf || visiblePages.script_txt || visiblePages.cursor_json ? (
               <div className="filerefs">
-                {pages.slides_pdf && (
-                  <a href={fileUrl(pages.slides_pdf)} target="_blank" rel="noreferrer">
+                {visiblePages.slides_pdf && (
+                  <a href={fileUrl(visiblePages.slides_pdf)} target="_blank" rel="noreferrer">
                     幻灯片总览 PDF
                   </a>
                 )}
-                {pages.script_txt && (
-                  <a href={fileUrl(pages.script_txt)} target="_blank" rel="noreferrer">
+                {visiblePages.script_txt && (
+                  <a href={fileUrl(visiblePages.script_txt)} target="_blank" rel="noreferrer">
                     讲稿（含光标短语）
                   </a>
                 )}
-                {pages.cursor_json && (
-                  <a href={fileUrl(pages.cursor_json)} target="_blank" rel="noreferrer">
+                {visiblePages.cursor_json && (
+                  <a href={fileUrl(visiblePages.cursor_json)} target="_blank" rel="noreferrer">
                     光标 JSON
                   </a>
                 )}
               </div>
             ) : null}
             <div className="pagegrid">
-              {pages.pages.map((p: any) => (
+              {visiblePages.pages.map((p: any) => (
                 <div className="pagecell" key={p.page}>
                   {p.slide ? (
                     <a href={fileUrl(p.slide)} target="_blank" rel="noreferrer">
@@ -1538,12 +1784,12 @@ export default function App() {
       </section>
 
       {/* ⑤ 任务记录（P1）：续跑是省钱主力，界面上不做就浪费了 */}
-      <section className="section">
+      <section className="section" hidden={view !== "history"}>
         <div className="section-head">
-          <span className="section-num">6</span>
           <h2 className="section-title">任务记录</h2>
-          <span className="section-note">续跑只重跑 stage 2/3，复用已有讲稿</span>
+          <span className="section-note">重做前检查复用条件与覆盖范围</span>
         </div>
+        {jobsError && <div className="notice err" role="alert">任务记录读取失败：{jobsError}；每 5 秒自动重试。</div>}
         {jobs.length === 0 ? (
           <div className="hint">还没有任务。</div>
         ) : (
@@ -1573,7 +1819,7 @@ export default function App() {
                     : ""}
                 </span>
                 <span className="jactions">
-                  <button type="button" className="linkbtn" onClick={() => setJobId(j.id)}>
+                  <button type="button" className="linkbtn" onClick={() => selectJob(j.id)}>
                     查看
                   </button>
                   {["done", "failed", "canceled"].includes(j.status) && (
@@ -1581,9 +1827,9 @@ export default function App() {
                       type="button"
                       className="linkbtn"
                       disabled={rerunning}
-                      onClick={() => doRerun(j.id)}
+                      onClick={() => prepareRerun(j.id)}
                     >
-                      续跑 2/3
+                      重做配音和视频
                     </button>
                   )}
                 </span>
@@ -1592,6 +1838,31 @@ export default function App() {
           </div>
         )}
       </section>
+
+      <Dialog
+        header="确认重做配音和视频"
+        visible={!!rerunPlan}
+        onClose={() => { if (!rerunning) setRerunPlan(null); }}
+        onConfirm={doRerun}
+        confirmLoading={rerunning}
+        confirmBtn={{ content: "确认并加入队列", disabled: !rerunPlan?.can_rerun || (!rerunPlan?.can_reuse_script && !regenerateScript) }}
+        cancelBtn={{ content: "返回", disabled: rerunning }}
+        closeOnOverlayClick={false}
+      >
+        {rerunPlan && <>
+          <p>{rerunPlan.source_name || rerunPlan.job_id}</p>
+          <p>{rerunPlan.reason}</p>
+          <p>将沿用原任务配置，上方新任务草稿不会用于本次重做。</p>
+          <p className="rerun-warning">将覆盖原任务的{regenerateScript ? "讲稿、" : ""}{rerunPlan.overwrite.join("、")}。原任务与重做任务共用产物目录。</p>
+          {rerunPlan.can_rerun && <label className="checkline">
+            <input type="checkbox" checked={regenerateScript} disabled={rerunning}
+              onChange={(e) => setRegenerateScript(e.target.checked)} />
+            重新生成讲稿（会调用模型接口，可能产生费用）
+          </label>}
+          {!regenerateScript && rerunPlan.can_reuse_script && <p className="hint">复用已有讲稿，不调用讲稿生成接口。若讲稿在执行前失效，任务会停止。</p>}
+          {!rerunPlan.can_reuse_script && <p className="hint">要继续，需明确选择重新生成讲稿；不能按免费复用方式运行。</p>}
+        </>}
+      </Dialog>
 
       <footer className="footline">
         单卡串行执行 · 页面可关闭，任务在后端继续
@@ -1604,7 +1875,7 @@ export default function App() {
                 {est.lo}~{est.hi} 分钟
               </b>
               {"（"}
-              {est.slides ? `${est.slides} 页粗估` : "按典型篇幅 12 页估"}
+              {`按新任务目标 ${est.slides} 页估算`}
               {" · "}
               {scriptLang === "zh" ? "中文讲稿" : "英文讲稿"}
               {est.factor !== 1 ? ` · 本机硬件折算 ×${est.factor}` : ""}
@@ -1616,7 +1887,7 @@ export default function App() {
         </span>
         {est ? (
           <span className="basis">
-            {`　标定基准：${est.anchoredOn} · 页数由正文字数推算，实际以 stage 1 生成的幻灯片数为准`}
+            {`　标定基准：${est.anchoredOn} · 实际以生成页数为准；此估算对应新任务草稿`}
           </span>
         ) : null}
       </footer>

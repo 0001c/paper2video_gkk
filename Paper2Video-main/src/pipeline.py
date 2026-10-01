@@ -181,6 +181,8 @@ if __name__ == '__main__':
     parser.add_argument('--reuse_script', type=str2bool, default=False,
                         help='stage 2：若讲稿文件已存在且校验通过，跳过 VLM 调用\n（讲稿生成是唯一必须联网付费的一步，补跑时可省这一次费用）')
     parser.add_argument('--beamer_templete_prompt', type=str, default=None)
+    parser.add_argument('--require_reuse_script', type=str2bool, default=False,
+                        help='讲稿不可复用时停止，不自动调用模型重新生成')
     parser.add_argument('--stage', type=str, default="[\"0\"]") 
     parser.add_argument('--talking_head_env', type=str, default="") 
     parser.add_argument('--generate_talking', type=str2bool, default=True,
@@ -359,6 +361,8 @@ if __name__ == '__main__':
                 print("[Stage 2] --reuse_script：已有讲稿不合格（{}），改为重新生成"
                       .format(_why))
         if not reused:
+            if args.require_reuse_script:
+                raise RuntimeError("已有讲稿不可复用，已停止；请在界面明确选择重新生成讲稿后重试")
             # 讲稿生成要读全部幻灯片图，是整条链路里最慢的一次 API 调用（约 1~2 分钟）。
             # 先报一条阶段进度，界面才不会在这一段里"看着像没开始"。
             if progress_report:

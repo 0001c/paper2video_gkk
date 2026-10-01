@@ -19,6 +19,8 @@ export const KEYS = {
   apiBase: `${NS}.apiBase`,
   remember: `${NS}.remember`,
   jobId: `${NS}.jobId`,
+  draft: `${NS}.draft`,
+  view: `${NS}.view`,
 } as const;
 
 /* 隐私模式 / 企业策略下 localStorage 可能直接抛异常。
@@ -76,4 +78,63 @@ export function loadJobId(): string | null {
 
 export function saveJobId(id: string | null) {
   safeSet(KEYS.jobId, id || null);
+}
+
+export function loadView(): "new" | "detail" | "history" {
+  const view = safeGet(KEYS.view);
+  return view === "detail" || view === "history" ? view : "new";
+}
+
+export function saveView(view: "new" | "detail" | "history") {
+  safeSet(KEYS.view, view);
+}
+
+export type Draft = {
+  preset: string;
+  slideLang: string;
+  scriptLang: string;
+  contentProfile: "paper" | "textbook" | "story" | "fiction_comic" | "custom";
+  scriptPrompt: string;
+  slidePrompt: string;
+  scriptTemplate: string;
+  slideTemplate: string;
+  slideCount: number;
+  generateTalking: boolean;
+  ifTreeSearch: boolean;
+  voiceMode: "default" | "preset" | "design" | "upload";
+  presetSpec: string;
+  designPrompt: string;
+  uploadText: string;
+  paperName: string;
+  portraitName: string;
+};
+
+export function loadDraft(): Partial<Draft> {
+  try {
+    const raw = JSON.parse(safeGet(KEYS.draft) || "{}");
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const draft: Record<string, unknown> = {};
+    for (const key of ["preset", "scriptPrompt", "slidePrompt", "scriptTemplate", "slideTemplate",
+      "presetSpec", "designPrompt", "uploadText", "paperName", "portraitName"]) {
+      if (typeof raw[key] === "string") draft[key] = raw[key];
+    }
+    for (const key of ["slideLang", "scriptLang"]) {
+      if (["zh", "en"].includes(raw[key])) draft[key] = raw[key];
+    }
+    if (["paper", "textbook", "story", "fiction_comic", "custom"].includes(raw.contentProfile)) {
+      draft.contentProfile = raw.contentProfile;
+    }
+    if (["default", "preset", "design", "upload"].includes(raw.voiceMode)) draft.voiceMode = raw.voiceMode;
+    for (const key of ["generateTalking", "ifTreeSearch"]) {
+      if (typeof raw[key] === "boolean") draft[key] = raw[key];
+    }
+    if (Number.isInteger(raw.slideCount) && raw.slideCount >= 4 && raw.slideCount <= 40) {
+      draft.slideCount = raw.slideCount;
+    }
+    return draft;
+  } catch { return {}; }
+}
+
+export function saveDraft(draft: Draft) {
+  safeSet(KEYS.draft, JSON.stringify(draft));
 }

@@ -128,6 +128,17 @@ def main():
         web._save_job(render_job)
         rewrite = client.post(route + '/run', json={'version': current['version'], 'pages': current['pages'], 'action': 'regenerate', 'page_ids': [1]})
         rewrite_job = web._load_job(rewrite.json()['job_id'])
+        rewrite_job['status'] = 'failed'
+        web._save_job(rewrite_job)
+        retry_source = Path(rewrite_job['paper_latex_root'], 'main.tex')
+        retry_source.parent.mkdir(parents=True, exist_ok=True)
+        retry_source.write_text('测试课程原始工程', encoding='utf-8')
+        retry_rewrite = client.post('/api/jobs/' + rewrite_job['id'] + '/prepare-retry', json={})
+        assert retry_rewrite.status_code == 200, retry_rewrite.text
+        retry_job = web._load_job(retry_rewrite.json()['job_id'])
+        check(retry_rewrite.status_code == 200 and retry_job['config']['regenerate_pages'] == [1], '失败的局部重写恢复仍只操作原来选定的页')
+        retry_job['status'] = 'canceled'
+        web._save_job(retry_job)
         check(rewrite.status_code == 200 and rewrite_job['config']['review_before_render'] and rewrite_job['config']['regenerate_pages'] == [1], '局部重写只指定选定页并再次暂停审核')
         rewrite_job['status'] = 'canceled'; web._save_job(rewrite_job)
         # 模型替身验证分批请求、恢复和局部重写。

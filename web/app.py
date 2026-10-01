@@ -143,7 +143,7 @@ async def api_prepare_retry(job_id: str, payload: PrepareRetryRequest, request: 
         config = dict(src['config'])
         config.update(result_dir=result, reuse_script=False, require_reuse_script=False,
                       review_before_render=True, stages=['2'] if os.path.isfile(os.path.join(result, 'slides_rendered.pdf')) else ['1', '2'])
-        config.pop('regenerate_pages', None)
+        # 局部重写失败后继续重写原来选中的页，保留其它已审核的讲稿。
         new_id = 'job_' + time.strftime('%m%d_%H%M%S') + '_' + uuid.uuid4().hex[:4]
         new_dir = _job_dir(new_id)
         os.makedirs(new_dir, exist_ok=True)

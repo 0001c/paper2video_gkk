@@ -244,6 +244,9 @@ def generate_script(plan, slide_dir, prompt_file, model_config, output_dir, gene
             write_json(cache_dir / (str(i) + ".json"), {"key": key, "text": content})
             usage.append(tokens)
         output.append(content)
+        if selected is not None:
+            previous[i] = content
+            Path(output_dir, 'subtitle_w_cursor.txt').write_text('\n###\n'.join(previous), encoding='utf-8')
         print("[course] 讲稿 {}/{} 已保存".format(i + 1, len(slides)), flush=True)
     return "\n###\n".join(output), {"batches": usage}
 

@@ -1415,6 +1415,8 @@ def _artifact_facts(job):
         # 幻灯片与讲稿看的是「结构化产出的 main.tex」
         "main_tex_sha1": artifact_cache.digest_file(main_tex),
         "paper_type": "auto",
+        # 相同正文的授课结构化使用独立系统提示词，不能混用原论文缓存。
+        "struct_mode": "course" if cfg.get("course_plan_path") else "paper",
         "slide_lang": cfg.get("slide_lang"),
         "script_lang": cfg.get("script_lang"),
         # 自定义讲稿提示词会直接改变 subtitle_w_cursor.txt，必须进入 deck 指纹。

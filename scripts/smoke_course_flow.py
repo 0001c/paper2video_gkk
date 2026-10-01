@@ -90,6 +90,8 @@ def main():
         check(created.status_code == 200, '审核过教案后可以创建准备任务')
         job = web._load_job(created.json()['job_id'])
         check(job['config']['stages'] == ['1', '2'] and job['config']['review_before_render'], '课程初次执行仅准备课件讲稿')
+        facts = web._artifact_facts(job)
+        check(web.artifact_cache.struct_key(facts) != web.artifact_cache.struct_key({**facts, 'struct_mode': 'paper'}), '相同正文的课程结构化不能误用论文缓存')
         check(Path(work, job['id'], 'ingest/paper_text.md').read_text(encoding='utf-8') == source, '流水线只结构化选定的正文')
         for profile in ('paper', 'story', 'fiction_comic', 'custom'):
             response = client.post('/api/jobs', json={'ingest_id': body['ingest_id'], 'config': {'content_profile': profile, 'slide_lang': 'zh', 'script_lang': 'zh'}})

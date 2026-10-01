@@ -1002,7 +1002,7 @@ export default function App() {
         </p>
         <div className="meta">
           <span>Paper2Video</span>
-          <span>本机运行 · 127.0.0.1</span>
+          <span>本地服务 · {window.location.hostname}</span>
           <span>单卡串行</span>
         </div>
 

@@ -2,8 +2,8 @@
 
 设计上必须守住的四条（都写在方案文档里，这里集中复述一遍，避免改代码时走偏）：
 
-1. **只监听 127.0.0.1**。这个界面上有 API key 和文件系统访问，
-   一旦监听 0.0.0.0，同网络下任何人都能读到你 jobs/ 里的全部产物。
+1. **默认只监听 127.0.0.1**。局域网共享必须显式指定可信子网，
+   该子网内设备可操作任务和读取产物；不能作为已鉴权的公网服务。
 2. **单 worker 串行队列**。单卡 16GB，两个任务同时跑必然 OOM。
    多组合是"排队"而不是"并行"。
 3. **流水线走子进程，且不经 shell**。显存释放靠进程退出保证；
@@ -23,6 +23,7 @@
 import asyncio
 import hashlib
 import inspect
+import ipaddress
 import io
 import json
 import os
@@ -64,6 +65,39 @@ from script_validation import validate_script_output      # noqa: E402
 
 os.makedirs(JOBS_ROOT, exist_ok=True)
 app = FastAPI(title="Paper2Video Web", version="0.1.0")
+app.state.lan_networks = ()
+
+
+def _lan_network(value):
+    network = ipaddress.ip_network(value, strict=False)
+    private_ranges = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+    if network.version != 4 or not any(network.subnet_of(ipaddress.ip_network(block)) for block in private_ranges):
+        raise ValueError("局域网子网必须位于 IPv4 私有地址范围，例如 192.168.31.0/24")
+    return network
+
+
+def _trusted_address(host):
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return address.is_loopback or any(address in network for network in app.state.lan_networks)
+
+
+@app.middleware("http")
+async def trusted_lan_access(request, call_next):
+    if app.state.lan_networks:
+        if not request.client or not _trusted_address(request.client.host):
+            return JSONResponse(status_code=403, content={"detail": "访问设备不在允许的局域网子网内"})
+        # 仅使用 IP 地址或 localhost，阻止恶意域名重绑定及跨站表单写入。
+        if request.url.hostname != "localhost" and not _trusted_address(request.url.hostname or ""):
+            return JSONResponse(status_code=403, content={"detail": "请使用本机或局域网 IP 地址访问"})
+        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+            try:
+                _local_write(request)
+            except HTTPException as exc:
+                return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    return await call_next(request)
 
 
 @app.middleware('http')
@@ -82,9 +116,9 @@ async def review_body_limit(request, call_next):
 
 
 def _local_write(request):
-    # 审核写入只供本机同源 UI/CLI；开放到网络前必须补鉴权，不能静默放行。
-    if not request.client or request.client.host not in ("127.0.0.1", "::1"):
-        raise HTTPException(503, detail="审核写入仅支持本机访问；网络部署需先配置鉴权")
+    # 默认本机；局域网模式仅信任启动时明确允许的子网，同源校验仍保留。
+    if not request.client or not _trusted_address(request.client.host):
+        raise HTTPException(503, detail="写入仅支持本机或明确允许的局域网子网")
     origin = request.headers.get("origin")
     if origin and origin.rstrip("/") != str(request.base_url).rstrip("/"):
         raise HTTPException(403, detail="拒绝跨站审核写入")
@@ -3031,7 +3065,16 @@ def main():
                         help="监听端口，默认 8848")
     parser.add_argument("--auto-port", action="store_true",
                         help="端口被占时自动顺延选一个空闲端口，而不是退出")
+    parser.add_argument("--lan-subnet", action="append",
+                        default=[value.strip() for value in os.environ.get("P2V_WEB_LAN_SUBNETS", "").split(",") if value.strip()],
+                        help="允许访问和操作任务的可信 IPv4 私有子网，可重复指定")
     args = parser.parse_args()
+    try:
+        app.state.lan_networks = tuple(_lan_network(value) for value in args.lan_subnet)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.host != "localhost" and not _trusted_address(args.host) and not (args.host == "0.0.0.0" and app.state.lan_networks):
+        parser.error("非本机监听必须显式指定 --lan-subnet 可信子网")
 
     # ── 启动前先探端口。理由：uvicorn 抛出的原生错误是
     #    「[Errno 10048] 通常每个套接字地址只允许使用一次」——
@@ -3056,11 +3099,14 @@ def main():
             raise SystemExit(2)
 
     print("Paper2Video Web → http://{}:{}".format(args.host, args.port))
-    print("（只监听本机；如需局域网访问请自行评估风险后设置 --host 或 P2V_WEB_HOST）")
+    if app.state.lan_networks:
+        print("可信局域网共享：{}（子网内设备可操作任务和读取产物）".format(", ".join(map(str, app.state.lan_networks))))
+    else:
+        print("（只监听本机）")
     if not os.path.isdir(_STATIC):
         print("提示：{} 不存在，当前只有 API。执行 `npm run build` 后重启即可看到界面。".format(
             os.path.relpath(_STATIC, os.path.dirname(os.path.abspath(__file__)))))
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info", proxy_headers=False)
 
 
 if __name__ == "__main__":

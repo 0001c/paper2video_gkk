@@ -147,6 +147,8 @@ async def api_prepare_retry(job_id: str, payload: PrepareRetryRequest, request: 
             raise HTTPException(409, detail='原素材不可用，请重新上传')
         config = dict(src['config'])
         _normalize_models(config)
+        if config.get('regenerate_pages') is not None and not config.get('script_generation_id'):
+            config['script_generation_id'] = uuid.uuid4().hex  # 旧重写任务首次恢复后也具备稳定缓存标识。
         if payload.api_base:
             config['model_api_base'] = _model_base(payload.api_base)
         config.update(result_dir=result, reuse_script=False, require_reuse_script=False,

@@ -152,6 +152,20 @@ def main():
         check(retry_rewrite.status_code == 200 and retry_job['config']['regenerate_pages'] == [1], '失败的局部重写恢复仍只操作原来选定的页')
         retry_job['status'] = 'canceled'
         web._save_job(retry_job)
+        legacy = {**rewrite_job, 'id': 'job_legacy_rewrite', 'config': dict(rewrite_job['config'])}
+        legacy['config'].pop('script_generation_id')
+        Path(web._job_dir(legacy['id'])).mkdir()
+        web._save_job(legacy)
+        legacy_retry = client.post('/api/jobs/' + legacy['id'] + '/prepare-retry', json={})
+        legacy_retry_job = web._load_job(legacy_retry.json()['job_id'])
+        check(bool(legacy_retry_job['config'].get('script_generation_id')), '旧局部重写任务首次恢复会补充缓存标识')
+        legacy_retry_job['status'] = 'failed'
+        web._save_job(legacy_retry_job)
+        legacy_again = client.post('/api/jobs/' + legacy_retry_job['id'] + '/prepare-retry', json={})
+        legacy_again_job = web._load_job(legacy_again.json()['job_id'])
+        check(legacy_again_job['config']['script_generation_id'] == legacy_retry_job['config']['script_generation_id'], '旧任务补充标识后再次恢复可以复用本次成功页')
+        legacy_again_job['status'] = 'canceled'
+        web._save_job(legacy_again_job)
         check(rewrite.status_code == 200 and rewrite_job['config']['review_before_render'] and rewrite_job['config']['regenerate_pages'] == [1], '局部重写只指定选定页并再次暂停审核')
         rewrite_job['status'] = 'canceled'; web._save_job(rewrite_job)
         # 模型替身验证分批请求、恢复和局部重写。

@@ -345,7 +345,7 @@ def parse_script(script_text):
 
 
 def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=None,
-                  language=None):
+                  language=None, resume_audio=False):
     """逐页合成语音。
 
     与原版的差异
@@ -371,6 +371,13 @@ def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=
     _progress_total = len(parsed_speech)
     _progress_done = 0
 
+    import course
+    manifest_path = path.join(speech_save_dir, "manifest.json")
+    manifest = course.read_json(manifest_path, {}) if resume_audio else {}
+    voice_key = course.digest({"audio": course.digest(open(ref_audio, "rb").read()),
+                               "text": ref_text, "language": language, "model": model_type,
+                               "repo": TTS_REPO, "v": 1}) if resume_audio else None
+
     for slide_idx in range(len(parsed_speech)):
         speech_with_cursor = parsed_speech[slide_idx]
         subtitle = ""
@@ -382,6 +389,59 @@ def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=
             continue
 
         speech_result_path = path.join(speech_save_dir, "{}.wav".format(str(slide_idx)))
+
+        if resume_audio:
+            import soundfile as sf
+            import numpy as np
+            key = course.digest({"voice": voice_key, "text": subtitle})
+            cached = manifest.get(str(slide_idx), {})
+            if cached.get("key") == key and path.isfile(speech_result_path) and cached.get("wav_sha") == course.digest(open(speech_result_path, "rb").read()):
+                print("[course] 第 {} 页音频复用".format(slide_idx + 1), flush=True)
+            else:
+                # 长页主动分段，失败保留已完成段；避免一次生成数分钟语音。
+                sentences = [s for s in re.split(r"(?<=[。！？!?；;])|\n{2,}", subtitle) if s.strip()]
+                chunks = []
+                for sentence in sentences:
+                    while len(sentence) > 400:
+                        boundary = sentence.rfind(" ", 200, 400)
+                        boundary = boundary if boundary > 0 else 400
+                        chunks.append(sentence[:boundary].strip())
+                        sentence = sentence[boundary:]
+                    if sentence.strip():
+                        if chunks and len(chunks[-1]) + len(sentence) < 400:
+                            chunks[-1] += " " + sentence.strip()
+                        else:
+                            chunks.append(sentence.strip())
+                parts, sr = [], None
+                part_dir = path.join(speech_save_dir, ".parts", str(slide_idx))
+                os.makedirs(part_dir, exist_ok=True)
+                for j, chunk in enumerate(chunks):
+                    part = path.join(part_dir, str(j) + ".wav")
+                    stamp = part + ".json"
+                    part_key = course.digest({"voice": voice_key, "chunk": chunk})
+                    saved = course.read_json(stamp, {})
+                    if saved.get("key") != part_key or not path.isfile(part) or saved.get("wav_sha") != course.digest(open(part, "rb").read()):
+                        if model_type == "qwen3tts":
+                            synth_page_qwen3tts(chunk, part, ref_audio, ref_text, language=language, page_label="{}-{}".format(slide_idx + 1, j + 1))
+                        else:
+                            inference_f5(chunk, part, ref_audio, ref_text)
+                        course.write_json(stamp, {"key": part_key, "wav_sha": course.digest(open(part, "rb").read())})
+                    wav, part_sr = sf.read(part, dtype="float32")
+                    if sr is not None and sr != part_sr:
+                        raise RuntimeError("音频分段采样率不一致")
+                    sr = part_sr
+                    if parts:
+                        parts.append(np.zeros(int(sr * 0.35), dtype="float32"))
+                    parts.append(wav)
+                merged = np.concatenate(parts)
+                sf.write(speech_result_path, merged, sr)
+                manifest[str(slide_idx)] = {"key": key, "text_sha": course.digest(subtitle),
+                    "wav_sha": course.digest(open(speech_result_path, "rb").read()), "seconds": len(merged) / sr}
+                course.write_json(manifest_path, manifest)
+            _progress_done += 1
+            if progress_report:
+                progress_report.report("tts", stage=2, done=_progress_done, total=_progress_total, page=slide_idx)
+            continue
 
         if model_type == "qwen3tts":
             # 走带护栏的入口：退化生成最多被截断，不会让整轮卡住

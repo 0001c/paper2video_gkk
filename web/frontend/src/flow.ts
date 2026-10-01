@@ -26,6 +26,7 @@ async function request(path: string, init: RequestInit = {}) {
 }
 
 export const api = {
+  put: (path: string, body: unknown) => request(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
   get: (path: string) => request(path).then((r) => r.data),
   post: (path: string, body?: unknown) => request(path, {
     method: "POST",

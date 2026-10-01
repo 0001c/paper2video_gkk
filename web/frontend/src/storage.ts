@@ -107,6 +107,8 @@ export type Draft = {
   uploadText: string;
   paperName: string;
   portraitName: string;
+  courseEnabled?: boolean;
+  courseSettings?: string;
 };
 
 export function loadDraft(): Partial<Draft> {
@@ -115,7 +117,7 @@ export function loadDraft(): Partial<Draft> {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
     const draft: Record<string, unknown> = {};
     for (const key of ["preset", "scriptPrompt", "slidePrompt", "scriptTemplate", "slideTemplate",
-      "presetSpec", "designPrompt", "uploadText", "paperName", "portraitName"]) {
+      "presetSpec", "designPrompt", "uploadText", "paperName", "portraitName", "courseSettings"]) {
       if (typeof raw[key] === "string") draft[key] = raw[key];
     }
     for (const key of ["slideLang", "scriptLang"]) {
@@ -125,7 +127,7 @@ export function loadDraft(): Partial<Draft> {
       draft.contentProfile = raw.contentProfile;
     }
     if (["default", "preset", "design", "upload"].includes(raw.voiceMode)) draft.voiceMode = raw.voiceMode;
-    for (const key of ["generateTalking", "ifTreeSearch"]) {
+    for (const key of ["generateTalking", "ifTreeSearch", "courseEnabled"]) {
       if (typeof raw[key] === "boolean") draft[key] = raw[key];
     }
     if (Number.isInteger(raw.slideCount) && raw.slideCount >= 4 && raw.slideCount <= 40) {

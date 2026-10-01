@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Dialog, MessagePlugin, Radio, RadioGroup, Select } from "tdesign-react";
 import { clearCredentials, loadCredentials, loadDraft, loadJobId, loadView, saveCredentials, saveDraft, saveJobId, saveView } from "./storage";
 import { api, applyTemplate, errorMessage, runExclusive } from "./flow";
+import { CoursePanel, defaultCourse, type CourseSettings, type CoursePlan } from "./CoursePanel";
+import { ReviewPanel } from "./ReviewPanel";
 
 /* ─────────────────────────────────────────────────────────────
    接口层。三个注意点：
@@ -174,7 +176,8 @@ type Job = {
      （后端不复制 result 目录，只在 config.result_dir 里指过去）。 */
   resumed_from?: string;
   config?: { generate_talking?: boolean; content_profile?: string; slide_lang?: string;
-    script_lang?: string; slide_count?: number; voice_note?: string; talking_note?: string };
+    script_lang?: string; slide_count?: number; voice_note?: string; talking_note?: string;
+    review_before_render?: boolean; target_minutes?: number | null };
 };
 
 type RerunPlan = {
@@ -257,7 +260,7 @@ function useJobStream(jobId: string | null) {
             es?.close();
             return;
           }
-          if (["done", "failed", "canceled"].includes(d.status)) terminalRef.current = true;
+          if (["done", "failed", "canceled", "awaiting_review"].includes(d.status)) terminalRef.current = true;
           setJob((prev) => ({ ...(prev?.id === jobId ? prev : {}), ...d, id: jobId }));
         } catch {
           /* 单条解析失败不该中断整个流 */
@@ -396,6 +399,12 @@ export default function App() {
   const [scriptPrompt, setScriptPrompt] = useState(initialDraft.scriptPrompt ?? "");
   const [slidePrompt, setSlidePrompt] = useState(initialDraft.slidePrompt ?? "");
   const [slideCount, setSlideCount] = useState<number | "">(initialDraft.slideCount ?? 12);
+  const [courseEnabled, setCourseEnabled] = useState(initialDraft.courseEnabled ?? initialDraft.contentProfile === "textbook");
+  const [courseSettings, setCourseSettings] = useState<CourseSettings>(() => {
+    try { return { ...defaultCourse, ...JSON.parse(initialDraft.courseSettings || "{}") }; }
+    catch { return defaultCourse; }
+  });
+  const [coursePlan, setCoursePlan] = useState<CoursePlan | null>(null);
   const [generateTalking, setGenerateTalking] = useState(initialDraft.generateTalking ?? true);
   /* 幻灯片布局微调（树搜索）—— 默认关，与后端 `_build_argv` 的默认值一致。
      两边默认值必须相同：界面显示"未勾选"而后端当成 True 跑，就是在
@@ -416,6 +425,7 @@ export default function App() {
   // jobId 也持久化：刷新页面（或误关标签）后自动回到原来那个任务 ——
   // 否则每次都要回任务列表重新点一次"查看"，长任务里这很烦。
   const [jobId, setJobId] = useState<string | null>(loadJobId());
+  const videoRef = useRef<HTMLVideoElement>(null);
   const [artifacts, setArtifacts] = useState<any[]>([]);
   // P1：任务记录 + 逐页素材
   const [jobs, setJobs] = useState<any[]>([]);
@@ -587,7 +597,8 @@ export default function App() {
     const slides = Number(slideCount) || 12;
     const used = slides;
     const factor = sys?.perf_factor ?? 1;
-    const seconds = (used * perSlide + cal.fixed_s + cal.script_api_s) * factor;
+    const durationScale = courseEnabled && coursePlan ? Math.max(1, coursePlan.planned_minutes / (used * 0.5)) : 1;
+    const seconds = (used * perSlide * durationScale + cal.fixed_s + cal.script_api_s) * factor;
     return {
       slides,
       lo: Math.max(1, Math.round((seconds * 0.8) / 60)),
@@ -595,7 +606,7 @@ export default function App() {
       factor,
       anchoredOn: cal.anchored_on,
     };
-  }, [sys, scriptLang, slideCount, generateTalking, portraitFile]);
+  }, [sys, scriptLang, slideCount, generateTalking, portraitFile, courseEnabled, coursePlan]);
 
   // 预设变化时同步两个轴 —— 但要保留"单独指定某一轴"的能力，
   // 所以这里只在预设变化的那一刻同步，之后用户手动改的轴不再被覆盖。
@@ -649,10 +660,11 @@ export default function App() {
       slideCount: Number(slideCount) || 12, generateTalking, ifTreeSearch, voiceMode,
       presetSpec: presetPick ? JSON.stringify(presetPick.spec) : initialDraft.presetSpec || "",
       designPrompt, uploadText, paperName: paperFile?.name || initialDraft.paperName || "",
-      portraitName: portraitFile?.name || initialDraft.portraitName || "" });
+      portraitName: portraitFile?.name || initialDraft.portraitName || "",
+      courseEnabled, courseSettings: JSON.stringify(courseSettings) });
   }, [preset, slideLang, scriptLang, contentProfile, scriptPrompt, slidePrompt,
     promptTemplate, slidePromptTemplate, slideCount, generateTalking, ifTreeSearch, voiceMode,
-    presetPick, designPrompt, uploadText, paperFile, portraitFile, initialDraft]);
+    presetPick, designPrompt, uploadText, paperFile, portraitFile, initialDraft, courseEnabled, courseSettings]);
 
   const doIngest = useCallback(async () => runExclusive(ingestLock, setIngesting, async () => {
     if (!paperFile) return MessagePlugin.warning("请先选择内容文件");
@@ -665,6 +677,8 @@ export default function App() {
       return;
     }
     setIngest(data);
+    setCoursePlan(null);
+    setCourseSettings((s) => ({ ...s, section_ids: ["all"], sections: undefined }));
   }, reportError), [paperFile]);
 
   const verifyKey = useCallback(async () => runExclusive(verifyLock, setChecking, async () => {
@@ -678,6 +692,7 @@ export default function App() {
     setSubmitPhase("正在准备…");
     if (ingestLock.current || voiceLock.current) throw new Error("请等待文件提取或音色准备完成");
     if (!ingest || ingest.error) return MessagePlugin.warning("请先上传内容文件并完成提取预览");
+    if (courseEnabled && !coursePlan) return MessagePlugin.warning("请预览并确认教案和时间分配");
     if (!apiKey) return MessagePlugin.warning("请填写 API Key（幻灯片与讲稿生成需要）");
     if (!scriptPrompt.trim()) return MessagePlugin.warning("讲稿提示词不能为空");
     if (!slidePrompt.trim() || slidePrompt.length > (opts?.slide_prompt_max_chars ?? 30000)) {
@@ -736,6 +751,7 @@ export default function App() {
       // 本地因为 .env 有 key 所以看不出问题，换成没配 .env 的服务器就会静默失败。
       api_key: apiKey,
       api_base: apiBase || undefined,
+      course_plan_token: courseEnabled ? coursePlan?.token : undefined,
       config: {
         stages: ["1", "2", "3"],
         slide_lang: slideLang,
@@ -744,6 +760,7 @@ export default function App() {
         slide_count: slideCount,
         slide_prompt: slidePrompt,
         content_profile: contentProfile,
+        course: courseEnabled ? courseSettings : undefined,
         script_prompt: scriptPrompt,
         generate_talking: talkingWillRun,
         // 幻灯片布局微调（树搜索）。**必须显式传**：后端读不到这个字段时按
@@ -768,7 +785,8 @@ export default function App() {
     if (data.talking_note) MessagePlugin.info(data.talking_note);
   }, reportError), [ingest, portraitFile, generateTalking, apiKey, apiBase, slideLang, scriptLang,
       contentProfile, scriptPrompt, slidePrompt, slideCount, opts, ifTreeSearch,
-      voiceMode, presetPick, designPrompt, uploadSpec, uploadText, voiceSpecNow, selectJob]);
+      voiceMode, presetPick, designPrompt, uploadSpec, uploadText, voiceSpecNow, selectJob,
+      courseEnabled, coursePlan, courseSettings]);
 
   // 任务列表：每 5 秒刷新。本地工具，这点开销可以忽略，
   // 换来的是"后端重启前留下的任务也能看到最新状态"。
@@ -842,6 +860,12 @@ export default function App() {
     setRegenerateScript(false);
     setRerunPlan(plan);
   }, reportError), []);
+
+  const retryPreparation = () => runExclusive(rerunLock, setRerunning, async () => {
+    if (!job || !window.confirm("继续准备课件与讲稿可能调用生成接口。已完成的课程讲稿页会复用，是否继续？")) return;
+    const { data } = await api.post(`/api/jobs/${job.id}/prepare-retry`, { api_key: apiKey || undefined, api_base: apiBase || undefined });
+    selectJob(data.job_id);
+  }, reportError);
 
   const doRerun = useCallback(async () => runExclusive(rerunLock, setRerunning, async () => {
     if (!rerunPlan) return;
@@ -920,6 +944,7 @@ export default function App() {
   const missing: string[] = [];
   if (!opts || initError) missing.push("加载服务配置");
   if (!ingest || ingest.error) missing.push("选择内容文件并完成提取预览");
+  if (courseEnabled && !coursePlan) missing.push("预览并确认教案和时间分配");
   if (!apiKey.trim()) missing.push("填写 API Key");
   if (!slidePrompt.trim() || slidePrompt.length > (opts?.slide_prompt_max_chars ?? 30000)) missing.push("检查幻灯片提示词");
   if (!scriptPrompt.trim() || scriptPrompt.length > (opts?.script_prompt_max_chars ?? 20000)) missing.push("检查讲稿提示词");
@@ -1187,7 +1212,7 @@ export default function App() {
             <label>讲解内容类型</label>
             <Select
               value={contentProfile}
-              onChange={(v) => setContentProfile(v as ScriptPromptProfile["value"])}
+              onChange={(v) => { setContentProfile(v as ScriptPromptProfile["value"]); setCourseEnabled(v === "textbook"); setCoursePlan(null); }}
               options={(opts?.script_prompt_profiles ?? []).map((x) => ({
                 label: x.label,
                 value: x.value,
@@ -1303,6 +1328,13 @@ export default function App() {
         )}
         </details>
       </section>
+
+      <div className="course-switch">
+        <label className="checkrow"><input type="checkbox" checked={courseEnabled} onChange={(e) => { setCourseEnabled(e.target.checked); setCoursePlan(null); }} />设置教学范围与目标时长（适用于课程授课）</label>
+        {courseEnabled && <button type="button" className="linkbtn" onClick={() => { setPreset("zh_all"); setSlideLang("zh"); setScriptLang("zh"); }}>使用中文授课语言推荐</button>}
+      </div>
+      {courseEnabled && <CoursePanel ingestId={ingest?.ingest_id} settings={courseSettings} onSettings={setCourseSettings}
+        slideCount={slideCount} scriptLang={scriptLang} onPlan={setCoursePlan} />}
 
       {/* ③ 音色 —— 四种来源最终都归结为"一份参考音频 + 它的参考文本"。
           逐页合成始终是**本地** Qwen3-TTS：云端只用来造这一小段音色样本，
@@ -1548,7 +1580,9 @@ export default function App() {
 
       </fieldset>
       <section className="section submit-section" aria-label="创建新任务">
-        <h2 className="section-title">确认并生成</h2>
+        <h2 className="section-title">生成课件与讲稿，进入审核</h2>
+        <p className="hint">所有讲解类型都会先暂停在审核界面。审核确认后，再生成配音和视频。</p>
+        {courseEnabled && <p>成片目标：{coursePlan ? `约 ${coursePlan.planned_minutes} 分钟` : "请先确认教案"}。此时长与生成等待时间分开计算。</p>}
         <p>
           幻灯片：{slideLang === "zh" ? "中文" : "英文"} · 讲解：{scriptLang === "zh" ? "中文" : "英文"}
           {` · ${slideCount || "待填写"} 页 · 数字人${generateTalking && portraitFile ? "启用" : "关闭"}`}
@@ -1556,12 +1590,12 @@ export default function App() {
         </p>
         {generateTalking && !portraitFile && <p className="hint">未选择人像，实际将生成无数字人小窗的视频。</p>}
         <p className="hint">
-          {est ? `按目标 ${est.slides} 页估算约 ${est.lo}～${est.hi} 分钟；实际页数与耗时可能不同。` : "正在读取耗时估算信息。"}
+          {est ? `完整流程生成耗时粗估 ${est.lo}～${est.hi} 分钟（${est.slides} 页），不代表成片播放时长；长课需实际标定。` : "正在读取耗时估算信息。"}
           {` 当前 ${activeCount} 个任务执行中、${queuedCount} 个排队中；新任务会串行排队。`}
         </p>
         <div className="actions">
           <Button theme="primary" loading={submitting} disabled={!ready || submitting} onClick={submit}>
-            {submitting ? submitPhase || "正在准备…" : activeCount || queuedCount ? "加入生成队列" : "开始生成"}
+            {submitting ? submitPhase || "正在准备…" : "生成课件与讲稿"}
           </Button>
           <span className="hint" role="status">
             {missing.length ? `还需：${missing.join("；")}` : ingesting || voiceBusy ? "正在准备素材，请稍候" : "素材已就绪，可以创建新任务"}
@@ -1579,7 +1613,8 @@ export default function App() {
 
         <div className="actions">
           {running && <Button theme="danger" variant="outline" loading={canceling} onClick={cancel}>取消此任务</Button>}
-          {job && !running && <Button variant="outline" loading={rerunning} onClick={() => prepareRerun(job.id)}>重做配音和视频</Button>}
+          {job && !running && !job.config?.review_before_render && <Button variant="outline" loading={rerunning} onClick={() => prepareRerun(job.id)}>重做配音和视频</Button>}
+          {job?.config?.review_before_render && ["failed", "canceled"].includes(job.status) && <Button variant="outline" loading={rerunning} onClick={retryPreparation}>继续准备课件与讲稿</Button>}
           {job?.queue_ahead ? (
             <span style={{ fontSize: 12, color: "var(--paper-ink-faint)" }}>
               队列中，前面还有 {job.queue_ahead} 个任务
@@ -1598,6 +1633,7 @@ export default function App() {
           </p>
         )}
         {filesError && <div className="notice err" role="alert"><span>产物读取失败：{filesError}</span><Button variant="outline" onClick={() => setFilesVersion((value) => value + 1)}>重试读取</Button></div>}
+        {job && !running && visiblePages?.pages?.length > 0 && <ReviewPanel key={job.id} jobId={job.id} apiKey={apiKey} apiBase={apiBase} onJob={selectJob} />}
 
         {job && (
           <div style={{ marginTop: 18 }}>
@@ -1704,18 +1740,22 @@ export default function App() {
               </div>
             )}
             {(() => {
-              const video = visibleArtifacts.find((a) => a.name === "3_merage.mp4");
+              const video = visibleArtifacts.find((a) => a.name === "course_video.mp4") || visibleArtifacts.find((a) => a.name === "3_merage.mp4");
               return video ? (
                 <video
                   key={video.version || video.size_bytes}
                   controls
+                  ref={videoRef}
                   preload="metadata"
-                  src={`/api/jobs/${jobId}/files/3_merage.mp4?v=${encodeURIComponent(
+                  src={`/api/jobs/${jobId}/files/${video.name}?v=${encodeURIComponent(
                     video.version || String(video.size_bytes || "latest"),
                   )}`}
                 />
               ) : null;
             })()}
+            {visiblePages?.chapters?.length > 0 && <div className="actions" aria-label="课程章节导航">{visiblePages.chapters.map((c: { title: string; start_seconds: number }) => <button className="linkbtn" type="button" key={`${c.title}-${c.start_seconds}`} onClick={() => {
+              if (videoRef.current) { videoRef.current.currentTime = c.start_seconds; videoRef.current.scrollIntoView({ block: "center" }); }
+            }}>{Math.floor(c.start_seconds / 60)}:{String(Math.floor(c.start_seconds % 60)).padStart(2, '0')} {c.title}</button>)}</div>}
           </div>
         )}
 

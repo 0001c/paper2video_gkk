@@ -509,7 +509,13 @@ def clean_text(text):
 
 
 def get_audio_length(audio_path):
-    """音频时长（秒）。优先 ffmpeg，缺失时回退 soundfile。"""
+    """优先读取音频帧数，避免逐页启动进程，也保留完整精度。"""
+    try:
+        import soundfile as sf
+        info = sf.info(str(audio_path))
+        return float(info.frames) / float(info.samplerate)
+    except Exception:
+        pass
     try:
         result = subprocess.run(["ffmpeg", "-i", str(audio_path)],
                                 stderr=subprocess.PIPE, text=True)
@@ -518,15 +524,8 @@ def get_audio_length(audio_path):
                 duration_str = line.split("Duration:")[1].split(",")[0].strip()
                 hours, minutes, seconds = map(float, duration_str.split(":"))
                 return hours * 3600 + minutes * 60 + seconds
-    except FileNotFoundError:
+    except OSError:
         pass
-
-    try:
-        import soundfile as sf
-        info = sf.info(str(audio_path))
-        return float(info.frames) / float(info.samplerate)
-    except Exception:
-        return 0.0
     return 0.0
 
 
@@ -674,7 +673,7 @@ def _open_pdf_locator(pdf_path, img_width, img_height, page_count):
 
 def cursor_gen_per_sentence(script_path, slide_img_dir, slide_audio_dir,
                             cursor_save_path, gpu_list=None, language="English",
-                            slide_pdf_path=None):
+                            slide_pdf_path=None, resume_cache=False):
     """逐句定位光标并生成时间轴，写入 cursor_save_path。
 
     定位分两条路，**优先 PDF 文本坐标**（像素级精确、零推理开销、可离线复现），
@@ -683,12 +682,17 @@ def cursor_gen_per_sentence(script_path, slide_img_dir, slide_audio_dir,
     单卡环境走「模型常驻 + 串行推理」；多卡才启用进程池。
     """
     from speech_gen import align_with_qwen3
+    import course
+    cache_path = cursor_save_path.replace('.json', '_cache.json')
+    cache = course.read_json(cache_path, {}) if resume_cache else {}
+    points = cache.setdefault('points', {})
+    alignments = cache.setdefault('alignments', {})
 
     with open(script_path, "r", encoding="utf-8") as handle:
         script_with_cursor = "".join(handle.readlines())
     parsed_speech = parse_script(script_with_cursor)
 
-    slide_imgs = [name for name in os.listdir(slide_img_dir)]
+    slide_imgs = [name for name in os.listdir(slide_img_dir) if name.lower().endswith('.png')]
     slide_imgs = sorted(slide_imgs, key=lambda x: int(re.search(r"\d+", x).group()))
     slide_imgs = [path.join(slide_img_dir, name) for name in slide_imgs]
 
@@ -711,9 +715,15 @@ def cursor_gen_per_sentence(script_path, slide_img_dir, slide_audio_dir,
 
     # ── 第一级：PDF 文本坐标 ──
     resolved = [None] * len(task_list)
+    point_keys = [course.digest({'v': 1, 'image': course.digest(open(t[4], 'rb').read()), 'cursor': t[3]}) for t in task_list] if resume_cache else []
+    if resume_cache:
+        for pos, key in enumerate(point_keys):
+            resolved[pos] = points.get(key)
     locator = _open_pdf_locator(slide_pdf_path, slide_w, slide_h, len(parsed_speech))
     if locator is not None:
         for pos, task in enumerate(task_list):
+            if resolved[pos] is not None:
+                continue
             slide_idx, _, _, cursor_prompt, _, _ = task
             phrase = extract_quote(cursor_prompt) or strip_cursor_prefix(cursor_prompt)
             point = locator.locate(slide_idx, phrase)
@@ -738,7 +748,12 @@ def cursor_gen_per_sentence(script_path, slide_img_dir, slide_audio_dir,
         total_pending = len(pending)
         for idx, task in enumerate(pending):
             item_started = time.time()
-            fallback.append(_infer_task(task))
+            item = _infer_task(task)
+            fallback.append(item)
+            if resume_cache and item.get('cursor') is not None:
+                key = course.digest({'v': 1, 'image': course.digest(open(task[4], 'rb').read()), 'cursor': task[3]})
+                points[key] = item['cursor']
+                course.write_json(cache_path, cache)
             cost = time.time() - item_started
             # ⚠️ 逐条打印 + 上报，**不能只在每 10 条时打印一次**（2026-09-19 实测）：
             # 一次真实任务里有 18 条回退指令，日志只留下 "10/18" 一行，
@@ -784,6 +799,10 @@ def cursor_gen_per_sentence(script_path, slide_img_dir, slide_audio_dir,
     for item in cursor_result:
         if item["cursor"] is None:
             item["cursor"] = center
+    if resume_cache:
+        for key, item in zip(point_keys, cursor_result):
+            points[key] = item['cursor']
+        course.write_json(cache_path, cache)
 
     cursor_token = "".join(item["token"] for item in cursor_result)
 
@@ -811,8 +830,13 @@ def cursor_gen_per_sentence(script_path, slide_img_dir, slide_audio_dir,
             continue
 
         # 用**原始文本**做强制对齐（clean_text 去掉了标点与大小写，会伤对齐精度）
-        aligned = align_with_qwen3(slide_audio_path, " ".join(raw_texts), lang=language)
-        sentence_timesteps = timesteps(subtitle, aligned, slide_audio_path)
+        alignment_key = course.digest({'v': 1, 'audio': course.digest(open(slide_audio_path, 'rb').read()), 'texts': raw_texts, 'cursor': cursor, 'language': language}) if resume_cache else None
+        cached_alignment = alignments.get(alignment_key)
+        if cached_alignment is not None:
+            sentence_timesteps = [dict(item) for item in cached_alignment]
+        else:
+            aligned = align_with_qwen3(slide_audio_path, " ".join(raw_texts), lang=language)
+            sentence_timesteps = timesteps(subtitle, aligned, slide_audio_path)
 
         # 句数可能因词数统计偏差而对不齐，取较短的一侧做保护性配对
         if len(sentence_timesteps) != len(cursor):
@@ -826,11 +850,14 @@ def cursor_gen_per_sentence(script_path, slide_img_dir, slide_audio_dir,
             sentence_timesteps[pos]["raw_text"] = raw_texts[pos]
 
         slide_sentence_timesteps.append(sentence_timesteps)
+        if resume_cache:
+            alignments[alignment_key] = [dict(item) for item in sentence_timesteps]
+            course.write_json(cache_path, cache)
 
     # 拼接为全局时间轴
     start_time_now = 0.0
     new_slide_sentence_timesteps = []
-    for sentence_timesteps in slide_sentence_timesteps:
+    for page_idx, sentence_timesteps in enumerate(slide_sentence_timesteps):
         duration = 0.0
         for idx in range(len(sentence_timesteps)):
             if sentence_timesteps[idx]["start"] is None:
@@ -843,7 +870,8 @@ def cursor_gen_per_sentence(script_path, slide_img_dir, slide_audio_dir,
             sentence_timesteps[idx]["end"] += start_time_now
             duration += sentence_timesteps[idx]["end"] - sentence_timesteps[idx]["start"]
 
-        start_time_now += duration
+        # 页间时间轴必须包含静音和停顿，长课不能累计丢掉这些时长。
+        start_time_now += get_audio_length(slide_audio[page_idx])
         new_slide_sentence_timesteps.extend(sentence_timesteps)
 
     with open(cursor_save_path.replace(".json", "_mid.json"), "w", encoding="utf-8") as handle:

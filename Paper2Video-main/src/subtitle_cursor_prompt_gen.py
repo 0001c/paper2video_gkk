@@ -52,7 +52,8 @@ def _empty_response_hint(response, model_config):
             "不符合预期，检查 prompt 与该模型的能力匹配".format(completion))
 
 
-def subtitle_cursor_gen(slide_imgs_dir, prompt_path, model_config, retries=None):
+def subtitle_cursor_gen(slide_imgs_dir, prompt_path, model_config, retries=None,
+                        image_paths=None, prompt_text=None):
     """让 VLM 看全部幻灯片，产出「讲稿 | 光标目标」的逐页文本。
 
     ⚠️ 为什么必须重试 + 判空 + **判完整性**
@@ -80,8 +81,8 @@ def subtitle_cursor_gen(slide_imgs_dir, prompt_path, model_config, retries=None)
         url=model_config.get("url", None),)
     agent = ChatAgent(model=model, system_message="",)
 
-    with open(prompt_path, 'r', encoding='utf-8') as f_prompt: task_prompt = f_prompt.read()
-    slide_image_list = [path.join(slide_imgs_dir, name) for name in os.listdir(slide_imgs_dir)]
+    with open(prompt_path, 'r', encoding='utf-8') as f_prompt: task_prompt = prompt_text or f_prompt.read()
+    slide_image_list = image_paths or [path.join(slide_imgs_dir, name) for name in os.listdir(slide_imgs_dir) if name.lower().endswith('.png')]
     slide_image_list = sorted(slide_image_list, key=lambda x: int(re.search(r'\d+', x).group()))
 
     images = []

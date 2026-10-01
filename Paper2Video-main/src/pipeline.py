@@ -181,6 +181,9 @@ if __name__ == '__main__':
     parser.add_argument('--reuse_script', type=str2bool, default=False,
                         help='stage 2：若讲稿文件已存在且校验通过，跳过 VLM 调用\n（讲稿生成是唯一必须联网付费的一步，补跑时可省这一次费用）')
     parser.add_argument('--beamer_templete_prompt', type=str, default=None)
+    parser.add_argument('--course_plan', type=str, default=None, help='已审核课程教案 JSON')
+    parser.add_argument('--review_before_render', type=str2bool, default=False)
+    parser.add_argument('--regenerate_pages', type=str, default=None, help='课程局部重写的零基页索引 JSON')
     parser.add_argument('--require_reuse_script', type=str2bool, default=False,
                         help='讲稿不可复用时停止，不自动调用模型重新生成')
     parser.add_argument('--stage', type=str, default="[\"0\"]") 
@@ -217,6 +220,10 @@ if __name__ == '__main__':
     
     cursor_img_path = "./cursor_image/red.png"
     os.makedirs(args.result_dir, exist_ok=True) # result dir
+    import course
+    course_plan = course.read_json(args.course_plan) if args.course_plan else None
+    if args.course_plan and not course_plan:
+        raise ValueError('课程教案不可读取，已停止')
     agent_config_t = get_agent_config(args.model_name_t) # LLM
     agent_config_v = get_agent_config(args.model_name_v) # VLM
     copy_latex_proj_path = path.join(args.result_dir, path.basename(args.paper_latex_root))
@@ -296,6 +303,8 @@ if __name__ == '__main__':
             "each frame environment counts as one slide.".format(args.slide_count)
         )
         _slide_extra = ((_slide_extra + "\n\n") if _slide_extra else "") + _count_directive
+        if course_plan:
+            _slide_extra += course.slide_directive(course_plan)
         if paper_figures is not None:
             _figures, _fig_note = paper_figures.extract(args.paper_source,
                                                         args.paper_latex_root)
@@ -367,11 +376,25 @@ if __name__ == '__main__':
             # 先报一条阶段进度，界面才不会在这一段里"看着像没开始"。
             if progress_report:
                 progress_report.report("script", stage=2)
-            subtitle, usage_subtitle = subtitle_cursor_gen(
-                slide_image_dir, prompt_path, agent_config_v)
+            if course_plan:
+                subtitle, usage_subtitle = course.generate_script(course_plan, slide_image_dir,
+                    prompt_path, agent_config_v, args.result_dir, subtitle_cursor_gen,
+                    selected=json.loads(args.regenerate_pages) if args.regenerate_pages else None)
+            elif args.regenerate_pages:
+                subtitle, usage_subtitle = course.generate_selected(slide_image_dir, prompt_path,
+                    agent_config_v, args.result_dir, subtitle_cursor_gen, json.loads(args.regenerate_pages))
+            else:
+                subtitle, usage_subtitle = subtitle_cursor_gen(
+                    slide_image_dir, prompt_path, agent_config_v)
             # 显式 utf-8：读回处固定用 utf-8，写入端不该依赖环境默认编码
             with open(subtitle_cursor_save_path, "w", encoding="utf-8") as f:
                 f.write(subtitle)
+        if args.review_before_render:
+            course.write_json(path.join(args.result_dir, 'course_review.json'), {'ready': True})
+            if course_plan:
+                course.write_json(path.join(args.result_dir, 'course_timing.json'), course.audio_report(course_plan, args.result_dir))
+            print('[course] 课件与讲稿已准备，请审核后再合成音频与视频', flush=True)
+            sys.exit(0)
         if args.model_name_v not in token_usage.keys(): 
             token_usage[args.model_name_v] = [usage_subtitle]
         else: token_usage[args.model_name_v].append(usage_subtitle)
@@ -385,7 +408,7 @@ if __name__ == '__main__':
         # -> 主流水线的 stage 2 曾经必然失败。改为可配置，默认 qwen3tts。
         tts_per_slide(model_type=args.tts_model, script_path=subtitle_cursor_save_path,
                     speech_save_dir=speech_save_dir, ref_audio=args.ref_audio,
-                    ref_text=args.ref_text, language=lang["tts_language"])  
+                    ref_text=args.ref_text, language=lang["tts_language"], resume_audio=True)
         step3_1_time =  time.time()
         time_second["tts"] = [step3_1_time-step2_time]
         print("Speech Generation", step3_1_time-step2_time)
@@ -396,7 +419,10 @@ if __name__ == '__main__':
             progress_report.report("cursor", stage=2)
         cursor_token = cursor_gen_per_sentence(script_path=subtitle_cursor_save_path, slide_img_dir=slide_image_dir, 
                                 slide_audio_dir=speech_save_dir, cursor_save_path=cursor_save_path, gpu_list=args.gpu_list,
-                                language=lang["align_language"], slide_pdf_path=slide_pdf_path)
+                                language=lang["align_language"], slide_pdf_path=slide_pdf_path,
+                                resume_cache=True)
+        if course_plan:
+            course.export_chapters(course_plan, args.result_dir)
         token_usage["cursor"] = cursor_token
         step3_2_time =  time.time()
         time_second["cursor_gen"] = [step3_2_time-step3_1_time]
@@ -469,6 +495,8 @@ if __name__ == '__main__':
         tmp_merage_3 = path.join(args.result_dir, "3_merage.mp4")
         add_subtitles(tmp_merage_2, tmp_merage_3, size//10,
                       font_name=lang["subtitle_font"])
+        if course_plan:
+            course.embed_chapters(course_plan, args.result_dir)
         step5_time =  time.time()
         time_second["merage"] = [step5_time-step4_time]
         print("Merage", step5_time-step4_time)

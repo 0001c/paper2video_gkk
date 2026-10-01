@@ -33,6 +33,8 @@ import subprocess
 import sys
 import time
 import uuid
+from pathlib import Path
+from pydantic import BaseModel, ConfigDict, Field
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -55,10 +57,214 @@ import progress_report                                    # noqa: E402
 import mimo_voice                                         # noqa: E402
 import artifact_cache                                     # noqa: E402
 import paper_figures                                      # noqa: E402
+import course                                             # noqa: E402
 from script_validation import validate_script_output      # noqa: E402
 
 os.makedirs(JOBS_ROOT, exist_ok=True)
 app = FastAPI(title="Paper2Video Web", version="0.1.0")
+
+
+@app.middleware('http')
+async def review_body_limit(request, call_next):
+    if request.method in ('PUT', 'POST') and (request.url.path.endswith('/review') or request.url.path.endswith('/review/run') or request.url.path == '/api/course/plan'):
+        try:
+            _local_write(request)
+            length = int(request.headers.get('content-length') or 0)
+        except HTTPException as exc:
+            return JSONResponse(status_code=exc.status_code, content={'detail': exc.detail})
+        except ValueError:
+            return JSONResponse(status_code=400, content={'detail': 'Content-Length 无效'})
+        if length > 512000 or len(await request.body()) > 512000:
+            return JSONResponse(status_code=413, content={'detail': '审核请求体最多 512000 字节'})
+    return await call_next(request)
+
+
+def _local_write(request):
+    # 审核写入只供本机同源 UI/CLI；开放到网络前必须补鉴权，不能静默放行。
+    if not request.client or request.client.host not in ("127.0.0.1", "::1"):
+        raise HTTPException(503, detail="审核写入仅支持本机访问；网络部署需先配置鉴权")
+    origin = request.headers.get("origin")
+    if origin and origin.rstrip("/") != str(request.base_url).rstrip("/"):
+        raise HTTPException(403, detail="拒绝跨站审核写入")
+
+
+def _course_source(work):
+    text_file = Path(work, "ingest", "paper_text.md")
+    if text_file.is_file():
+        return text_file.read_text(encoding="utf-8")
+    root = (_content_meta(work) or {}).get("latex_root")
+    if root and Path(root, "main.tex").is_file():
+        return Path(root, "main.tex").read_text(encoding="utf-8")
+    raise HTTPException(422, detail="section_ids：没有可读取的正文，请重新提取或上传选定小节")
+
+
+class CoursePlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ingest_id: str = Field(max_length=100)
+    settings: dict
+    slide_count: int = Field(ge=4, le=40)
+    script_lang: str = Field(pattern="^(zh|en)$")
+
+
+class ReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    version: str = Field(min_length=64, max_length=64)
+    pages: list[str] = Field(min_length=1, max_length=200)
+
+
+class ReviewRunRequest(ReviewRequest):
+    action: str = Field(pattern="^(render|regenerate)$")
+    page_ids: list[int] = Field(default_factory=list, max_length=40)
+    api_key: str | None = Field(default=None, max_length=2000)
+    api_base: str | None = Field(default=None, max_length=2000)
+
+
+class PrepareRetryRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    api_key: str | None = Field(default=None, max_length=2000)
+    api_base: str | None = Field(default=None, max_length=2000)
+
+
+@app.post('/api/jobs/{job_id}/prepare-retry')
+async def api_prepare_retry(job_id: str, payload: PrepareRetryRequest, request: Request):
+    _local_write(request)
+    async with _JOB_LOCK:
+        src = _load_job(job_id)
+        result = _result_dir(src)
+        if src.get('status') not in ('failed', 'canceled') or not src.get('config', {}).get('review_before_render'):
+            raise HTTPException(409, detail='仅支持失败或取消的准备任务')
+        if any(j.get('status') in ('queued', 'running') and os.path.realpath(_result_dir(j)) == os.path.realpath(result) for j in _list_jobs()):
+            raise HTTPException(409, detail='共享产物正在使用中，请等待结束')
+        if not os.path.isfile(os.path.join(src.get('paper_latex_root') or '', 'main.tex')) and not os.path.isfile(src.get('source_path') or ''):
+            raise HTTPException(409, detail='原素材不可用，请重新上传')
+        config = dict(src['config'])
+        config.update(result_dir=result, reuse_script=False, require_reuse_script=False,
+                      review_before_render=True, stages=['2'] if os.path.isfile(os.path.join(result, 'slides_rendered.pdf')) else ['1', '2'])
+        config.pop('regenerate_pages', None)
+        new_id = 'job_' + time.strftime('%m%d_%H%M%S') + '_' + uuid.uuid4().hex[:4]
+        new_dir = _job_dir(new_id)
+        os.makedirs(new_dir, exist_ok=True)
+        ingest = os.path.join(_job_dir(job_id), 'ingest')
+        if os.path.isdir(ingest):
+            shutil.copytree(ingest, os.path.join(new_dir, 'ingest'), dirs_exist_ok=True)
+        _remember_keys(new_id, payload.model_dump(exclude_none=True) or _JOB_KEYS.get(job_id) or {})
+        job = {k: src.get(k) for k in ('ref_img', 'paper_latex_root', 'needs_struct', 'source_path', 'source_name', 'source_digest', 'ingest_id')}
+        job.update(id=new_id, created_at=time.strftime('%Y-%m-%d %H:%M:%S'), status='queued', phase='排队中',
+                   phase_key='queued', queue_ahead=_QUEUE.qsize(), config=config, resumed_from=job_id)
+        _save_job(job)
+        await _QUEUE.put(new_id)
+        return {'ok': True, 'job_id': new_id}
+
+
+@app.get("/api/course/source/{ingest_id}")
+async def api_course_source(ingest_id: str):
+    work = _upload_work(ingest_id)
+    if not work or not os.path.isdir(work):
+        raise HTTPException(404, detail="内容不存在")
+    text = _course_source(work)
+    return {"sections": course.source_sections(text), "chars": len(text)}
+
+
+@app.post("/api/course/plan")
+async def api_course_plan(payload: CoursePlanRequest, request: Request):
+    _local_write(request)
+    work = _upload_work(payload.ingest_id)
+    if not work or not os.path.isdir(work):
+        raise HTTPException(404, detail="ingest_id：内容不存在")
+    try:
+        plan, _ = course.build_plan(_course_source(work), payload.settings, payload.slide_count, payload.script_lang)
+    except ValueError as exc:
+        raise HTTPException(422, detail=str(exc))
+    return course.public_plan(plan)
+
+
+def _review_snapshot(job):
+    result = Path(_result_dir(job))
+    script = result / "subtitle_w_cursor.txt"
+    if not script.is_file():
+        raise HTTPException(409, detail="讲稿尚未生成，暂不能审核")
+    pages = course.split_pages(script.read_text(encoding="utf-8"))
+    slides = sorted((result / "slide_imgs").glob("*.png"), key=lambda p: int(p.stem))
+    if len(pages) != len(slides) or not pages:
+        raise HTTPException(409, detail="讲稿与课件页数不一致，请重新生成")
+    plan = course.read_json((job.get("config") or {}).get("course_plan_path") or "")
+    language = (job.get('config') or {}).get('script_lang', 'zh')
+    audio_plan = plan or {'sections': [{'id': 'all', 'title': '讲解内容', 'minutes': len(pages) * 0.5}],
+                          'script_lang': language, 'speech_rate': 220 if language == 'zh' else 140}
+    report = course.audio_report(audio_plan, result)
+    version = course.digest({"script": script.read_bytes().hex(), "slides": [course.digest(p.read_bytes()) for p in slides],
+                             "plan": plan, "voice": (job.get("config") or {}).get("voice")})
+    return {"version": version, "pages": pages, "plan": course.public_plan(plan) if plan else None,
+            "timing": report, "status": job.get("status"), "editable": _rerun_plan(job)["can_rerun"]}
+
+
+def _check_review(job, payload):
+    snapshot = _review_snapshot(job)
+    if not snapshot["editable"]:
+        raise HTTPException(409, detail="任务或共享产物正在使用中，请等待结束")
+    if payload.version != snapshot["version"]:
+        raise HTTPException(409, detail="讲稿或课件已变化，请重新读取审核内容")
+    if len(payload.pages) != len(snapshot["pages"]):
+        raise HTTPException(422, detail="pages：必须提供与课件数量一致的全部讲稿页")
+    if sum(len(p) for p in payload.pages) > 200000 or any(not p.strip() or len(p) > 20000 or len(course.split_pages(p)) != 1 for p in payload.pages):
+        raise HTTPException(422, detail="pages：每页应为 1～20000 字符，不能含页分隔符，总量最多 200000 字符")
+    text = "\n###\n".join(p.strip() for p in payload.pages)
+    ok, why = validate_script_output(text, len(payload.pages))
+    if not ok:
+        raise HTTPException(422, detail="pages：" + why)
+    if any(not course.spoken_text(p).strip() for p in payload.pages):
+        raise HTTPException(422, detail="pages：每页至少需要一句讲稿 | 光标目标")
+    return text
+
+
+def _save_review(job, text):
+    result = Path(_result_dir(job))
+    script = result / "subtitle_w_cursor.txt"
+    # 保存上一版本，避免编辑后难以回溯；不触碰已生成的音频和视频。
+    if script.read_text(encoding="utf-8") != text:
+        backup = result / "script_versions" / (course.digest(script.read_bytes()) + ".txt")
+        backup.parent.mkdir(exist_ok=True)
+        if not backup.is_file():
+            shutil.copy2(script, backup)
+        temporary = script.with_suffix(".tmp")
+        temporary.write_text(text, encoding="utf-8")
+        temporary.replace(script)
+
+
+@app.get("/api/jobs/{job_id}/review")
+async def api_review(job_id: str):
+    return _review_snapshot(_load_job(job_id))
+
+
+@app.put("/api/jobs/{job_id}/review")
+async def api_save_review(job_id: str, payload: ReviewRequest, request: Request):
+    _local_write(request)
+    async with _JOB_LOCK:
+        job = _load_job(job_id)
+        text = _check_review(job, payload)
+        _save_review(job, text)
+        return _review_snapshot(job)
+
+
+@app.post("/api/jobs/{job_id}/review/run")
+async def api_run_review(job_id: str, payload: ReviewRunRequest, request: Request):
+    _local_write(request)
+    async with _JOB_LOCK:
+        job = _load_job(job_id)
+        text = _check_review(job, payload)
+        if payload.action == "regenerate":
+            if not payload.page_ids or len(set(payload.page_ids)) != len(payload.page_ids) or any(i < 0 or i >= len(payload.pages) for i in payload.page_ids):
+                raise HTTPException(422, detail="page_ids：请选择有效且不重复的零基页索引")
+        elif payload.page_ids:
+            raise HTTPException(422, detail="page_ids：配音合片时不要指定重写页")
+        _save_review(job, text)
+        plan = _rerun_plan(job)
+        response = await api_rerun_job(job_id, {
+            "plan_token": plan["token"], "reuse_script": payload.action == "render",
+            "stages": ["2", "3"] if payload.action == "render" else ["2"],
+            "review_pages": payload.page_ids if payload.action == "regenerate" else None,
+            "api_key": payload.api_key, "api_base": payload.api_base})
+        return response
 
 # ──────────────────────────────────────────────────────────────
 # 讲稿提示词模板：前端可编辑，但后端保留模板与安全边界
@@ -831,7 +1037,7 @@ def read_progress(job):
     """
     job_dir = _job_dir(job["id"])
     status = job.get("status")
-    finished = status in ("done", "failed", "canceled")
+    finished = status in ("done", "failed", "canceled", "awaiting_review")
     config = job.get("config") or {}
     include_talking = _as_bool(config.get("generate_talking"), True)
     active_phase_keys, _active_weights, _active_starts = _phase_layout(include_talking)
@@ -888,6 +1094,9 @@ def read_progress(job):
     if status in ("done", "failed", "canceled"):
         info["phase"] = {"done": "已完成", "failed": "失败",
                          "canceled": "已取消"}[status]
+    if status == 'awaiting_review':
+        info['phase'] = '课件与讲稿待审核'
+        info['phase_key'] = 'script'
     if status == "done":
         # 收尾阶段与终态对齐：否则会出现"任务已完成、阶段却停在 merge"这种
         # 自相矛盾的对象（步骤条按 status 判定所以不显示错，但接口消费者会困惑）。
@@ -1137,6 +1346,11 @@ def _build_argv(job):
         argv += ["--reuse_script", "True"]
     if cfg.get("require_reuse_script"):
         argv += ["--require_reuse_script", "True"]
+    if cfg.get("course_plan_path"):
+        argv += ["--course_plan", cfg["course_plan_path"]]
+    argv += ["--review_before_render", "True" if cfg.get("review_before_render") else "False"]
+    if cfg.get("regenerate_pages") is not None:
+        argv += ["--regenerate_pages", json.dumps(cfg["regenerate_pages"])]
     # 原始论文文件：流水线会从它提取插图放进工程（幻灯片里才有 \includegraphics，
     # 树搜索也才可能有活干）。源文件不可用时流水线会给出可读提示、不影响出片。
     # ⚠️ 刻意**不**把它放进产物指纹 —— 它对应的"图集"由 `figures` 字段表示。
@@ -1209,6 +1423,7 @@ def _artifact_facts(job):
                                or artifact_cache.digest_file(
                                    cfg.get("slide_prompt_path"))),
         "slide_count": int(cfg.get("slide_count", 12)),
+        "course_plan_sha": cfg.get("course_plan_sha"),
         "llm_model": os.environ.get("PAPER2VIDEO_LLM_MODEL", "deepseek-flash"),
         # ⚠️ VLM 实际用的是 pipeline.py 里的 argparse 默认值。仓库根 `.env` 那行
         #    `PAPER2VIDEO_VLM_MODEL` **没有任何代码读它**（全仓库搜过，已核实）——
@@ -1301,6 +1516,8 @@ async def _prepare_latex(job, job_dir, log, env):
 
     argv = [VENV_PY, "-u", os.path.join(SCRIPTS, "paper_struct.py"),
             source, "--out", job_dir]
+    if job.get("config", {}).get("course_plan_path"):
+        argv += ["--text-file", os.path.join(job_dir, "ingest", "paper_text.md")]
     _log_line(log, "[struct] 正在把 {} 转成 LaTeX 工程（一次 API 调用，约 1~2 分钟）".format(
         os.path.basename(source)))
     # 阶段要显式推进两次：提取正文是本地的（秒级），结构化才要 API 调用。
@@ -1456,7 +1673,7 @@ async def _run_job(job):
         # 缓存就永远命中不了，而且没有任何报错（静默失效是最难查的一种）。
         facts = _artifact_facts(job)
         cache_info["deck_key"] = artifact_cache.deck_key(facts)
-        if prepared and not force:
+        if prepared and not force and "1" in (job["config"].get("stages") or []):
             entry, cdir, why = artifact_cache.lookup_deck(
                 facts, key=cache_info["deck_key"])
             if entry and entry.get("slides"):
@@ -1515,7 +1732,7 @@ async def _run_job(job):
                     key=cache_info.get("struct_key"))
                 if got:
                     _log_line(log, "[cache] 已存结构化产物 → {}".format(got))
-            got = artifact_cache.publish_deck(
+            got = None if job.get("resumed_from") else artifact_cache.publish_deck(
                 _artifact_facts(job), _result_dir(job), job_id,
                 key=cache_info.get("deck_key"))
             if got:
@@ -1542,12 +1759,13 @@ async def _run_job(job):
             # 但退出码与耗时仍要记下来 —— 排查时有用，且能证明收尾确实执行过。
             final["phase"] = "已取消"
         else:
-            final["status"] = "done" if code == 0 else "failed"
-            final["phase"] = "已完成" if code == 0 else "失败"
+            awaiting = code == 0 and final["config"].get("review_before_render")
+            final["status"] = "awaiting_review" if awaiting else "done" if code == 0 else "failed"
+            final["phase"] = "课件与讲稿待审核" if awaiting else "已完成" if code == 0 else "失败"
             # 成功才把阶段推到 finish；**失败时保留最后那个阶段** ——
             # 步骤条上就能直接看出"挂在哪一步"，比只写一个"失败"有用得多。
             if code == 0:
-                final["phase_key"] = "finish"
+                final["phase_key"] = "script" if awaiting else "finish"
         _save_job(final)
 
 
@@ -2030,6 +2248,18 @@ async def api_create_job(payload: dict):
     content_profile, script_prompt = _normalize_script_prompt(config)
     slide_prompt, slide_count = _normalize_slide_prompt(config, content_profile)
     config["paper_type"] = "auto"
+    plan = selected_text = None
+    if config.get("course") is not None:
+        try:
+            plan, selected_text = course.build_plan(_course_source(work), config["course"], slide_count, config.get("script_lang", "zh"))
+        except ValueError as exc:
+            raise HTTPException(422, detail=str(exc))
+        if payload.get("course_plan_token") != plan["token"]:
+            raise HTTPException(409, detail="教案或材料已变化，请重新预览并确认")
+    config["review_before_render"] = True
+    config["stages"] = ["1", "2"]
+    config.pop("regenerate_pages", None)
+    config.pop("course_plan_path", None)
 
     job_id = "job_" + time.strftime("%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:4]
     _remember_keys(job_id, payload)          # 凭据跟着任务走，不是全局一份
@@ -2069,6 +2299,13 @@ async def api_create_job(payload: dict):
         config["ref_text"] = ref_text
     shutil.copytree(os.path.join(work, "ingest"), os.path.join(job_dir, "ingest"),
                     dirs_exist_ok=True)
+    if plan:
+        config["course_plan_path"] = os.path.join(job_dir, "course_plan.json")
+        course.write_json(config["course_plan_path"], plan)
+        config["course_plan_sha"] = plan["token"]
+        config["target_minutes"] = plan["target_minutes"]
+        Path(job_dir, "ingest", "paper_text.md").write_text(selected_text, encoding="utf-8")
+    config.pop("course", None)
 
     meta_path = os.path.join(job_dir, "ingest", "paper_text.md")
     needs_llm = os.path.isfile(meta_path)
@@ -2083,7 +2320,7 @@ async def api_create_job(payload: dict):
         "queue_ahead": _QUEUE.qsize(),
         "config": config,
         "ref_img": portrait,
-        "paper_latex_root": payload.get("paper_latex_root") or os.path.join(job_dir, "latex_proj"),
+        "paper_latex_root": (None if plan else payload.get("paper_latex_root")) or os.path.join(job_dir, "latex_proj"),
         "needs_struct": needs_llm,
         # 原始上传文件的路径。needs_struct 时前置步骤要用它做结构化；
         # 放在这里而不是去 jobs/<ingest_id>/input 里找，是因为 ingest 目录
@@ -2129,10 +2366,10 @@ def _rerun_plan(job):
                 "讲稿无法复用：{}；重新生成可能产生 API 费用".format(invalid or "幻灯片不完整")
         except (OSError, UnicodeError):
             reason = "讲稿文件无法读取，重新生成可能产生 API 费用"
-    can_rerun = job.get("status") in ("done", "failed", "canceled") and slides_ready
+    can_rerun = job.get("status") in ("done", "failed", "canceled", "awaiting_review") and slides_ready
     if not slides_ready:
         reason = "幻灯片尚未完整生成，请新建任务重新生成内容"
-    elif job.get("status") not in ("done", "failed", "canceled"):
+    elif job.get("status") not in ("done", "failed", "canceled", "awaiting_review"):
         reason = "原任务尚未结束，暂不能重做"
     result_key = os.path.normcase(os.path.realpath(result))
     for other in _list_jobs():
@@ -2209,7 +2446,12 @@ async def api_rerun_job(job_id: str, payload: dict):
             and bool(payload.get("plan_token")),
         "result_dir": src_result,
         "generate_talking": generate_talking,
+        "review_before_render": not _as_bool(payload.get("reuse_script"), True),
     })
+    config.pop("regenerate_pages", None)
+    if payload.get("review_pages") is not None:
+        config["regenerate_pages"] = payload["review_pages"]
+        config["review_before_render"] = True
 
     new_id = "job_" + time.strftime("%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:4]
     # 续跑的凭据：优先用请求里带的（前端有本地保存），否则沿用原任务那份。
@@ -2322,7 +2564,7 @@ def _sse_frames(job_id, is_disconnected, keepalive):
                 "resumed_from": job.get("resumed_from"),
                 "config": {key: (job.get("config") or {}).get(key) for key in (
                     "generate_talking", "content_profile", "slide_lang", "script_lang",
-                    "slide_count", "voice_note", "talking_note")},
+                    "slide_count", "voice_note", "talking_note", "review_before_render", "target_minutes")},
             }
             body = json.dumps(payload, ensure_ascii=False)
             if body != last:                       # 只在变化时推，减少噪音
@@ -2333,7 +2575,7 @@ def _sse_frames(job_id, is_disconnected, keepalive):
                 # 注释帧：`:` 开头，客户端（EventSource）不会当消息处理，仅用于保活
                 yield ": keep-alive\n\n"
                 last_sent = time.time()
-            if job.get("status") in ("done", "failed", "canceled"):
+            if job.get("status") in ("done", "failed", "canceled", "awaiting_review"):
                 break
             await asyncio.sleep(2)
 
@@ -2492,6 +2734,7 @@ async def api_job_pages(job_id: str):
         "cursor_json": "cursor.json" if os.path.isfile(
             os.path.join(base, "cursor.json")) else None,
         "pages": pages,
+        "chapters": course.read_json(os.path.join(base, "chapters.json"), []),
     }
 
 

@@ -68,7 +68,7 @@ STRUCT_FIELDS = ("v", "source_sha1", "paper_type", "llm_model")
 DECK_FIELDS = ("v", "main_tex_sha1", "slide_lang", "script_lang",
                "slide_prompt_sha1", "script_prompt_sha1", "slide_count", "paper_type",
                "llm_model", "vlm_model", "talking_profile", "if_tree_search",
-               "figures")
+               "figures", "course_plan_sha")
 
 # deck 缓存里复用什么（前两项是 stage 2 读幻灯片的输入，第三项是讲稿）
 DECK_SLIDES_DIR = "slide_imgs"

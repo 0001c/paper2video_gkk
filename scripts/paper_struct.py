@@ -331,12 +331,16 @@ def _continue_tex(tex, info, model, max_tokens, max_rounds=3):
 
 
 def structurize(source, out_dir, model=None, max_tokens=65536,
-                do_compile=True, keep_text=False):
+                do_compile=True, keep_text=False, text_file=None):
     """完整流程：提取 → 结构化 → 落盘 → （可选）编译验证。"""
     os.makedirs(out_dir, exist_ok=True)
 
     print("[1/3] 提取正文 ...")
-    text, meta = paper_ingest.ingest(source, os.path.join(out_dir, "ingest"))
+    if text_file:
+        text = io.open(text_file, encoding="utf-8").read()
+        meta = {"detected_format": "selected course source", "chars": len(text)}
+    else:
+        text, meta = paper_ingest.ingest(source, os.path.join(out_dir, "ingest"))
     if not text:
         raise RuntimeError("提取结果为空 —— 若来源是 LaTeX（.tex/.zip），"
                            "本就无需结构化（meta['needs_llm']=False）")
@@ -348,7 +352,8 @@ def structurize(source, out_dir, model=None, max_tokens=65536,
         chars=len(text),
         quality_hint=_quality_hint(meta),
         text=text)
-    content, info = call_llm(SYSTEM_PROMPT, user_prompt, model=model,
+    system_prompt = SYSTEM_PROMPT + ("\n本次材料是已选择的教学内容。保留教材或课程的原章节、公式、例题和推导，不套用论文研究结构。" if text_file else "")
+    content, info = call_llm(system_prompt, user_prompt, model=model,
                              max_tokens=max_tokens)
     tex = strip_code_fence(content)
     print("      %.1fs | tokens=%s | finish=%s"
@@ -419,11 +424,12 @@ def main(argv=None):
     parser.add_argument("--model", default=None, help="模型名（默认 deepseek-flash）")
     parser.add_argument("--max-tokens", type=int, default=65536)
     parser.add_argument("--no-compile", action="store_true", help="跳过 tectonic 编译")
+    parser.add_argument("--text-file", help="使用已选定的课程正文（UTF-8），不重新提取整个源文件")
     args = parser.parse_args(argv)
 
     tex, report = structurize(args.source, args.out, model=args.model,
                               max_tokens=args.max_tokens,
-                              do_compile=not args.no_compile)
+                              do_compile=not args.no_compile, text_file=args.text_file)
     print()
     print("=== 结果 ===")
     for key in ("tex_path", "tex_chars", "sections", "subsections", "has_ctex",

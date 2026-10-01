@@ -1,0 +1,440 @@
+==================================================================
+[1] 进度解析 —— 输入是两次真实运行的日志，真值取自音频文件个数
+==================================================================
+   ✔ gkk_en: total_pages 取自 PDF  — 读到 15 / 音频真值 15
+   ✔ gkk_en: tts_done 等于实际音频条数  — 读到 15 / 真值 15
+   ✔ gkk_en: talking_done 等于实际音频条数  — 读到 15 / 真值 15
+   ✔ gkk_en: 阶段判定为已完成  — 实际 '已完成'
+   ✔ gkk_en: tail 有内容  — 6 行
+   ✔ gkk_zh: total_pages 取自 PDF  — 读到 11 / 音频真值 11
+   ✔ gkk_zh: tts_done 等于实际音频条数  — 读到 11 / 真值 11
+   ✔ gkk_zh: talking_done 等于实际音频条数  — 读到 11 / 真值 11
+   ✔ gkk_zh: 阶段判定为已完成  — 实际 '已完成'
+   ✔ gkk_zh: tail 有内容  — 6 行
+   ✔ 中途截断的日志：阶段不是「已完成」  — 实际 '合成语音'（tts 11 / talk 0）
+
+==================================================================
+[2] 队列 / SSE / 取消 / 产物 —— 用假流水线命令，不花 API 费用
+==================================================================
+[keys] 使用本任务随请求提供的 API key（smok...4567）
+[voice] 内置默认音色（zh）
+[talking] 已启用数字人
+[cache] 幻灯片/讲稿未命中（缺少main_tex_sha1（无法确定输入是谁，不使用缓存）），本次照常生成
+   ✔ POST /api/jobs 返回 200  — HTTP 200 {"ok":true,"job_id":"job_1002_015708_d026","queue_ahead":1,"queued":true,"voice_
+[cache] 提示：不写入幻灯片/讲稿缓存 —— 缺少main_tex_sha1（无法确定输入是谁，不使用缓存）
+   ✔ SSE Content-Type 正确  — text/event-stream; charset=utf-8
+   ✔ SSE 收到事件  — 2 个
+   ✔ SSE 事件带 status 与 progress  — {"status": "running", "phase": "启动中", "phase_key": "slides", "progress": {"stage": 0, "pha
+   ✔ SSE 里进度会递增  — tts 0 -> 3
+   ✔ 准备任务 A 最终等待审核  — 实际 awaiting_review (exit=0)
+   ✔ 任务 A 解析出进度  — tts 3 / talk 3 / 期望 3
+   ✔ 进度来源是结构化 jsonl（环境变量已透传）  — source='jsonl'
+   ✔ 结构化进度自带 total（不再依赖数 PDF 页数）  — total=3 / 期望 3
+   ✔ 创建任务时带的 API key 被注入子进程环境  — 看到的 ENVKEY 行: ['ENVKEY_LEN=17']
+   ✔ /api/system/gpu 的 running_job 在空闲时为 null
+   ✔ artifacts 列出成片  — [{"name": "3_merage.mp4", "size_mb": 0.01, "size_bytes": 10240, "version": "10240-179087743094599230
+   ✔ 整文件下载 200 且长度一致  — HTTP 200 / 10240 字节
+   ✔ Range 请求返回 206  — HTTP 206 (Starlette 的 FileResponse 自带 Range 支持)
+   ✔ Range 返回 100 字节  — 100 字节
+   ✔ 带 Content-Range 头  — bytes 0-99/10240
+   ✔ 目录穿越被挡（403 或 404）  — HTTP 404
+[keys] ⚠️ 本任务没有随请求提供 API key，将使用进程环境里的 OPENAI_API_KEY（来源可能是仓库根的 .env）
+[voice] 内置默认音色（zh）
+[talking] 已启用数字人
+[cache] 幻灯片/讲稿未命中（缺少main_tex_sha1（无法确定输入是谁，不使用缓存）），本次照常生成
+   ✔ 任务 B 进入 running  — status=running
+   ✔ /api/system/gpu 报告正在运行的任务  — 实际 'job_1002_015711_f397'
+[cache] 提示：不写入幻灯片/讲稿缓存 —— 缺少main_tex_sha1（无法确定输入是谁，不使用缓存）
+   ✔ cancel 返回 ok  — {"ok": true}
+   ✔ 取消后收尾写入已完成（exit_code 已落）  — exit_code=1
+   ✔ 取消后状态保持 canceled（未被收尾逻辑改写成 failed）  — 实际 canceled（exit=1）
+   ✔ 取消后命令行进程已不在
+
+==================================================================
+[3] 结构化进度 progress.jsonl —— 优先级 / 容错 / 阶段文案
+==================================================================
+   ✔ 只有日志时 source=log  — source=log / tts=15
+   ✔ 有 jsonl 时 source=jsonl（优先于日志）  — source=jsonl
+   ✔ 进度确实取自 jsonl 而非日志  — jsonl 给 6 / 日志是 15（读错来源就会是后者）
+   ✔ 阶段文案 tts -> 合成语音  — 实际 '合成语音'
+   ✔ total 取自 jsonl  — total=15
+   ✔ 只有阶段记录时 phase=生成讲稿  — 实际 '生成讲稿'
+   ✔ jsonl 未给 total 时回落到 PDF 页数  — total=15（期望 15，来自 PDF）
+   ✔ jsonl 损坏时回落日志（不报错）  — source=log / tts=15
+   ✔ 六个 phase 的界面文案都对  — 全部匹配
+   ✔ 终态以任务状态为准（完成/失败/已取消）  — 三种状态都对
+
+==================================================================
+[4] 逐页素材索引 / 续跑 —— 重点验命名错位（1-based 幻灯片 vs 0-based 音频）
+==================================================================
+   ✔ GET /pages 返回 200  — HTTP 200
+   ✔ 总页数正确  — total=3 / 期望 3
+   ✔ 识别到讲稿 / 光标 / 幻灯片 PDF 三份附加产物  — script='subtitle_w_cursor.txt' cursor='cursor.json'
+   ✔ 第 1 页：幻灯片取 1.png（1-based）  — 实际 'slide_imgs/1.png'
+   ✔ 第 1 页：音频取 0.wav（0-based，与幻灯片差 1）  — 实际 'audio/0.wav'
+   ✔ 第 1 页：数字人路径含参考图那一层目录  — 实际 'talking_musetalk/0/portrait/merge_video.mp4'
+   ✔ 第 1 页：讲稿解析出 2 句且已去掉光标短语  — 实际 ['p1 line1', 'p1 line2']
+   ✔ 第 3 页：幻灯片/音频/讲稿都没错位  — slide='slide_imgs/3.png' audio='audio/2.wav' script=['p3 line1']
+   ✔ 不存在的任务返回 404  — HTTP 404
+[keys] ⚠️ 本任务没有随请求提供 API key，将使用进程环境里的 OPENAI_API_KEY（来源可能是仓库根的 .env）
+[voice] 内置默认音色
+[talking] 已启用数字人
+   ✔ POST /rerun 返回 200  — HTTP 200 {"ok":true,"job_id":"job_1002_015711_30ad","resumed_from":"smoke_pages_cbf157","
+   ✔ 续跑默认只跑 stage 2/3  — stages=['2', '3']
+   ✔ 续跑默认复用讲稿（省钱关键）  — reuse_script=True
+   ✔ 记录了 resumed_from  — resumed_from='smoke_pages_cbf157'
+   ✔ 新任务复用原 result 目录（不复制产物）  — result_dir='E:\\Development\\26年\\paper2video\\.web-smoke-f_j8qgmj\\jobs\\smoke_pages_cbf157\\result'
+   ✔ 续跑不再触发结构化（避免重复付费）  — needs_struct=False
+   ✔ argv 里的 --result_dir 指向原产物  — --result_dir='E:\\Development\\26年\\paper2video\\.web-smoke-f_j8qgmj\\jobs\\smoke_pages_cbf157\\result'
+   ✔ argv 带上 --reuse_script True  — argv 尾部=['--review_before_render', 'False']
+   ✔ argv 里 --if_tree_search 默认 False（上游 argparse 的默认值是 True，不显式传就等于每篇都开）  — 值=False
+   ✔ 开启后命令行里是 True（界面勾了就真的会按开启跑）  — 值=True
+   ✔ 对不存在的任务续跑返回 404  — HTTP 404
+
+==================================================================
+[5] PDF/Word → LaTeX 工程的前置步骤（不调 API）
+==================================================================
+[struct] 需要结构化，但源文件不可用：None
+[struct] （续跑旧任务时若素材已被清理，请重新上传内容文件）
+   ✔ 缺源文件时返回 False（不再继续跑流水线）  — 返回 False
+   ✔ 日志说明原因  — 日志片段=['[struct] 需要结构化，但源文件不可用：None']
+   ✔ 日志给出补救办法（提示重新上传）  — 日志片段=['[struct] （续跑旧任务时若素材已被清理，请重新上传内容文件）']
+[struct] main.tex 已存在，跳过结构化 -> E:\Development\26年\paper2video\.web-smoke-f_j8qgmj\jobs\smoke_struct_e529d4\latex_proj\main.tex
+   ✔ 已有 main.tex 时返回 True 并跳过  — 返回 True
+   ✔ 日志说明是复用而非重新生成  — 日志='[struct] main.tex 已存在，跳过结构化 -> E:\\Development\\26年\\paper2video\\.web-smo'
+
+==================================================================
+[6] 人像上传 —— 专用接口 / 尺寸校验 / 失败不留空目录
+==================================================================
+   ✔ 正常图片上传返回 200  — HTTP 200 {"ok":true,"portrait_id":"content_1b5b5928d229","portrait_path":"E:\\Development\\26年\\pap
+   ✔ 回传了落盘路径与尺寸  — path=1b5b5928d229.png 512x640
+   ✔ 正常尺寸没有告警  — []
+   ✔ 返回里写明未做人脸检测（不给虚假安全感）  — 未做人脸检测（本机 OpenCV 已移除级联分类器）。请自行确认：正脸、单人、无遮挡；侧脸或多人会让
+   ✔ 过小图片给出告警  — ['短边仅 128 像素：数字人只重绘 256×256 的人脸区域，这个尺寸会明显模糊']
+   ✔ 非图片返回 400  — HTTP 400
+   ✔ 拒绝时说清了支持的格式  — 支持 PNG / JPEG / WEBP / BMP
+   ✔ 失败那次不往内容库里落东西  — 新增 2 份内容（期望 2 份不同的图）：['1b5b5928d229', '231fcd2c17a3']
+
+==================================================================
+[7] 日志编码统一 + 模型上下文窗口登记
+==================================================================
+   ✔ 混合编码日志能读全（utf-8 行与 gbk 行都在、无替换字符）  — 替换字符 0 个 / 长度 113
+   ✔ 对照组：整文件严格 utf-8 解码会失败（证明这是一个真问题）  — 第 80 字节处解码失败
+   ✔ 从 GBK 行里数出页数（修复前正则命中 0）  — tts=2 talking=1
+   ✔ 日志尾巴可读、不是乱码  — 正在把论文转成 LaTeX 工程 / [speech_gen] 第 0 页合成完成 / [speech_gen] 第 1 页合成完成 / [talking_gen] 第 0 页完成
+   ✔ _run_job 里显式设置了 PYTHONIOENCODING=utf-8  — 源码中出现 2 次
+   ✔ 我们的模型名已登记上下文窗口（不再退化成 1e9）  — deepseek-flash -> 1000000
+   ✔ 已登记的模型不受影响（gpt-4o 仍是 128000）  — gpt-4o -> 128000
+
+==================================================================
+[8] 续跑共享产物 —— 新任务应能直接看到原任务的产物
+==================================================================
+   ✔ 基线：原任务能看到 3_merage.mp4  — 原任务产物 ['3_merage.mp4', 'slides_rendered.pdf']
+[keys] ⚠️ 本任务没有随请求提供 API key，将使用进程环境里的 OPENAI_API_KEY（来源可能是仓库根的 .env）
+[voice] 内置默认音色
+[talking] 已启用数字人
+   ✔ rerun 返回新任务 id  — HTTP 200 / job_1002_015711_50a7
+   ✔ 新任务的 result_dir 指向原任务的产物目录  — result_dir=E:\Development\26年\paper2video\.web-smoke-f_j8qgmj\jobs\smoke_re_orig_103461\result
+   ✔ **续跑任务能看到产物**（修复前这里是空的）  — 新任务产物 ['3_merage.mp4', 'slides_rendered.pdf']
+   ✔ 续跑任务的逐页索引可用  — total=3 / 期望 3
+   ✔ 续跑任务的文件服务可取到产物  — HTTP 200 / 4096 字节
+   ✔ 续跑任务的总页数兜底走产物目录  — total_pages=3 / 期望 3
+   ✔ 续跑的续跑也能入队  — HTTP 200 / job_1002_015711_8980
+   ✔ **二层续跑仍指向同一产物目录**  — 产物 ['3_merage.mp4', 'slides_rendered.pdf']
+
+==================================================================
+[9] 阶段模型与总进度 —— 单一来源 / 单调性 / 凭据按任务隔离
+==================================================================
+   ✔ /api/options 下发阶段表  — 9 个阶段：extract → struct → slides → script → tts → cursor → talking → merge → finish
+   ✔ 阶段权重合计为 1.0（“满格”的定义）  — 合计 1.0000
+   ✔ 每个阶段都有 key/label/weight/has_pages  — 字段齐全
+   ✔ 讲稿/语音/光标/数字人阶段报告实际计数  — 标记为有计数的：['script', 'tts', 'cursor', 'talking']
+   ✔ 每个阶段都带计数单位（语音/数字人=页，光标=条）  — 单位：{'script': '页', 'tts': '页', 'cursor': '条', 'talking': '页'}
+   ✔ 总进度单调不减（不存在任何回跳）  — 全序列 [2, 12, 21, 28, 30, 32, 34, 36, 38, 40, 43, 45, 47, 49, 51, 53, 55, 55, 60, 62, 65, 67, 69, 71, 74, 76, 78, 81, 83, 85, 87, 90, 92, 92]
+   ✔ 幻灯片/讲稿阶段不再是 0%（旧口径因为没有页数只能显示 0）  — slides=12%（起点刻度 12%）
+   ✔ 光标定位阶段**不假装在走**（与语音结束同一刻度）  — cursor=55% / tts 结束=55%
+   ✔ 进入数字人阶段落在它的起点刻度（60%）  — talking(0)=60%
+   ✔ 数字人阶段按页推进到该阶段终点（92%）  — talking(14)=92%
+   ✔ 反面对照：旧口径在同样数据上确实回跳（证明这条测试有牙齿）  — 旧口径回跳 1 处，例如 [('talking(0)', 100, 'talking(1)', 7)]
+   ✔ 光标阶段有计数进度（界面能显示「第 k / N 条」）  — 第 7 / 18 条
+   ✔ 光标的条数**不会**被当成页数（18 条 ≠ 18 页）  — total_pages=13（期望 13，来自 tts）
+   ✔ 光标阶段静默 400 秒不判卡住（阈值 600 秒）  — stalled=False / 阈值 600 秒
+   ✔ 光标阶段静默 700 秒判卡住  — 已静默 700 秒 > 阈值 600 秒
+   ✔ 任务完成 -> 总进度 100%  — overall_pct=100
+   ✔ 任务失败 -> 保留已走位置且封顶 99%（不与“完成”混淆）  — failed 时 overall_pct=55
+   ✔ 认不得的阶段名不会把阶段清空（保留任务里记着的那一步）  — phase_key=talking / phase=生成数字人
+   ✔ 认不得的阶段名会被记下来（便于发现流水线加了阶段、前端没跟上）  — unknown_phase='brand_new_phase'
+   ✔ 数字人阶段静默 300 秒不判卡住（该阶段阈值 420 秒）  — stalled=False / 阈值 420 秒 / 已静默 300 秒
+   ✔ 幻灯片阶段静默 400 秒判卡住（阈值 300 秒）  — stalled=True / 阈值 300 秒
+   ✔ 已完成的任务永远不判卡住  — done 任务 stalled=False
+   ✔ 凭据按任务存：后建的任务不会覆盖先建的  — A=key-...1234 / B=key-...5678
+   ✔ 只补自己缺的那一项，不动已有项  — A 的 base 仍是 a.invalid
+   ✔ 进程里不存在全局凭据容器（防止改回“最后输入的人覆盖所有人”）  — 已移除
+   ✔ 凭据来源会写进任务日志（回落路径必须可见）  — 日志文案在源码中，回落时使用者能看到
+   ✔ 第一帧是数据帧，且带 status/phase/progress  — 898 字节，开头 'data: {"status": "running", "phase": "生成数字人", "phase_key": "'
+   ✔ 空闲时发心跳注释帧（长任务不被中间层按空闲超时掐断）  — 第二帧 ': keep-alive\n\n'（期望以 ': ' 开头的注释帧）
+   ✔ 心跳帧不含 data:（客户端不会把它当消息处理）  — 第二帧内容 ': keep-alive\n\n'
+   ✔ is_disconnected 支持 async（HTTP 传入的真实形态）与同步两种入参  — async 未断时产出帧=True / async 已断时停止=True / 同步已断时停止=True
+   ✔ 产物/逐页在运行期间轮询（单一触发点 + 断流 = 永久冻结）  — 轮询与运行态判据都在 App.tsx 里
+   ✔ SSE 断流后自动重连（原先 onerror 里直接 close）  — 重连与连接状态都在 App.tsx 里
+   ✔ 产物区在运行中也渲染（原先整块被 artifacts.length > 0 挡住）  — 占位文案在 App.tsx 里
+   ✔ 本地存储收在唯一入口 storage.ts 并被引用  — storage.ts 存在：True
+   ✔ storage 的 localStorage 读写都包在 try 里（隐私模式下不该崩界面）  — try/catch 各 3 处；getItem / setItem 都在封装函数内
+   ✔ 批量路径确实起了进度监控线程（否则那 5~10 分钟界面零更新）  — 监控线程与收尾都在 talking_gen.py 里
+   ✔ 监控只数“本次运行新出现”的产物（旧文件不算）  — 上报 done=[1, 2]（期望到 2；把旧文件算进去会是 3）
+   ✔ 上报页数单调不减  — done=[1, 2]
+   ✔ 上报的阶段名恒为 talking  — 阶段名：['talking']
+   ✔ 清理只删本次测试产生的孤儿目录（运行前就存在的一律不碰）  — 1 小时前建的那个还在=True / 刚建的那个已删=True / 本次清理=['job_guard_04c01a']
+
+==================================================================
+[10] 音色 —— 解析 / 失败回落 / 缓存命中 / argv 透传
+==================================================================
+   ✔ /api/options 下发 voice 配置  — by_lang=['en', 'zh'] / limits={'min_s': 3.0, 'max_s': 30.0}
+   ✔ 预置音色按讲稿语言分组（中文 4 个 / 英文 4 个）  — 中文 4 个 / 英文 4 个
+   ✔ 每个候选都自带可直接提交的 spec（前端不再自己拼）  — 示例：{'kind': 'preset', 'voice': '冰糖'}
+   ✔ 参考文本随配置下发（使用者能看到这个音色会念什么）  — zh 66 字 / en 233 字符
+   ✔ default -> 交给语言档位内置音色（不联网）  — 内置默认音色（zh）
+   ✔ upload -> 用上传的音频与文本  — 上传的参考音频 ref.wav
+   ✔ upload 的文件已不在 -> 回落且不抛异常  — 上传的参考音频已不可用 -> 回落内置默认音色
+   ✔ 没配 key 且没有缓存 -> 可预期地回落（不是崩）  — 音色生成失败（no_key：未配置 MIMO_API_KEY —— 无法生成音色（可使用内置音色或上传自己的音频））-> 回落内置默认音色
+   （跳过：本机还没有缓存的冰糖音色）
+   ✔ 缺 key 时设计音色同样回落（no_key 不影响出片）  — 音色生成失败（no_key：未配置 MIMO_API_KEY —— 无法生成音色（可使用内置音色或上传自己的音频））-> 回落内置默认音色
+   ✔ design 但没给描述 -> 回落（bad_request 不抛到外面）  — 音色生成失败（bad_request：设计音色必须给出音色描述）-> 回落内置默认音色
+   ✔ 同一个音色只调用接口一次（第二次走缓存）  — 接口调用 1 次；第二次 cached=True
+   ✔ 缓存里落了三件东西：wav + 参考文本 + 元数据  — 缓存目录：86a1166ca416fa92.json, 86a1166ca416fa92.txt, 86a1166ca416fa92.wav
+   ✔ 参考文本由我们给定（与音频一一对应，不依赖 ASR）  — 前 24 字：大家好，欢迎观看本次论文讲解。接下来我会用几分钟…
+   ✔ 生成的提示词把参考文本放在 assistant（不是 user）  — user='用清晰平稳的学术讲解语气，语速适中，像在讲台上介'
+   ✔ 预置音色模式下指明了音色名  — {'format': 'wav', 'voice': '冰糖'}
+   ✔ 设计类音色按讲稿语言过滤（中文档不出现英文音色）  — zh 自定义 2 个 / en 自定义 1 个
+   ✔ 上传的音色不按语言过滤（是使用者自己放的）  — en 自定义：['upload']
+   ✔ 上传类候选的 spec 带 path（选它不需要重新生成）  — {'kind': 'upload', 'path': 'E:\\Development\\26年\\paper2video\\.web-sm
+   ✔ argv 带上 --ref_audio / --ref_text  — --ref_audio X:/v/a.wav --ref_text 这是参考文本
+   ✔ 只有 ref_audio、没有 ref_text 时**不传** --ref_text（交给 ASR 转写）  — --ref_audio X:/v/a.wav
+   ✔ 不指定音色时完全不传这两个参数（行为与改动前一致）  — 已确认
+   ✔ pipeline：自定义 ref_audio 无 ref_text 时保持 None（不拿档位文本去配）  — 改了这行就会退回「张冠李戴」的旧行为，故必须钉住
+   ✔ 过短的参考音频被明确拒绝（克隆会不稳定）  — HTTP 400 · 音频只有 1.0 秒，太短（至少 3 秒）
+   ✔ 非音频文件在上传时就被挡住（按文件头判断）  — HTTP 400 · 这不是一段能识别的音频（按文件头判断，不看扩展名）
+   ✔ 正常音频上传成功并给出可试听的 sample_url  — HTTP 200 · 6.0 秒 · /api/voices/upload_c7f6d793b38377ce/sample
+   ✔ 试听接口能取回这段音频  — HTTP 200 · 前 4 字节 b'RIFF'
+   ✔ 音色 id 里带路径分隔符会被拒（不做路径穿越）  — 已拒绝非法 id
+[keys] 使用本任务随请求提供的 API key（smok...4567）
+[voice] 上传的参考音频 upload_a53ee871b5421477.wav
+[talking] 已启用数字人
+[cache] 幻灯片/讲稿未命中（缺少main_tex_sha1（无法确定输入是谁，不使用缓存）），本次照常生成
+   ✔ 建任务时把音色结论回给界面（选错了才不至于听出来才发现）  — HTTP 200 · voice_note='上传的参考音频 upload_a53ee871b5421477.wav'
+   ✔ 音色真的落进了任务的 config（ref_audio / ref_text 都带上了）  — ref_audio=upload_a53ee871b5421477.wav / ref_text='这是我录的一段话'
+   ✔ 真实命令行里带上了 --ref_audio（任务的音色最终要靠它）  — --ref_audio E:\Development\26年\paper2video\.web-smoke-f_j8qgmj\voices\
+[cache] 提示：不写入幻灯片/讲稿缓存 —— 缺少main_tex_sha1（无法确定输入是谁，不使用缓存）
+   ✔ 前端有四种音色来源（默认/预置/描述/上传）  — 四个 Radio 都在
+   ✔ 提交时把音色选择一起带上（后端才知道用哪个音色）  — config.voice 已在 submit 里
+   ✔ 音色没选全时拦在提交前（否则会静默回落成内置音色）  — 三条前置校验都在
+   ✔ 实际使用的音色会写进任务日志（选了冰糖却听到男声时能自证）  — run.log 里有 [voice] 行
+
+==================================================================
+[11] 内容寻址（同一份文件只存一份）+ 输入指纹（音频变了必须重做）
+==================================================================
+   ✔ paper_ingest 暴露了提取器版本号（缓存键的另一半）  — EXTRACTOR_VERSION='1'
+[ingest] 内容命中（content_22a3b89d99f1），复用已提取的正文：22a3b89d99f1.pdf
+   ✔ 两次上传都成功  — HTTP 200 / 200
+   ✔ 同一份内容 → 同一个 ingest_id  — content_22a3b89d99f1 / content_22a3b89d99f1
+   ✔ 第一次真提取、第二次命中缓存（提取器只被调用一次）  — 提取 1 次 / cached=False→True
+   ✔ 命中时正文与首次一致（不是空文件）  — preview_head='正文第 1 次提取'
+   ✔ 换了文件名仍是同一份内容（库里只多一份）  — 新增 1 份：['22a3b89d99f1']
+   ✔ 落库名是指纹而不是原文件名（内容寻址的要求）  — 落库名=22a3b89d99f1.pdf
+   ✔ 原名记在 meta 里（可追溯，界面要显示人话）  — original_names=['论文A.pdf', '换了个名字.pdf']
+   ✔ 提取器版本变了 → 不命中缓存、重新提取  — cached=False / 提取 2 次
+   ✔ 同一张人像两次上传 → 同一个 portrait_path  — 1b5b5928d229.png
+   ✔ 第二次标记为命中缓存  — cached=True
+   ✔ 命中时仍回传真实尺寸（校验没被跳过）  — 512x640
+   ✔ 人像落库名也是指纹（数字人产物路径含这个主文件名）  — 1b5b5928d229.png
+[keys] 使用本任务随请求提供的 API key（sk-s...fake）
+[voice] 内置默认音色（zh）
+[talking] 已启用数字人
+[cache] 结构化未命中（没有这条指纹的缓存），本次会调用 LLM
+[struct] 需要结构化，但源文件不可用：None
+[struct] （续跑旧任务时若素材已被清理，请重新上传内容文件）
+[cache] 提示：不写入幻灯片/讲稿缓存 —— 缺少main_tex_sha1（无法确定输入是谁，不使用缓存）
+   ✔ 用内容寻址的 id 能建任务  — job_id=job_1002_015714_b0ca
+   ✔ 任务记录里留下内容指纹（溯源 + 将来的缓存键上半截）  — source_digest=22a3b89d99f1aa3e
+[keys] 使用本任务随请求提供的 API key（sk-s...fake）
+[voice] 内置默认音色（en）
+[talking] 已启用数字人
+[cache] 结构化未命中（没有这条指纹的缓存），本次会调用 LLM
+[struct] 需要结构化，但源文件不可用：None
+[struct] （续跑旧任务时若素材已被清理，请重新上传内容文件）
+[cache] 提示：不写入幻灯片/讲稿缓存 —— 缺少main_tex_sha1（无法确定输入是谁，不使用缓存）
+   ✔ 老格式 ingest_id 仍被接受（向后兼容）  — HTTP 200 {"ok":true,"job_id":"job_1002_015714_7f94","queue_ahead":1,"queued":tr
+   ✔ _upload_work('content_0123456789ab') —— 内容寻址格式  — 解析为 0123456789ab
+   ✔ _upload_work('ingest_ab12cd34') —— 老随机 id 格式  — 解析为 ingest_ab12cd34
+   ✔ _upload_work('smoke_manual_dir') —— 手工/工具建的目录名  — 解析为 smoke_manual_dir
+   ✔ _upload_work('../../etc/passwd') —— 路径穿越  — 解析为 <None>
+   ✔ _upload_work('content_../../x') —— 前缀对但尾巴穿越  — 解析为 <None>
+   ✔ _upload_work('content_not_hex_here') —— content_ 后面不是十六进制  — 解析为 <None>
+   ✔ _upload_work('..') —— 父目录  — 解析为 <None>
+   ✔ _upload_work('') —— 空串  — 解析为 <None>
+   ✔ _upload_work(None) —— None  — 解析为 <None>
+   ✔ 产物在、但没有输入指纹（修复前的旧产物）→ 不跳过  — 没有输入指纹（本次修复前生成的产物）
+   ✔ 写下指纹后、同一份输入 → 可以跳过（省下重做）  — 输入未变
+   ✔ 对照组：旧判据在此场景下会跳过（证明不是假想问题）  — 文件存在=True
+   ✔ 音频变了 → 新判据拒绝复用（旧配音不会静默进成片）  — audio 变了
+   ✔ 参考图变了 → 同样拒绝复用  — ref_img 变了
+   ✔ 指纹里同时有参考图与音频两组 sha1（少一个就挡不住错配）  — ['audio', 'ref_img', 'version']
+   ✔ 两处跳过点都过指纹（单页路径 + 批量路径）  — 出现 3 次（1 处定义 + 2 处调用）
+   ✔ 产物落盘后都写下指纹（1 处定义 + 2 处调用）  — 出现 3 次
+   ✔ 批量路径记的是**原始**输入路径（暂存路径按页号复用，跨任务会互相覆盖）  — inputs_of 已记录
+   ✔ 上传端点不再用随机 id 建目录（去重的前提）  — 仍出现 0 次
+   ✔ 建任务走唯一入口解析上传 id  — 已收敛到一个函数
+
+==================================================================
+[12] 产物缓存 —— 指纹字段覆盖 / 命中闭环 / 只增不删
+==================================================================
+   ✔ _artifact_facts 上报的字段与两份字段表完全一致（防两边各写一份而漂移）  — 17 个上报 / 17 个在表里；差异 无
+   ✔ 字段表里每个字段都有人上报（恒为 None 的字段等于摆设）  — 无
+   ✔ 上报的每个字段都在表里（漏进表 = 输入不同却命中）  — 无
+   ✔ 同一份输入算两次得到同一个键（否则永远命中不了）  — struct=14048855c11a deck=4b41f28c0662
+   ✔ 字段顺序不影响键（用 sort_keys 序列化）  — 顺序无关
+   ✔ 缺字段等价于该字段为 None（缺字段是可见差异，不是静默相等）  — 等价
+   ✔ struct 指纹对 source_sha1 敏感  — 改 source_sha1 后键变了
+   ✔ struct 指纹对 paper_type 敏感  — 改 paper_type 后键变了
+   ✔ struct 指纹对 llm_model 敏感  — 改 llm_model 后键变了
+   ✔ struct 指纹对 main_tex_sha1 **不**敏感（它不影响 main.tex，敏感就是白花钱）  — 改 main_tex_sha1 后键没变
+   ✔ struct 指纹对 slide_lang **不**敏感（它不影响 main.tex，敏感就是白花钱）  — 改 slide_lang 后键没变
+   ✔ struct 指纹对 script_lang **不**敏感（它不影响 main.tex，敏感就是白花钱）  — 改 script_lang 后键没变
+   ✔ struct 指纹对 vlm_model **不**敏感（它不影响 main.tex，敏感就是白花钱）  — 改 vlm_model 后键没变
+   ✔ struct 指纹对 talking_profile **不**敏感（它不影响 main.tex，敏感就是白花钱）  — 改 talking_profile 后键没变
+   ✔ struct 指纹对 if_tree_search **不**敏感（它改的是幻灯片，不是 main.tex）  — 改 if_tree_search 后键没变
+   ✔ deck 指纹对 main_tex_sha1 敏感  — 改 main_tex_sha1 后键变了
+   ✔ deck 指纹对 slide_lang 敏感  — 改 slide_lang 后键变了
+   ✔ deck 指纹对 script_lang 敏感  — 改 script_lang 后键变了
+   ✔ deck 指纹对 paper_type 敏感  — 改 paper_type 后键变了
+   ✔ deck 指纹对 llm_model 敏感  — 改 llm_model 后键变了
+   ✔ deck 指纹对 vlm_model 敏感  — 改 vlm_model 后键变了
+   ✔ deck 指纹对 talking_profile 敏感  — 改 talking_profile 后键变了
+   ✔ deck 指纹对 if_tree_search 敏感（开/关产出的幻灯片不能互相命中）  — True 与 False 得到不同的键
+   ✔ deck 指纹对 portrait_sha1 **不**敏感（换头像/换声音不该废掉幻灯片与讲稿）  — 改 portrait_sha1 后键没变
+   ✔ deck 指纹对 ref_audio_sha1 **不**敏感（换头像/换声音不该废掉幻灯片与讲稿）  — 改 ref_audio_sha1 后键没变
+   ✔ deck 指纹对 voice_note **不**敏感（换头像/换声音不该废掉幻灯片与讲稿）  — 改 voice_note 后键没变
+   ✔ deck 指纹对 job_id **不**敏感（换头像/换声音不该废掉幻灯片与讲稿）  — 改 job_id 后键没变
+   ✔ 开关值归一化：True / "True" / "true" / 1 得到同一个键  — 得到 1 个不同的键
+   ✔ 归一化不会把「关」当成「开」（False / None / 未填 同键，且与 True 不同键）  — 关的三种写法同键，与开不同键
+   ✔ 两类指纹不会互相撞（同一份 facts）  — 不同
+   ✔ CACHE_VERSION 参与指纹（改了提示词/流程忘了 +1 也不会命中旧产物）  — 版本变化让键变了
+   ✔ 没有缓存时 lookup_struct 明确返回未命中  — 没有这条指纹的缓存
+   ✔ publish_struct 后能查到 main.tex  — 目录=82aa26233219
+   ✔ manifest 记下了「这条缓存是拿什么算的」  — key=82aa26233219
+   ✔ 只存了幻灯片时：slides=是 / script=否（讲稿仍要生成）  — 幻灯片=有 / 讲稿=无（时间未知）
+   ✔ 补上讲稿后：两个都为是（stage 2 的 VLM 调用可以跳过）  — 幻灯片=有 / 讲稿=有（时间未知）
+   ✔ 取不到输入指纹时：不命中（否则不同输入会塌成同一个键）  — 缺少main_tex_sha1（无法确定输入是谁，不使用缓存）
+   ✔ struct 同理：正文指纹缺失时不命中  — 缺少source_sha1（无法确定输入是谁，不使用缓存）
+   ✔ reuse_into 把幻灯片与讲稿复制进本次产物目录  — 复制 3 个文件：['slide_imgs/1.png', 'slides_rendered.pdf', 'subtitle_w_cursor.txt']
+   ✔ plan_gc 列出无人引用的条目（只读，不删）  — 无人引用里有 63933b8dc25c
+   ✔ 任务记录里写过这个键 → 会被计为被引用（判据是「谁还在用」）  — 见下面端到端部分的断言
+[cache] 提示：不写入幻灯片/讲稿缓存 —— 缺少main_tex_sha1（无法确定输入是谁，不使用缓存）
+   ✔ 取不到输入指纹时：也不写入（写了会污染那个键）  — 未写入
+   ✔ 缓存模块里没有任何删除实现（只增不删）  — 没找到删除调用
+[keys] 使用本任务随请求提供的 API key（sk-s...fake）
+[voice] 内置默认音色（zh）
+[talking] 已启用数字人
+[cache] 幻灯片/讲稿未命中（没有这条指纹的缓存），本次照常生成
+[cache] 已存幻灯片/讲稿 → E:\Development\26年\paper2video\.web-smoke-f_j8qgmj\cache\deck\dcd84b1b1851
+   ✔ 第一次跑：课件讲稿待审核  — status=awaiting_review exit=0
+   ✔ 第一次跑：幻灯片/讲稿被回写进缓存  — published=E:\Development\26年\paper2video\.web-smoke-f_j8qgmj\cache\deck\dcd84b1b1851
+   ✔ 第一次跑：日志里明确说未命中（回落/命中都要可见）  — ['[cache] 幻灯片/讲稿未命中（没有这条指纹的缓存），本次照常生成']
+[keys] 使用本任务随请求提供的 API key（sk-s...fake）
+[voice] 内置默认音色（zh）
+[talking] 已启用数字人
+[cache] 讲稿命中：stage 2 的 VLM 调用已跳过（本次无讲稿 API 费用）
+[cache] 幻灯片=有 / 讲稿=有（2026-10-02 01:57:14）；复用 5 个文件。实际命令 E:\Development\26年\paper2video\.venv\Scripts\python.exe -u -c import io, os
+r = 'E:\\Development\\26年\\paper2video\\.web-smoke-f_j8qgmj\\jobs\\job_1002_015715_66ad\\result'
+d = os.path.join(r, 'slide_imgs')
+os.makedirs(d, exist_ok=True)
+for i in (1, 2, 3):
+    io.open(os.path.join(d, '%d.png' % i), 'wb').write(b'PNG' + bytes([i]))
+io.open(os.path.join(r, 'slides_rendered.pdf'), 'wb').write(b'%PDF-1.4 fake')
+io.open(os.path.join(r, 'subtitle_w_cursor.txt'), 'w', encoding='utf-8').write('第一页讲稿\n第二页讲稿\n第三页讲稿\n')
+print('[fake] 幻灯片 3 页 / 讲稿 3 行')
+print('第 1 页合成完成')
+print('第 3 页完成')
+
+[cache] 已存幻灯片/讲稿 → E:\Development\26年\paper2video\.web-smoke-f_j8qgmj\cache\deck\dcd84b1b1851
+   ✔ 第二次跑（同样输入）：deck 命中  — cache={"struct_hit": false, "deck_hit": true, "deck_script_hit": true, "struct_key": "0a3d739bbd26", "deck_key": "dcd84b1b1851
+   ✔ 命中时讲稿也命中 ⇒ stage 2 的 VLM 调用被跳过  — script_hit
+   ✔ 命中的任务不再跑 stage 1（幻灯片已就位）  — config.stages=['2']
+   ✔ 命中的任务带 reuse_script（pipeline 才会跳过 VLM）  — config.reuse_script=True
+   ✔ 缓存命中仍暂停审核：真实命令行仅 stage 2、且带 --reuse_script True  — pipeline.py --stage ["2"] --result_dir E:\Development\26年\paper2video\.web-smoke-f_j8qgmj\jobs\job_1002_015715_66ad\result --paper_latex_root E:\Development\26年\paper2video\.web-smoke-f_j8qgmj\jobs\_content\e41c588e5e6b\ingest
+   ✔ 缓存的幻灯片被复制进本次产物目录（下游才读得到）  — 产物目录已有 slide_imgs/1.png 与讲稿
+   ✔ 第二次跑：日志写明命中与省下了什么  — ['[cache] 讲稿命中：stage 2 的 VLM 调用已跳过（本次无讲稿 API 费用）', '[cache] 幻灯片=有 / 讲稿=有（2026-10-02 01:57:14）；复用 5 个文件。实际命令 E:\\Development\\26年\\paper2video\\.venv\\Scripts\\python.exe -u -c import io, os']
+   ✔ 任务记录里留下的 deck_key 与缓存的键一致（写入键=查询键）  — dcd84b1b1851 vs dcd84b1b1851
+   ✔ 被任务引用过的缓存键会被 plan_gc 计为「有人用」  — referenced 里有 dcd84b1b1851
+[keys] 使用本任务随请求提供的 API key（sk-s...fake）
+[voice] 内置默认音色（en）
+[talking] 已启用数字人
+[cache] 幻灯片/讲稿未命中（没有这条指纹的缓存），本次照常生成
+[cache] 已存幻灯片/讲稿 → E:\Development\26年\paper2video\.web-smoke-f_j8qgmj\cache\deck\700cf08cf4fa
+   ✔ 对照组：改了讲稿语言就不再命中（否则会拿中文讲稿配英文要求）  — deck_hit=False
+   ✔ 对照组：仍然完整跑 stage 1（该花钱的地方没有偷懒）  — config.stages=['1', '2']
+[keys] 使用本任务随请求提供的 API key（sk-s...fake）
+[toggle] 已开启「幻灯片布局微调（树搜索）」—— 每张内容溢出的幻灯片会多 4 次编译 / 4 次渲染 / 1 次带图 VLM 调用，本次耗时与费用都会高于默认值
+[voice] 内置默认音色（zh）
+[talking] 已启用数字人
+[cache] 幻灯片/讲稿未命中（没有这条指纹的缓存），本次照常生成
+[cache] 已存幻灯片/讲稿 → E:\Development\26年\paper2video\.web-smoke-f_j8qgmj\cache\deck\a1028bb320f6
+   ✔ 开了树搜索就不再命中（它改变幻灯片内容，不许复用关着时产出的）  — deck_hit=False
+   ✔ 开了树搜索：设置留在任务记录里（事后能解释为什么更慢、更贵）  — config.if_tree_search=True
+   ✔ 开了树搜索：真实命令行里是 --if_tree_search True  — 值=True
+   ✔ 开了树搜索：日志写明本次会多花钱（它唯一会额外付费的开关）  — ['[toggle] 已开启「幻灯片布局微调（树搜索）」—— 每张内容溢出的幻灯片会多 4 次编译 / 4 次渲染 / 1 次带图 VLM 调用，本次耗时与费用都会高于默认值']
+   ✔ 结构化命中检查在 _prepare_latex **之前**（放后面就等于钱花了才想省）  — 顺序：lookup_struct(4229) < _prepare_latex(4980)
+   ✔ deck 命中检查在前置结构化**之后**（那时才有 main.tex 可算指纹）  — 顺序：_prepare_latex < lookup_deck
+   ✔ 缓存回写用的是查询时那个键（写入键≠查询键会让缓存永远不命中）  — publish 调用带 key=
+   ✔ 有新接口可以只读地看缓存现状  — GET /api/cache
+   ✔ 静态守卫：if_tree_search 在 DECK_FIELDS 里（漏了 = 开关关着产出的幻灯片会被开着的任务命中）  — 在 deck 字段表里
+   ✔ 静态守卫：if_tree_search **不**在 STRUCT_FIELDS 里（它不改变 main.tex，加进去就是白花钱）  — 不在 struct 字段表里
+   ✔ 静态守卫：_build_argv 从 config 读它，而不是写死常量（写死就无法从界面开启）  — 从 config 读
+   ✔ 静态守卫：默认值是 False（与上游 argparse 的 True 相反，所以必须显式传下去）  — 默认 False
+
+==================================================================
+[13] 平台编码：上游 open() 的编码补丁 + UTF-8 模式
+==================================================================
+   ✔ 流水线链路上的文本 open() 都指定了 encoding（Windows 默认是 GBK，不是 UTF-8）  — 未指定的：无
+   ✔ 对照组：evaluation/ 那棵子树仍能扫出未指定编码的 open()（证明扫描有效）  — 扫出 81 处（论文评测代码，我们的链路不使用）
+   ✔ 那份提示词确实是 UTF-8 且含非 ASCII（否则这个 bug 不存在）  — 938 字节
+   ✔ 对照组：不带 encoding 时，平台默认（GBK）读这份提示词会失败（证明这不是假想问题）  — FAIL UnicodeDecodeError
+   ✔ 治本修法生效：PYTHONUTF8=1 下不写 encoding 也能读成功  — OK 925
+   ✔ web 侧给流水线子进程设了 PYTHONUTF8=1（一条覆盖上游所有 open()）  — 在 _run_job 的环境里
+   ✔ web 侧仍保留 PYTHONIOENCODING（日志编码统一，与上面互补而非互斥）  — 在 _run_job 的环境里
+   ✔ 命令行驱动（gkk_3combos）用同一套环境约定（否则命令行跑法仍会撞）  — 子进程带 env
+   ✔ improve_layout 读提示词用了 utf-8  — 已指定
+   ✔ 树搜索写 .tex 用 utf-8（写出 GBK 的 .tex 会让 tectonic 返回 0 但文字丢成 U+FFFD）  — 写入点 3 处带 encoding
+   ✔ 该模块的 compile_tex 也指定了编码（否则读取线程会因解码 UTF-8 输出而假失败）  — 已指定
+
+[14] 论文配图提取（幻灯片里能不能有图 / 树搜索有没有活干）
+   ✔ 图题能从图片正下方取到（按水平重叠匹配，不是面积重叠）  — 取到 '图1 中文图题'
+   ✔ 图题在上方（表格式排版）也能取到  — 取到 '表2 上方图题'
+   ✔ 图题完全不存在时返回空串（**不编造**）  — 返回空串
+   ✔ 合成 PDF：只留下大图（小图被过滤、重复图被去重）  — 提取 1 张（pdf）（['fig01_p01.png']）
+   ✔ 输出是 tectonic 能用的真实格式（按文件头：PNG/JPEG，不是 jpx）  — fig01_p01.png 头=89 50 4e 47
+   ✔ 导出的图能被解码，且尺寸与源一致  — 600x400
+   ✔ 文件名是纯 ASCII（中文名会在 LaTeX/编码处反复踩坑）  — fig01_p01.png
+   ✔ 图题进了清单（模型据此判断哪张图放哪页）  — 'Figure 1 Synthetic test figure'
+   ✔ index.json 记了版本与**源指纹**（幂等跳过要判它）  — version=1 source_sha1=67fe088e8f68
+   ✔ 提示词清单里带上了文件名与图题  —   - figures/fig01_p01.png  —— Figure 1 Synthetic test figure
+   ✔ 换了源文件（新源无图）→ 重做而不是错误跳过  — 没找到符合条件的插图（可能是纯文字论文，或图太小/是装饰元素）
+   ✔ 无图时工程里**什么都不留**（留 index.json 会改变纯文字论文的输入）
+   ✔ docx 能从 word/media/ 提到图，并跳过非图片字节  — 提取 1 张（docx）（['fig01.png']）
+   ✔ 工程自带图（被 \includegraphics 引用）→ 不提取、不覆盖  — 工程里已有 1 个图片文件（例如 figs\real.png），不做提取
+   ✔ 工程里的 main.pdf **不算**自带图（否则纯文字论文会被误判成有图）
+   ✔ DECK_FIELDS 含 figures（图集改变幻灯片产物，漏了就是静默错配）  — ('v', 'main_tex_sha1', 'slide_lang', 'script_lang', 'slide_prompt_sha1', 'script_prompt_sha1', 'slide_count', 'paper_type', 'llm_model', 'vlm_model', 'talking_profile', 'if_tree_search', 'figures', 'course_plan_sha', 'model_api_base', 'script_generation_version')
+   ✔ 工程自带图 → 指纹记 own: 形态（含数量与清单哈希）  — own:v1:n1:4ed256838900
+   ✔ 图集变了 → 指纹跟着变（否则会命中「没有这张图」的旧幻灯片）  — own:v1:n1:4ed256838900 -> own:v1:n2:da4c6fe76f64
+   ✔ 没有图时指纹是确定的（不是 None —— 否则会与其他任务塌成同一个键）  — 'v1'
+   ✔ _artifact_facts 提供了 figures 字段  — 'v1'
+   ✔ figures **不在** STRUCT_FIELDS（它不影响 main.tex，进了就白花一次钱）  — ('v', 'source_sha1', 'paper_type', 'llm_model', 'struct_mode', 'model_api_base')
+   ✔ 提图在 pipeline 里、且在**复制之后**（副本才是模型真正读的那份）  — copy@10311 extract@13999
+   ✔ web 层不再提图（两个写入点 = 必然漂移）  — app.py 里无调用
+   ✔ pipeline 的 argparse 有 --paper_source  — --paper_source
+   ✔ _build_argv 会传 --paper_source  — --paper_source
+   ✔ 没有图时清单是空串（提示词与接通前逐字节一致，纯文字论文不白作废缓存）  — 空串
+
+==================================================================
+汇总: 全部通过
+==================================================================

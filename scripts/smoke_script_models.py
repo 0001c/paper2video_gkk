@@ -123,6 +123,12 @@ def main():
             rewrite_calls.clear()
             course.generate_script(None, slides, prompt, {}, result, rewrite_page, generation_id='rewrite-all')
             assert rewrite_calls == [0], '损坏的缓存结构应视为缺页'
+            corrupt = course.read_json(result / 'course_script/0.json')
+            corrupt['text'] = {'bad': '讲解 | no'}
+            course.write_json(result / 'course_script/0.json', corrupt)
+            rewrite_calls.clear()
+            course.generate_script(None, slides, prompt, {}, result, rewrite_page, generation_id='rewrite-all')
+            assert rewrite_calls == [0], '非文本缓存内容也应视为缺页'
             # 替换失败不能截断原文件，历史讲稿可回溯。
             atomic = tmp / 'atomic.txt'
             atomic.write_text('旧讲稿 | no', encoding='utf-8')

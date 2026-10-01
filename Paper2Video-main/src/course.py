@@ -290,7 +290,7 @@ def generate_script(plan, slide_dir, prompt_file, model_config, output_dir, gene
         if not isinstance(saved, dict):
             saved = {}
         content = saved.get("text") if (selected is None or generation_id) and saved.get("key") == key else None
-        if content and validate_script_output(content, 1)[0] and len(split_pages(content)) == 1:
+        if isinstance(content, str) and content and validate_script_output(content, 1)[0] and len(split_pages(content)) == 1:
             output[i] = content
             done += 1
             if selected is not None:

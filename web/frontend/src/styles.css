@@ -808,6 +808,26 @@ video { width: 100%; border-radius: var(--td-radius-default); background: #000; 
 .review-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 16px 0; }
 .review-grid img { width: 100%; border: 1px solid var(--paper-rule); }
 .review-grid textarea { width: 100%; font-family: var(--font-sans); }
+.cursor-picker { min-width: 0; padding: 0; margin: 16px 0; border: 0; }
+.cursor-picker legend { color: var(--paper-ink); font-weight: 600; }
+.cursor-choices { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 16px 0; }
+.cursor-choice { position: relative; display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--paper-rule); border-radius: 4px; cursor: pointer; background: var(--paper-surface); }
+.cursor-choice:hover { border-color: var(--paper-accent-soft); }
+.cursor-choice[data-selected="true"] { border-color: var(--paper-accent); box-shadow: inset 0 0 0 1px var(--paper-accent); }
+.cursor-choice input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.cursor-choice:has(input:focus-visible) { outline: 2px solid var(--paper-accent); outline-offset: 3px; }
+.cursor-picker:disabled .cursor-choice { opacity: .6; cursor: default; }
+.cursor-preview { display: grid; grid-template-columns: 1fr 1fr; height: 64px; border-radius: 2px; overflow: hidden; }
+.cursor-preview > span { display: flex; align-items: center; justify-content: center; }
+.cursor-preview .light { background: #f5f7fa; color: #526071; }
+.cursor-preview .dark { background: #182230; color: #a8b5c7; }
+.cursor-preview img { object-fit: contain; }
+.cursor-none { font-size: 28px; }
+.cursor-choice-title { display: flex; justify-content: space-between; gap: 4px; font-size: 13px; font-weight: 600; color: var(--paper-ink); }
+.cursor-choice-title > span { font-size: 11px; color: var(--paper-accent); }
+.cursor-description { font-size: 11px; color: var(--paper-ink-soft); }
+.cursor-size { max-width: 360px; }
+@media (max-width: 680px) { .cursor-choices { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 640px) { .review-grid { grid-template-columns: 1fr; } .course-table th, .course-table td { padding: 6px 4px; } }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }

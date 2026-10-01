@@ -50,6 +50,7 @@ from cursor_gen import cursor_gen_per_sentence
 # from slide_code_gen import latex_code_gen
 from slide_code_gen_select_improvement import latex_code_gen_upgrade
 from cursor_render import render_video_with_cursor_from_json
+import cursor_styles
 from subtitle_cursor_prompt_gen import subtitle_cursor_gen, validate_script_output
 
 from wei_utils import get_agent_config
@@ -184,6 +185,8 @@ if __name__ == '__main__':
     parser.add_argument('--course_plan', type=str, default=None, help='已审核课程教案 JSON')
     parser.add_argument('--script_concurrency', type=int, choices=range(1, 9), default=3, help='讲稿 API 同时请求数（1～8），不影响本地 GPU 串行')
     parser.add_argument('--script_generation_id', type=str, default=None, help='同一次讲稿重写/恢复的缓存标识')
+    parser.add_argument('--cursor_style', choices=tuple(cursor_styles.STYLES), default=cursor_styles.DEFAULT)
+    parser.add_argument('--cursor_scale', type=float, choices=(0.75, 1, 1.5), default=1)
     parser.add_argument('--review_before_render', type=str2bool, default=False)
     parser.add_argument('--regenerate_pages', type=str, default=None, help='课程局部重写的零基页索引 JSON')
     parser.add_argument('--require_reuse_script', type=str2bool, default=False,
@@ -220,7 +223,8 @@ if __name__ == '__main__':
     args.ref_text = args.ref_text if args.ref_text is not None else (
         None if custom_audio else lang["ref_text"])
     
-    cursor_img_path = "./cursor_image/red.png"
+    cursor_asset, cursor_hotspot = cursor_styles.resolve(args.cursor_style)
+    cursor_img_path = str(cursor_asset) if cursor_asset else None
     os.makedirs(args.result_dir, exist_ok=True) # result dir
     import course
     course_plan = course.read_json(args.course_plan) if args.course_plan else None
@@ -487,13 +491,13 @@ if __name__ == '__main__':
 
         ## Step5: Merage
         # render cursor
-        cursor_size = size//6
+        cursor_size = max(1, round(size / 6 * args.cursor_scale))
         if progress_report:
             progress_report.report("merge", stage=3)
         tmp_merage_2 = path.join(args.result_dir, "2_merage.mp4")
         render_video_with_cursor_from_json(video_path=tmp_merage_1, out_video_path=tmp_merage_2, 
                                         json_path=cursor_save_path, cursor_img_path=cursor_img_path, 
-                                        transition_duration=0.1, cursor_size=cursor_size)
+                                        transition_duration=0.1, cursor_size=cursor_size, cursor_hotspot=cursor_hotspot)
         # render subtitle
         front_size = size//10
         tmp_merage_3 = path.join(args.result_dir, "3_merage.mp4")

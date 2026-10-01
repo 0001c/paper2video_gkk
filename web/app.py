@@ -59,6 +59,7 @@ import mimo_voice                                         # noqa: E402
 import artifact_cache                                     # noqa: E402
 import paper_figures                                      # noqa: E402
 import course                                             # noqa: E402
+import cursor_styles                                      # noqa: E402
 from script_validation import validate_script_output      # noqa: E402
 
 os.makedirs(JOBS_ROOT, exist_ok=True)
@@ -125,6 +126,8 @@ class ReviewRunRequest(ReviewRequest):
     text_model: str | None = Field(default=None, min_length=1, max_length=200)
     vision_model: str | None = Field(default=None, min_length=1, max_length=200)
     script_concurrency: int | None = Field(default=None, ge=1, le=8)
+    cursor_style: str | None = Field(default=None, max_length=50)
+    cursor_scale: float | None = None
 
 
 class PrepareRetryRequest(BaseModel):
@@ -265,6 +268,9 @@ async def api_run_review(job_id: str, payload: ReviewRunRequest, request: Reques
         for field in ('text_model', 'vision_model'):
             if getattr(payload, field) is not None:
                 checked[field] = getattr(payload, field)
+        for field in ('cursor_style', 'cursor_scale'):
+            if getattr(payload, field) is not None:
+                checked[field] = getattr(payload, field)
         _normalize_models(checked)
         _model_base(payload.api_base)
         if payload.action == "regenerate":
@@ -281,7 +287,8 @@ async def api_run_review(job_id: str, payload: ReviewRunRequest, request: Reques
             "api_key": payload.api_key, "api_base": payload.api_base,
             "refresh_script_prompt": payload.refresh_prompt and payload.action == 'regenerate',
             "text_model": payload.text_model, "vision_model": payload.vision_model,
-            "script_concurrency": payload.script_concurrency})
+            "script_concurrency": payload.script_concurrency,
+            "cursor_style": payload.cursor_style, "cursor_scale": payload.cursor_scale})
         return response
 
 # ──────────────────────────────────────────────────────────────
@@ -406,6 +413,10 @@ def _normalize_script_prompt(config):
 
 
 def _normalize_models(config):
+    try:
+        cursor_styles.normalize(config)
+    except ValueError as exc:
+        raise HTTPException(422, detail=str(exc))
     for field, env in (('text_model', 'PAPER2VIDEO_LLM_MODEL'), ('vision_model', 'PAPER2VIDEO_VLM_MODEL')):
         name = config.get(field)
         if name is None:
@@ -1380,6 +1391,8 @@ def _build_argv(job):
         "--model_name_t", cfg.get('text_model') or os.environ.get('PAPER2VIDEO_LLM_MODEL', 'deepseek-flash'),
         "--model_name_v", cfg.get('vision_model') or os.environ.get('PAPER2VIDEO_VLM_MODEL', 'deepseek-flash'),
         "--script_concurrency", str(cfg.get('script_concurrency', 3)),
+        "--cursor_style", cfg.get('cursor_style', cursor_styles.DEFAULT),
+        "--cursor_scale", str(cfg.get('cursor_scale', 1)),
         "--talking_profile", cfg.get("talking_profile", "musetalk-local"),
         "--gpu_list", "0",
         # 必须显式传：上游 argparse 的默认值是 True，不传就等于每篇都开。
@@ -1864,6 +1877,7 @@ async def api_options():
                 "slide_lang": v["slide_lang"], "script_lang": v["script_lang"]}
                for k, v in lc.VIDEO_PRESETS.items()]
     return {
+        "cursors": cursor_styles.options(),
         "presets": presets,
         "slide_langs": [{"value": k, "label": v["desc"]} for k, v in lc.SLIDE_LANGS.items()],
         "script_langs": [{"value": k, "label": v["desc"]} for k, v in lc.SCRIPT_LANGS.items()],
@@ -1918,6 +1932,17 @@ async def api_options():
             },
         ],
     }
+
+
+@app.get('/api/cursors/{style}.png')
+async def api_cursor_asset(style: str):
+    try:
+        asset, _ = cursor_styles.resolve(style)
+    except ValueError:
+        raise HTTPException(404, detail='光标素材不存在')
+    if not asset or not asset.is_file():
+        raise HTTPException(404, detail='光标素材不存在')
+    return FileResponse(asset, media_type='image/png')
 
 
 class ModelListRequest(BaseModel):
@@ -2541,7 +2566,7 @@ async def api_rerun_job(job_id: str, payload: dict):
                             detail="原任务没有 result 目录，无法续跑（可能从未开始）")
 
     config = dict(src_job.get("config") or {})
-    for field in ('text_model', 'vision_model', 'script_concurrency'):
+    for field in ('text_model', 'vision_model', 'script_concurrency', 'cursor_style', 'cursor_scale'):
         if payload.get(field) is not None:
             config[field] = payload[field]
     _normalize_models(config)

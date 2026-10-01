@@ -1,140 +1,91 @@
-import os
-import subprocess
+import hashlib
 import json
-import pdb
-from PIL import Image, ImageDraw
-
+import math
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+from functools import lru_cache
+from PIL import Image
 import pv_env
 
 
-def render_cursor_on_video(
-    input_video: str,
-    output_video: str,
-    cursor_points: list,          # list of (time, x, y)
-    transition_duration: float = 0.1,
-    cursor_size: int = 10,
-    cursor_img_path: str = "cursor.png"):
-
-    # ⚠️ 不要把手缩放后的图存回 cursor_img_path。
-    # 上游那行 `img_resized.save(cursor_img_path)` 是拿**仓库里的源素材当草稿文件**用：
-    # cursor_image/red.png 尺寸虽然不变，但 PNG 会重新编码，字节数随之变化，
-    # 于是每跑一次流水线 git 工作区就被弄脏一次（实测 1186 -> 1188 字节）。
-    # 改写到一个按尺寸命名的临时文件：既不污染仓库，也顺带避开 ffmpeg 对
-    # 非 ASCII 路径（本机项目路径含中文）的解析问题。
-    os.makedirs(pv_env.TMP_DIR, exist_ok=True)
-    cursor_work_path = os.path.join(
-        pv_env.TMP_DIR, "cursor_overlay_{}.png".format(int(cursor_size)))
-    if not os.path.exists(cursor_work_path):
-        img = Image.open(cursor_img_path)
-        img.resize((cursor_size, cursor_size)).save(cursor_work_path)
-    cursor_img_path = cursor_work_path
+@lru_cache(maxsize=1)
+def filter_file_option():
+    # FFmpeg 9 移除了旧参数；兼容本机新版本及原有旧版安装。
+    help_text = subprocess.run(['ffmpeg', '-h', 'full'], capture_output=True, check=True).stdout
+    return '-filter_complex_script' if b'-filter_complex_script ' in help_text else '-/filter_complex'
 
 
-    def get_video_resolution(path):
-        cmd = [
-            "ffprobe", "-v", "error",
-            "-select_streams", "v:0",
-            "-show_entries", "stream=width,height",
-            "-of", "json", path
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        info = json.loads(result.stdout)
-        width = info["streams"][0]["width"]
-        height = info["streams"][0]["height"]
-        return width, height
-
-    w, h = get_video_resolution(input_video)
-    print(f"Video resolution: {w}x{h}")
-
-    filters = []
-
-    t_first, _, _ = cursor_points[0]
-    if t_first > transition_duration:
-        cx = w / 2 - cursor_size / 2
-        cy = h / 2 - cursor_size / 2
-        global_hold = (
-            f"overlay=x={cx}:y={cy-20}:"
-            f"enable='between(t,0,{round(t_first - transition_duration, 3)})'"
-        )
-        filters.append(global_hold)
-        
-    for i in range(1, len(cursor_points)):
-        t0, x0, y0 = cursor_points[i - 1]
-        t1, x1, y1 = cursor_points[i]
-
-        hold_start = round(t0, 3)
-        hold_end = round(t1 - transition_duration, 3)
-        if hold_end > hold_start:
-            x_hold = x0 - cursor_size / 2
-            y_hold = y0 - cursor_size / 2
-            hold_expr = (
-                f"overlay=x={x_hold}:y={y_hold}:"
-                f"enable='between(t,{hold_start},{hold_end})'"
-            )
-            filters.append(hold_expr)
-
-        move_start = round(t1 - transition_duration, 3)
-        move_end = t1
-        dx = x1 - x0
-        dy = y1 - y0
-        x_expr = f"{x0 - cursor_size/2} + ({dx})*(t-{move_start})/{transition_duration}"
-        y_expr = f"{y0 - cursor_size/2} + ({dy})*(t-{move_start})/{transition_duration}"
-        move_expr = (
-            f"overlay=x={x_expr}:y={y_expr}:"
-            f"enable='between(t,{move_start},{move_end})'"
-        )
-        filters.append(move_expr)
-
-    filter_lines = []
-    stream_in = "[0][1]"
-    for i, expr in enumerate(filters):
-        stream_out = f"[tmp{i}]" if i < len(filters) - 1 else "[vout]"
-        filter_lines.append(f"{stream_in} {expr} {stream_out}")
-        stream_in = f"{stream_out}[1]"
-
-    filter_complex = "; ".join(filter_lines)
-
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", input_video,
-        "-i", cursor_img_path,
-        "-filter_complex", filter_complex,
-        "-map", "[vout]",
-        "-map", "0:a?",
-        "-c:v", "libx264",
-        "-c:a", "copy",
-        output_video
-    ]
-    subprocess.run(cmd, check=True)
-    print(f"\n✅ Done! Output saved to: {output_video}")
+def cursor_overlay(filename, size):
+    """按素材内容与尺寸缓存透明叠图，不改源素材，不混用同尺寸的不同样式。"""
+    source = Path(filename)
+    key = hashlib.sha256(source.read_bytes() + str(size).encode()).hexdigest()[:20]
+    root = Path(pv_env.TMP_DIR)
+    root.mkdir(parents=True, exist_ok=True)
+    target = root / ('cursor_overlay_' + key + '.png')
+    if not target.is_file():
+        with tempfile.NamedTemporaryFile(dir=root, suffix='.png', delete=False) as temporary:
+            temp = Path(temporary.name)
+        try:
+            with Image.open(source) as image:
+                image.convert('RGBA').resize((size, size), Image.Resampling.LANCZOS).save(temp)
+            temp.replace(target)
+        finally:
+            temp.unlink(missing_ok=True)
+    return str(target)
 
 
-def render_video_with_cursor_from_json(
-    video_path,
-    out_video_path,
-    json_path,
-    cursor_img_path,
-    transition_duration=0.1,
-    cursor_size=16
-):
-    # ⚠️ 显式 utf-8：Windows 上 `open()` 默认 ANSI(GBK)。这份 cursor.json 目前是
-    # 纯 ASCII（json.dump 默认转义非 ASCII），但同族的错配成本只有一行参数 ——
-    # 与 pipeline.py 里 sat/token.json 的处理保持一致。
-    with open(json_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+def render_cursor_on_video(input_video, output_video, cursor_points, transition_duration=0.1,
+                           cursor_size=10, cursor_img_path='cursor.png', cursor_hotspot=(0.5, 0.5)):
+    if not cursor_img_path or not cursor_points:
+        if Path(input_video).resolve() != Path(output_video).resolve():
+            shutil.copy2(input_video, output_video)
+        return
+    if not math.isfinite(transition_duration) or transition_duration <= 0 or cursor_size < 1:
+        raise ValueError('光标尺寸和移动时间必须为正数')
+    points = {}
+    for t, x, y in cursor_points:
+        if not all(isinstance(v, (float, int)) and math.isfinite(v) for v in (t, x, y)):
+            raise ValueError('光标坐标和时间必须为有限数字')
+        points[max(0, t)] = (x, y)
+    ordered = [(t, *xy) for t, xy in sorted(points.items())]
+    overlay = cursor_overlay(cursor_img_path, int(cursor_size))
+    # 单个 overlay 表达式保持最后一个目标，只有一个目标时也能生成视频。
+    def position(axis):
+        offset = cursor_size * cursor_hotspot[axis - 1]
+        terms = [str(ordered[0][axis] - offset)]
+        for a, b in zip(ordered, ordered[1:]):
+            if a[axis] == b[axis]:
+                continue
+            start = max(a[0], b[0] - transition_duration)
+            terms.append('({})*clip((t-{})/{},0,1)'.format(b[axis] - a[axis], start, b[0] - start))
+        # 平衡加法树避免 FFmpeg 在上千个目标时触发表达式递归深度限制。
+        while len(terms) > 1:
+            terms = ['({}+{})'.format(terms[i], terms[i + 1]) if i + 1 < len(terms) else terms[i]
+                     for i in range(0, len(terms), 2)]
+        return terms[0]
+    filters = "[0:v][1:v]overlay=x='{}':y='{}':enable='gte(t,{})':eval=frame[vout]".format(position(1), position(2), ordered[0][0])
+    # 长课可有上千个目标，Windows 命令行有长度上限，滤镜写入临时文件。
+    with tempfile.NamedTemporaryFile(dir=pv_env.TMP_DIR, suffix='.ffscript', mode='w', encoding='utf-8', delete=False) as handle:
+        handle.write(filters)
+        filter_file = Path(handle.name)
+    try:
+        subprocess.run(['ffmpeg', '-y', '-v', 'error', '-i', input_video, '-i', overlay,
+                        filter_file_option(), str(filter_file), '-map', '[vout]', '-map', '0:a?',
+                        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'copy', output_video], check=True)
+    finally:
+        filter_file.unlink(missing_ok=True)
+    print('[cursor] 光标已合成：' + output_video)
 
-    cursor_points = []
-    for idx, slide in enumerate(data):
-        if idx == 0: start_time = slide["start"]
-        else: start_time = slide["start"] + 0.5
-        x, y = slide["cursor"]
-        cursor_points.append((start_time, x, y))
-    
-    render_cursor_on_video(
-        input_video=video_path,
-        output_video=out_video_path,
-        cursor_points=cursor_points,
-        transition_duration=transition_duration,
-        cursor_size=cursor_size,
-        cursor_img_path=cursor_img_path
-    )
+
+def render_video_with_cursor_from_json(video_path, out_video_path, json_path, cursor_img_path,
+                                      transition_duration=0.1, cursor_size=16, cursor_hotspot=(0.5, 0.5)):
+    if not cursor_img_path:
+        render_cursor_on_video(video_path, out_video_path, [], cursor_img_path=None)
+        return
+    with open(json_path, encoding='utf-8') as handle:
+        data = json.load(handle)
+    points = [(slide['start'] + (0.5 if i else 0), *slide['cursor']) for i, slide in enumerate(data)]
+    render_cursor_on_video(video_path, out_video_path, points, transition_duration, cursor_size,
+                           cursor_img_path, cursor_hotspot)

@@ -6,6 +6,7 @@ import { CoursePanel, defaultCourse, type CourseSettings, type CoursePlan } from
 import { ReviewPanel } from "./ReviewPanel";
 import { ThemeToggle } from "./ThemeToggle";
 import { ModelSettings } from "./ModelSettings";
+import { CursorPicker, type CursorOption } from "./CursorPicker";
 
 /* ─────────────────────────────────────────────────────────────
    接口层。三个注意点：
@@ -48,6 +49,7 @@ type ScriptPromptProfile = {
 };
 
 type Options = {
+  cursors?: CursorOption[];
   presets: (Opt & { slide_lang: string; script_lang: string })[];
   slide_langs: Opt[];
   script_langs: Opt[];
@@ -181,7 +183,8 @@ type Job = {
   resumed_from?: string;
   config?: { generate_talking?: boolean; content_profile?: string; slide_lang?: string;
     script_lang?: string; slide_count?: number; voice_note?: string; talking_note?: string;
-    review_before_render?: boolean; target_minutes?: number | null; text_model?: string; vision_model?: string; script_concurrency?: number };
+    review_before_render?: boolean; target_minutes?: number | null; text_model?: string; vision_model?: string; script_concurrency?: number;
+    cursor_style?: string; cursor_scale?: number };
 };
 
 type RerunPlan = {
@@ -427,6 +430,11 @@ export default function App() {
   const [textModel, setTextModel] = useState(initialDraft.textModel ?? "deepseek-flash");
   const [visionModel, setVisionModel] = useState(initialDraft.visionModel ?? "deepseek-flash");
   const [scriptConcurrency, setScriptConcurrency] = useState(initialDraft.scriptConcurrency ?? 3);
+  const [cursorStyle, setCursorStyle] = useState(initialDraft.cursorStyle ?? 'laser-red');
+  const [cursorScale, setCursorScale] = useState(initialDraft.cursorScale ?? 1);
+  useEffect(() => {
+    if (opts?.cursors?.length && !opts.cursors.some((item) => item.value === cursorStyle)) setCursorStyle('laser-red');
+  }, [opts?.cursors, cursorStyle]);
   const [languageNotice, setLanguageNotice] = useState("");
 
   // ④ 运行
@@ -669,10 +677,10 @@ export default function App() {
       presetSpec: presetPick ? JSON.stringify(presetPick.spec) : initialDraft.presetSpec || "",
       designPrompt, uploadText, paperName: paperFile?.name || initialDraft.paperName || "",
       portraitName: portraitFile?.name || initialDraft.portraitName || "",
-      courseEnabled, courseSettings: JSON.stringify(courseSettings), textModel, visionModel, scriptConcurrency });
+      courseEnabled, courseSettings: JSON.stringify(courseSettings), textModel, visionModel, scriptConcurrency, cursorStyle, cursorScale });
   }, [preset, slideLang, scriptLang, contentProfile, scriptPrompt, slidePrompt,
     promptTemplate, slidePromptTemplate, slideCount, generateTalking, ifTreeSearch, voiceMode,
-    presetPick, designPrompt, uploadText, paperFile, portraitFile, initialDraft, courseEnabled, courseSettings, textModel, visionModel, scriptConcurrency]);
+    presetPick, designPrompt, uploadText, paperFile, portraitFile, initialDraft, courseEnabled, courseSettings, textModel, visionModel, scriptConcurrency, cursorStyle, cursorScale]);
 
   const doIngest = useCallback(async () => runExclusive(ingestLock, setIngesting, async () => {
     if (!paperFile) return MessagePlugin.warning("请先选择内容文件");
@@ -764,6 +772,8 @@ export default function App() {
         text_model: textModel,
         vision_model: visionModel,
         script_concurrency: scriptConcurrency,
+        cursor_style: cursorStyle,
+        cursor_scale: cursorScale,
         stages: ["1", "2", "3"],
         slide_lang: slideLang,
         script_lang: scriptLang,
@@ -797,7 +807,7 @@ export default function App() {
   }, reportError), [ingest, portraitFile, generateTalking, apiKey, apiBase, slideLang, scriptLang,
       contentProfile, scriptPrompt, slidePrompt, slideCount, opts, ifTreeSearch,
       voiceMode, presetPick, designPrompt, uploadSpec, uploadText, voiceSpecNow, selectJob,
-      courseEnabled, coursePlan, courseSettings, textModel, visionModel, scriptConcurrency]);
+      courseEnabled, coursePlan, courseSettings, textModel, visionModel, scriptConcurrency, cursorStyle, cursorScale]);
 
   // 任务列表：每 5 秒刷新。本地工具，这点开销可以忽略，
   // 换来的是"后端重启前留下的任务也能看到最新状态"。
@@ -1538,10 +1548,15 @@ export default function App() {
         )}
       </section>
 
-      {/* ④ API key */}
+      <section className="section">
+        <div className="section-head"><span className="section-num">4</span><h2 className="section-title">视频光标</h2><span className="section-note">随讲解定位目标</span></div>
+        <CursorPicker options={opts?.cursors ?? []} style={cursorStyle} scale={cursorScale} onStyle={setCursorStyle} onScale={setCursorScale} />
+      </section>
+
+      {/* ⑤ API key */}
       <section className="section">
         <div className="section-head">
-          <span className="section-num">4</span>
+          <span className="section-num">5</span>
           <h2 className="section-title">接口凭据</h2>
           <span className="section-note">
             {rememberKey ? "保存在本机浏览器" : "仅本次会话（刷新即丢）"}
@@ -1653,11 +1668,12 @@ export default function App() {
             {` · 目标 ${job.config.slide_count || "未记录"} 页 · ${job.config.voice_note || "内置默认音色"}`}
             {` · ${job.config.talking_note || (job.config.generate_talking ? "已启用数字人" : "无数字人")}`}
             {` · 文字模型 ${job.config.text_model || "原默认模型"} · 讲稿模型 ${job.config.vision_model || "原默认模型"}`}
+            {` · 光标 ${opts?.cursors?.find((item) => item.value === (job.config?.cursor_style || 'classic-red'))?.label || '经典红箭头'} · ${Math.round((job.config.cursor_scale ?? 1) * 100)}%`}
             <br />这是创建时保存的配置，新建任务中的修改不影响它。
           </p>
         )}
         {filesError && <div className="notice err" role="alert"><span>产物读取失败：{filesError}</span><Button variant="outline" onClick={() => setFilesVersion((value) => value + 1)}>重试读取</Button></div>}
-        {job && !running && visiblePages?.pages?.length > 0 && <ReviewPanel key={job.id} jobId={job.id} apiKey={apiKey} apiBase={apiBase} concurrency={job.config?.script_concurrency ?? 3} onJob={selectJob} onSaved={() => setFilesVersion((v) => v + 1)} />}
+        {job && !running && visiblePages?.pages?.length > 0 && <ReviewPanel key={job.id} jobId={job.id} apiKey={apiKey} apiBase={apiBase} concurrency={job.config?.script_concurrency ?? 3} cursors={opts?.cursors ?? []} cursorStyle={job.config?.cursor_style ?? 'classic-red'} cursorScale={job.config?.cursor_scale ?? 1} onJob={selectJob} onSaved={() => setFilesVersion((v) => v + 1)} />}
 
         {job && (
           <div style={{ marginTop: 18 }}>

@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "tdesign-react";
 import { api, errorMessage, runExclusive } from "./flow";
+import { CursorPicker, type CursorOption } from './CursorPicker';
 
 type Review = { version: string; pages: string[]; editable: boolean;
   timing: { estimated_minutes: number; actual_minutes: number | null; target_minutes: number | null;
     pages: { planned_minutes: number; estimated_minutes: number; actual_seconds: number | null; section: string }[] } | null };
 
-export function ReviewPanel({ jobId, apiKey, apiBase, concurrency, onJob, onSaved }: {
+export function ReviewPanel({ jobId, apiKey, apiBase, concurrency, cursors, cursorStyle, cursorScale, onJob, onSaved }: {
   jobId: string; apiKey: string; apiBase: string; concurrency: number; onJob: (id: string) => void; onSaved: () => void;
+  cursors: CursorOption[]; cursorStyle: string; cursorScale: number;
 }) {
   const [review, setReview] = useState<Review | null>(null);
   const [pages, setPages] = useState<string[]>([]);
@@ -17,6 +19,8 @@ export function ReviewPanel({ jobId, apiKey, apiBase, concurrency, onJob, onSave
   const [accepted, setAccepted] = useState(false);
   const [success, setSuccess] = useState("");
   const [refreshPrompt, setRefreshPrompt] = useState(true);
+  const [style, setStyle] = useState(cursorStyle);
+  const [scale, setScale] = useState(cursorScale);
   const lock = useRef(false);
   const generation = useRef(0);
   const load = () => runExclusive(lock, setBusy, async () => {
@@ -32,7 +36,7 @@ export function ReviewPanel({ jobId, apiKey, apiBase, concurrency, onJob, onSave
     if (action === "regenerate" && !window.confirm(`重新生成第 ${selected + 1} 页讲稿会调用任务保存的讲稿模型，可能产生 API 费用。${refreshPrompt ? "使用该内容类型的最新模板替换任务旧提示词。" : "沿用任务原提示词。"}其余页会保留，是否继续？`)) return;
     const body = { version: review.version, pages };
     const { data } = action === "save" ? await api.put(`/api/jobs/${jobId}/review`, body)
-      : await api.post(`/api/jobs/${jobId}/review/run`, { ...body, action, page_ids: action === "regenerate" ? [selected] : [], api_key: apiKey || undefined, api_base: apiBase || undefined, refresh_prompt: refreshPrompt, script_concurrency: concurrency });
+      : await api.post(`/api/jobs/${jobId}/review/run`, { ...body, action, page_ids: action === "regenerate" ? [selected] : [], api_key: apiKey || undefined, api_base: apiBase || undefined, refresh_prompt: refreshPrompt, script_concurrency: concurrency, cursor_style: style, cursor_scale: scale });
     if (action === "save") { setReview(data); setPages(data.pages); setAccepted(false); setSuccess("讲稿已保存，历史版本可回溯。修改页的旧音频将在下次生成时更新。"); onSaved(); }
     else onJob(data.job_id);
   }, (e) => setError(errorMessage(e)));
@@ -61,6 +65,8 @@ export function ReviewPanel({ jobId, apiKey, apiBase, concurrency, onJob, onSave
       </div>
       <label className="checkrow"><input type="checkbox" checked={refreshPrompt} disabled={!review.editable || busy} onChange={(e) => setRefreshPrompt(e.target.checked)} />重写时使用当前内容类型的最新讲稿模板（替换任务旧提示词）</label>
       <div className="actions"><Button variant="outline" disabled={!review.editable || busy} onClick={() => apply("save")}>保存全部讲稿修改</Button><Button variant="outline" disabled={!review.editable || busy || !apiKey.trim()} onClick={() => apply("regenerate")}>调用模型重写本页</Button></div>
+      <CursorPicker options={cursors} style={style} scale={scale} disabled={!review.editable || busy} onStyle={(value) => { setStyle(value); setAccepted(false); }} onScale={(value) => { setScale(value); setAccepted(false); }} />
+      <p className="hint">此处选择用于下一次生成的视频；只换光标，可复用现有讲稿与配音。</p>
       <label className="checkrow"><input type="checkbox" checked={accepted} disabled={!review.editable || busy} onChange={(e) => setAccepted(e.target.checked)} />已核对所有课件和讲稿，确认开始配音与合片</label>
       <div className="actions"><Button theme="primary" loading={busy} disabled={!review.editable || !accepted || busy} onClick={() => apply("render")}>确认并生成配音视频</Button></div>
       {!review.editable && <p className="hint">有任务正在使用这份产物，暂不能编辑。结束后可重新读取。</p>}

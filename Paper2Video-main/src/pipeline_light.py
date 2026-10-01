@@ -45,6 +45,7 @@ from subtitle_render import add_subtitles
 from cursor_gen import cursor_gen_per_sentence, release_gui_model
 from slide_code_gen_select_improvement import latex_code_gen_upgrade
 from cursor_render import render_video_with_cursor_from_json
+import cursor_styles
 from subtitle_cursor_prompt_gen import subtitle_cursor_gen
 
 import language_config
@@ -112,6 +113,8 @@ if __name__ == "__main__":
     parser.add_argument("--talking_head_env", type=str, default="")
     parser.add_argument("--skip_slide_gen", type=str2bool, default=False,
                         help="跳过 LLM 生成幻灯片，直接编译现有 slides.tex（调参时省 token）")
+    parser.add_argument('--cursor_style', choices=tuple(cursor_styles.STYLES), default=cursor_styles.DEFAULT)
+    parser.add_argument('--cursor_scale', type=float, choices=(0.75, 1, 1.5), default=1)
     args = parser.parse_args()
 
     stage = json.loads(args.stage)
@@ -133,7 +136,8 @@ if __name__ == "__main__":
     if not args.tts_language:
         args.tts_language = lang["tts_language"]
 
-    cursor_img_path = "./cursor_image/red.png"
+    cursor_asset, cursor_hotspot = cursor_styles.resolve(args.cursor_style)
+    cursor_img_path = str(cursor_asset) if cursor_asset else None
     os.makedirs(args.result_dir, exist_ok=True)
     agent_config_t = get_agent_config(args.model_name_t)  # LLM
     agent_config_v = get_agent_config(args.model_name_v)  # VLM
@@ -313,7 +317,7 @@ if __name__ == "__main__":
         render_video_with_cursor_from_json(
             video_path=tmp_merage_1, out_video_path=tmp_merage_2,
             json_path=cursor_save_path, cursor_img_path=cursor_img_path,
-            transition_duration=0.1, cursor_size=size // 6,
+            transition_duration=0.1, cursor_size=max(1, round(size / 6 * args.cursor_scale)), cursor_hotspot=cursor_hotspot,
         )
 
         # 烧字幕（时间轴复用 cursor.json，无需二次转写）

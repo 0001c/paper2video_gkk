@@ -68,7 +68,8 @@ def main():
         assert resumed.status_code == 400  # 尚无产物，不能创建空续跑。
         if '--media' in sys.argv:
             source = root / 'source.mp4'
-            subprocess.run(['ffmpeg', '-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=0x303846:s=320x180:r=10:d=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(source)], check=True)
+            subprocess.run(['ffmpeg', '-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=0x303846:s=320x180:r=10:d=1',
+                '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', str(source)], check=True)
             def bounds(video):
                 data = subprocess.check_output(['ffmpeg', '-v', 'error', '-ss', '0.8', '-i', str(video), '-frames:v', '1', '-f', 'image2pipe', '-vcodec', 'png', '-'])
                 with Image.open(io.BytesIO(data)) as frame:
@@ -82,6 +83,8 @@ def main():
                 target = root / (style + '.mp4')
                 cursor_render.render_cursor_on_video(str(source), str(target), [(0, 120, 90)], cursor_size=48,
                     cursor_img_path=str(asset) if asset else None, cursor_hotspot=anchor)
+                audio = subprocess.check_output(['ffprobe', '-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=codec_name', '-of', 'csv=p=0', str(target)])
+                assert audio.strip() == b'aac', '光标合成不能丢失已有音频'
                 if asset:
                     box = bounds(target)
                     assert box and box[0] <= 122 and box[2] >= 118 and box[1] <= 92 and box[3] >= 88, (style, box)

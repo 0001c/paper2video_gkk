@@ -22,6 +22,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 import time
 import uuid
 import zipfile
@@ -325,10 +326,10 @@ def test_queue_and_http(app):
             deadline = time.time() + 40
             while time.time() < deadline:
                 j = client.get("/api/jobs/%s" % job_a).json()
-                if j["status"] in ("done", "failed", "canceled"):
+                if j["status"] in ("done", "awaiting_review", "failed", "canceled"):
                     break
                 time.sleep(1)
-            ok &= check("任务 A 最终 status=done", j["status"] == "done",
+            ok &= check("准备任务 A 最终等待审核", j["status"] == "awaiting_review",
                         "实际 %s (exit=%s)" % (j["status"], j.get("exit_code")))
             ok &= check("任务 A 解析出进度",
                         j["progress"]["tts_done"] == state["pages"]
@@ -1097,8 +1098,8 @@ def test_phase_model_and_keys(app):
     ok &= check("每个阶段都有 key/label/weight/has_pages", not missing,
                 "缺字段的阶段：%s" % missing if missing else "字段齐全")
     counts_phases = [p["key"] for p in phases if p["has_pages"]]
-    ok &= check("有计数进度的阶段是 tts/cursor/talking（其余阶段不编造进度）",
-                counts_phases == ["tts", "cursor", "talking"],
+    ok &= check("讲稿/语音/光标/数字人阶段报告实际计数",
+                counts_phases == ["script", "tts", "cursor", "talking"],
                 "标记为有计数的：%s" % counts_phases)
     ok &= check("每个阶段都带计数单位（语音/数字人=页，光标=条）",
                 {p["key"]: p.get("unit") for p in phases}.get("cursor") == "条"
@@ -1389,7 +1390,7 @@ def test_phase_model_and_keys(app):
           "print": lambda *a, **k: None}
     if node is not None:
         exec(compile(ast.Module(body=[node], type_ignores=[]), "<monitor>", "exec"), ns)
-    work = os.path.join(ROOT, "jobs", "smoke_monitor_" + uuid.uuid4().hex[:6])
+    work = os.path.join(app.JOBS_ROOT, "smoke_monitor_" + uuid.uuid4().hex[:6])
     try:
         os.makedirs(work, exist_ok=True)
         now = time.time()
@@ -1425,8 +1426,8 @@ def test_phase_model_and_keys(app):
     # 2026-09-19 真实事故：一条"凡是 job_ 开头就删"的清理，把使用者**正在运行**的
     # 任务目录整个删掉了（job.json / result / progress 全丢，任务从界面消失，
     # 而流水线还在跑）。所以这里对清理函数做**行为断言**，而不是靠"下次小心"。
-    guard_old = os.path.join(ROOT, "jobs", "job_guard_" + uuid.uuid4().hex[:6])
-    guard_new = os.path.join(ROOT, "jobs", "job_guard_" + uuid.uuid4().hex[:6])
+    guard_old = os.path.join(app.JOBS_ROOT, "job_guard_" + uuid.uuid4().hex[:6])
+    guard_new = os.path.join(app.JOBS_ROOT, "job_guard_" + uuid.uuid4().hex[:6])
     os.makedirs(guard_old, exist_ok=True)
     io.open(os.path.join(guard_old, "run.log"), "w", encoding="utf-8").write("old\n")
     old_time = time.time() - 3600
@@ -1611,7 +1612,7 @@ def test_voice_and_ref_audio(app):
                 mv.resolve({"kind": "default"}, "zh")[:2] == (None, None),
                 mv.resolve({"kind": "default"}, "zh")[2])
 
-    tmp = os.path.join(ROOT, "jobs", "smoke_voice_" + uuid.uuid4().hex[:6])
+    tmp = os.path.join(app.JOBS_ROOT, "smoke_voice_" + uuid.uuid4().hex[:6])
     os.makedirs(tmp, exist_ok=True)
     ref = os.path.join(tmp, "ref.wav")
     try:
@@ -1664,7 +1665,7 @@ def test_voice_and_ref_audio(app):
         shutil.rmtree(tmp, ignore_errors=True)
 
     # ── C. 缓存：同一个音色只生成一次（用假 client，不打真实接口）──
-    cache_dir = os.path.join(ROOT, "jobs", "smoke_voicecache_" + uuid.uuid4().hex[:6])
+    cache_dir = os.path.join(app.JOBS_ROOT, "smoke_voicecache_" + uuid.uuid4().hex[:6])
     os.makedirs(cache_dir, exist_ok=True)
     origin_cache = mv.CACHE_DIR
     calls = []
@@ -1753,7 +1754,7 @@ def test_voice_and_ref_audio(app):
         shutil.rmtree(cache_dir, ignore_errors=True)
 
     # ── D. argv 透传：ref_text 必须"跟着 ref_audio 走" ──
-    jd = os.path.join(ROOT, "jobs", "smoke_argv_" + uuid.uuid4().hex[:6])
+    jd = os.path.join(app.JOBS_ROOT, "smoke_argv_" + uuid.uuid4().hex[:6])
     os.makedirs(jd, exist_ok=True)
     try:
         base = {"slide_lang": "en", "script_lang": "zh", "paper_type": "auto",
@@ -1791,7 +1792,7 @@ def test_voice_and_ref_audio(app):
                 "改了这行就会退回「张冠李戴」的旧行为，故必须钉住")
 
     # ── E. 上传端点：过短 / 非音频 / 正常 ──
-    tmp2 = os.path.join(ROOT, "jobs", "smoke_voiceup_" + uuid.uuid4().hex[:6])
+    tmp2 = os.path.join(app.JOBS_ROOT, "smoke_voiceup_" + uuid.uuid4().hex[:6])
     os.makedirs(tmp2, exist_ok=True)
     try:
         import numpy as np
@@ -1849,7 +1850,7 @@ def test_voice_and_ref_audio(app):
     # 为什么还要这一条：argv 透传与 resolve 都各自测过了，但"界面的选择 -> 任务的
     # config -> 命令行"这条**串起来**的路径才是使用者实际走的。中间任何一环断掉，
     # 表现都是"我选的音色没生效"，而不会报错。
-    tmp3 = os.path.join(ROOT, "jobs", "smoke_voicejob_" + uuid.uuid4().hex[:6])
+    tmp3 = os.path.join(app.JOBS_ROOT, "smoke_voicejob_" + uuid.uuid4().hex[:6])
     ing_dir = os.path.join(app.JOBS_ROOT, "smoke_ving_" + uuid.uuid4().hex[:6])
     os.makedirs(tmp3, exist_ok=True)
     os.makedirs(os.path.join(ing_dir, "ingest"), exist_ok=True)
@@ -2101,7 +2102,7 @@ def test_content_store_and_fingerprint(app):
 
     # ── F. 产物的输入指纹（阶段 2）：纯文件比对，不碰 GPU ──
     import talking_gen as tg
-    work = os.path.join(ROOT, "jobs", "smoke_fp_" + uuid.uuid4().hex[:6])
+    work = os.path.join(app.JOBS_ROOT, "smoke_fp_" + uuid.uuid4().hex[:6])
     os.makedirs(work, exist_ok=True)
     try:
         img = os.path.join(work, "ref.png")
@@ -2313,7 +2314,7 @@ def test_artifact_cache_and_reuse(app):
                 changed != ac.struct_key(base_facts), "版本变化让键变了")
 
     # ── B. 模块级往返：写入 → 查询 → 复用 ──
-    tmp = os.path.join(ROOT, "jobs", "smoke_cache_" + uuid.uuid4().hex[:6])
+    tmp = os.path.join(app.JOBS_ROOT, "smoke_cache_" + uuid.uuid4().hex[:6])
     os.makedirs(tmp, exist_ok=True)
     try:
         odd = dict(base_facts, source_sha1="only-struct-" + uuid.uuid4().hex[:6])
@@ -2394,7 +2395,7 @@ def test_artifact_cache_and_reuse(app):
     # paper_latex_root 指向工程目录（所以 main.tex 指纹稳定）。
     # ⚠️ 这不只是"像真的"：两个指纹里任何一个取不到，指纹就会退化成 None，
     #    而不同输入会因为都是 None 而塌成同一个键 —— 见下面那条断言。
-    tex_tmp = os.path.join(ROOT, "jobs", "smoke_ctex_" + uuid.uuid4().hex[:6] + ".tex")
+    tex_tmp = os.path.join(app.JOBS_ROOT, "smoke_ctex_" + uuid.uuid4().hex[:6] + ".tex")
     io.open(tex_tmp, "w", encoding="utf-8").write("% smoke cache tex\n")
     ing_id, content_work, _hit, _stored, _meta = app._store_content(
         "paper", tex_tmp, "smoke.tex")
@@ -2406,7 +2407,7 @@ def test_artifact_cache_and_reuse(app):
     # （它要真调 API，由 [5] 单独测）。
     io.open(os.path.join(latex_root, "main.tex"), "w",
             encoding="utf-8").write("% smoke cache main\n")
-    portrait = os.path.join(ROOT, "jobs", "smoke_cportrait_" + uuid.uuid4().hex[:6] + ".png")
+    portrait = os.path.join(app.JOBS_ROOT, "smoke_cportrait_" + uuid.uuid4().hex[:6] + ".png")
     io.open(portrait, "wb").write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
 
     def fake_build(job):
@@ -2428,7 +2429,7 @@ def test_artifact_cache_and_reuse(app):
         j = {}
         while time.time() < deadline:
             j = client.get("/api/jobs/%s" % jid).json()
-            if j.get("status") in ("done", "failed", "canceled"):
+            if j.get("status") in ("done", "awaiting_review", "failed", "canceled"):
                 break
             time.sleep(0.5)
         log_path = os.path.join(app._job_dir(jid), "run.log")
@@ -2439,7 +2440,7 @@ def test_artifact_cache_and_reuse(app):
     try:
         with TestClient(srv) as client:
             jid_a, job_a, log_a = run_job(client, config, "A")
-            ok &= check("第一次跑：任务完成", job_a.get("status") == "done",
+            ok &= check("第一次跑：课件讲稿待审核", job_a.get("status") == "awaiting_review",
                         "status=%s exit=%s" % (job_a.get("status"), job_a.get("exit_code")))
             key_a = (job_a.get("cache") or {}).get("deck_key")
             ok &= check("第一次跑：幻灯片/讲稿被回写进缓存",
@@ -2459,7 +2460,7 @@ def test_artifact_cache_and_reuse(app):
                         cinfo.get("deck_script_hit") is True, "script_hit")
             cfg_b = job_b.get("config") or {}
             ok &= check("命中的任务不再跑 stage 1（幻灯片已就位）",
-                        cfg_b.get("stages") == ["2", "3"],
+                        cfg_b.get("stages") == ["2"],
                         "config.stages=%s" % (cfg_b.get("stages"),))
             ok &= check("命中的任务带 reuse_script（pipeline 才会跳过 VLM）",
                         cfg_b.get("reuse_script") is True,
@@ -2468,8 +2469,8 @@ def test_artifact_cache_and_reuse(app):
             # _build_argv 过一遍，证明这两项真的会落到命令行上（只看 config
             # 有可能被"argv 不从 config 读"这种情况骗过）。
             real_argv = app._ORIG_BUILD_ARGV(job_b)
-            ok &= check("真实命令行里 stage 是 2/3、且带 --reuse_script True",
-                        '"2", "3"' in " ".join(real_argv)
+            ok &= check("缓存命中仍暂停审核：真实命令行仅 stage 2、且带 --reuse_script True",
+                        real_argv[real_argv.index('--stage') + 1] == '["2"]'
                         and "--reuse_script" in real_argv
                         and real_argv[real_argv.index("--reuse_script") + 1] == "True",
                         " ".join(real_argv[2:9]))
@@ -2496,7 +2497,7 @@ def test_artifact_cache_and_reuse(app):
                         (job_c.get("cache") or {}).get("deck_hit") is not True,
                         "deck_hit=%s" % ((job_c.get("cache") or {}).get("deck_hit")))
             ok &= check("对照组：仍然完整跑 stage 1（该花钱的地方没有偷懒）",
-                        (job_c.get("config") or {}).get("stages") == ["1", "2", "3"],
+                        (job_c.get("config") or {}).get("stages") == ["1", "2"],
                         "config.stages=%s" % ((job_c.get("config") or {}).get("stages"),))
             # 对照组这次**也会**写一条自己的缓存（它是未命中 → 正常生成 → 回写），
             # 必须一起记下来清理：只记 A 的键会让 en 那条留在库里，
@@ -2892,7 +2893,17 @@ def test_figure_extraction(app):
 
 
 def main():
-    app = load_app()
+    with tempfile.TemporaryDirectory(prefix='.web-smoke-', dir=ROOT) as work:
+        app = load_app()
+        app.JOBS_ROOT = os.path.join(work, 'jobs')
+        app.CONTENT_ROOT = os.path.join(app.JOBS_ROOT, '_content')
+        app.artifact_cache.CACHE_ROOT = os.path.join(work, 'cache')
+        app.mimo_voice.CACHE_DIR = os.path.join(work, 'voices')
+        os.makedirs(app.JOBS_ROOT, exist_ok=True)
+        return run_suite(app)
+
+
+def run_suite(app):
     suite_started = time.time()          # 清理护栏：只删本次测试期间新建的目录
     results = [
         test_read_progress(app),

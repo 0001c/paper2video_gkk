@@ -124,7 +124,7 @@ class ReviewRunRequest(ReviewRequest):
     refresh_prompt: bool = False
     text_model: str | None = Field(default=None, min_length=1, max_length=200)
     vision_model: str | None = Field(default=None, min_length=1, max_length=200)
-    script_concurrency: int = Field(default=3, ge=1, le=8)
+    script_concurrency: int | None = Field(default=None, ge=1, le=8)
 
 
 class PrepareRetryRequest(BaseModel):
@@ -158,7 +158,8 @@ async def api_prepare_retry(job_id: str, payload: PrepareRetryRequest, request: 
         ingest = os.path.join(_job_dir(job_id), 'ingest')
         if os.path.isdir(ingest):
             shutil.copytree(ingest, os.path.join(new_dir, 'ingest'), dirs_exist_ok=True)
-        _remember_keys(new_id, payload.model_dump(exclude_none=True) or _JOB_KEYS.get(job_id) or {})
+        _remember_keys(new_id, _JOB_KEYS.get(job_id))
+        _remember_keys(new_id, payload.model_dump(exclude_none=True))
         job = {k: src.get(k) for k in ('ref_img', 'paper_latex_root', 'needs_struct', 'source_path', 'source_name', 'source_digest', 'ingest_id')}
         job.update(id=new_id, created_at=time.strftime('%Y-%m-%d %H:%M:%S'), status='queued', phase='排队中',
                    phase_key='queued', queue_ahead=_QUEUE.qsize(), config=config, resumed_from=job_id)
@@ -231,15 +232,8 @@ def _check_review(job, payload):
 def _save_review(job, text):
     result = Path(_result_dir(job))
     script = result / "subtitle_w_cursor.txt"
-    # 保存上一版本，避免编辑后难以回溯；不触碰已生成的音频和视频。
-    if script.read_text(encoding="utf-8") != text:
-        backup = result / "script_versions" / (course.digest(script.read_bytes()) + ".txt")
-        backup.parent.mkdir(exist_ok=True)
-        if not backup.is_file():
-            shutil.copy2(script, backup)
-        temporary = script.with_suffix(".tmp")
-        temporary.write_text(text, encoding="utf-8")
-        temporary.replace(script)
+    # 人工保存与模型重写共用原子替换和历史版本，避免中途取消损坏已审核讲稿。
+    course.save_script(script, text)
 
 
 @app.get("/api/jobs/{job_id}/review")
@@ -264,7 +258,8 @@ async def api_run_review(job_id: str, payload: ReviewRunRequest, request: Reques
         job = _load_job(job_id)
         text = _check_review(job, payload)
         checked = dict(job.get('config') or {})
-        checked.update(script_concurrency=payload.script_concurrency)
+        if payload.script_concurrency is not None:
+            checked['script_concurrency'] = payload.script_concurrency
         for field in ('text_model', 'vision_model'):
             if getattr(payload, field) is not None:
                 checked[field] = getattr(payload, field)
@@ -410,7 +405,9 @@ def _normalize_script_prompt(config):
 
 def _normalize_models(config):
     for field, env in (('text_model', 'PAPER2VIDEO_LLM_MODEL'), ('vision_model', 'PAPER2VIDEO_VLM_MODEL')):
-        name = config.get(field) or os.environ.get(env, 'deepseek-flash')
+        name = config.get(field)
+        if name is None:
+            name = os.environ.get(env, 'deepseek-flash')
         if not isinstance(name, str) or not name.strip() or len(name) > 200 or any(ord(c) < 32 for c in name):
             raise HTTPException(422, detail=field + '：模型 ID 必须为 1～200 字符且不能包含控制字符')
         config[field] = name.strip()
@@ -469,7 +466,7 @@ def _remember_keys(job_id, payload):
     entry = _JOB_KEYS.setdefault(job_id, {})
     for field in ("api_key", "api_base"):
         value = (payload or {}).get(field)
-        if value:
+        if value and str(value).strip():
             entry[field] = str(value).strip()
 
 
@@ -1406,6 +1403,8 @@ def _build_argv(job):
     argv += ["--review_before_render", "True" if cfg.get("review_before_render") else "False"]
     if cfg.get("regenerate_pages") is not None:
         argv += ["--regenerate_pages", json.dumps(cfg["regenerate_pages"])]
+    if cfg.get('script_generation_id'):
+        argv += ['--script_generation_id', cfg['script_generation_id']]
     # 原始论文文件：流水线会从它提取插图放进工程（幻灯片里才有 \includegraphics，
     # 树搜索也才可能有活干）。源文件不可用时流水线会给出可读提示、不影响出片。
     # ⚠️ 刻意**不**把它放进产物指纹 —— 它对应的"图集"由 `figures` 字段表示。
@@ -1933,9 +1932,10 @@ def _model_base(value):
     if base:
         try:
             parsed = urlsplit(base)
+            parsed.port  # 非数字或越界端口应在发请求前返回字段错误。
         except ValueError:
             raise HTTPException(422, detail='api_base：服务地址无效')
-        if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        if parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or any(c.isspace() for c in base):
             raise HTTPException(422, detail='api_base：请填写不含凭据、查询参数的 HTTP(S) 服务地址')
     return base
 
@@ -1959,8 +1959,15 @@ async def api_models(payload: ModelListRequest, request: Request):
         return {'ok': False, 'models': [], 'message': message}
 
 
+class ModelVerifyRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    api_key: str = Field(default='', max_length=2000)
+    api_base: str = Field(default='', max_length=2000)
+    model: str = Field(default='deepseek-flash', min_length=1, max_length=200)
+
+
 @app.post("/api/key/verify")
-async def api_key_verify(payload: dict):
+async def api_key_verify(payload: ModelVerifyRequest, request: Request):
     """提交前自检：区分「欠费 / 鉴权失败 / 网络不通」。
 
     为什么要专门做这个：DeepSeek 余额耗尽时**不返回明确错误码**，
@@ -1970,17 +1977,23 @@ async def api_key_verify(payload: dict):
     import pv_env  # noqa: F401
     from openai import OpenAI
 
-    api_key = (payload.get("api_key") or "").strip()
-    api_base = (payload.get("api_base") or "").strip()
+    _local_write(request)
+    api_key = payload.api_key.strip()
+    api_base = _model_base(payload.api_base)
+    config = {'text_model': payload.model}
+    _normalize_models(config)
     if not api_key:
         return {"ok": False, "kind": "missing", "message": "未填写 API Key"}
 
-    client = OpenAI(api_key=api_key, base_url=api_base or None, timeout=30)
+    def verify():
+        with OpenAI(api_key=api_key, base_url=api_base or None, timeout=30, max_retries=0) as client:
+            return client.chat.completions.create(
+                model=config['text_model'], messages=[{"role": "user", "content": "ping"}],
+                max_tokens=64, temperature=0)
     try:
-        resp = client.chat.completions.create(
-            model=payload.get("model") or "deepseek-flash",
-            messages=[{"role": "user", "content": "ping"}],
-            max_tokens=8, temperature=0)
+        resp = await asyncio.to_thread(verify)
+        if not resp.choices or not (resp.choices[0].message.content or '').strip():
+            return {'ok': False, 'kind': 'empty', 'message': '接口未返回可用文字，请检查模型能力、输出限制或服务额度'}
         usage = getattr(resp, "usage", None)
         # ⚠️ 自检**不再往服务端存 key**（原先这里写 _SESSION_KEYS）。
         # 自检用的是本次请求带来的凭据，真正的注入发生在建任务时 ——
@@ -2001,7 +2014,7 @@ async def api_key_verify(payload: dict):
             kind, msg = "network", "网络不通 —— 检查 API Base 与代理"
         else:
             kind, msg = "unknown", "请求失败"
-        return {"ok": False, "kind": kind, "message": msg, "detail": text[:300]}
+        return {"ok": False, "kind": kind, "message": msg}
 
 
 @app.post("/api/ingest")
@@ -2358,6 +2371,7 @@ async def api_create_job(payload: dict):
     config["review_before_render"] = True
     config["stages"] = ["1", "2"]
     config.pop("regenerate_pages", None)
+    config.pop('script_generation_id', None)
     config.pop("course_plan_path", None)
 
     job_id = "job_" + time.strftime("%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:4]
@@ -2554,6 +2568,9 @@ async def api_rerun_job(job_id: str, payload: dict):
         "review_before_render": not _as_bool(payload.get("reuse_script"), True),
     })
     config.pop("regenerate_pages", None)
+    config.pop('script_generation_id', None)
+    if not config['reuse_script']:
+        config['script_generation_id'] = uuid.uuid4().hex
     if payload.get("review_pages") is not None:
         config["regenerate_pages"] = payload["review_pages"]
         config["review_before_render"] = True
@@ -2561,9 +2578,8 @@ async def api_rerun_job(job_id: str, payload: dict):
     new_id = "job_" + time.strftime("%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:4]
     # 续跑的凭据：优先用请求里带的（前端有本地保存），否则沿用原任务那份。
     # 两者都没有时**不猜** —— _run_job 会明确记一行日志说明回落到了环境变量。
+    _remember_keys(new_id, _JOB_KEYS.get(job_id))
     _remember_keys(new_id, payload)
-    if not _JOB_KEYS.get(new_id):
-        _remember_keys(new_id, _JOB_KEYS.get(job_id) or {})
     new_dir = _job_dir(new_id)
     os.makedirs(new_dir, exist_ok=True)
     src_ingest = os.path.join(_job_dir(job_id), "ingest")

@@ -183,6 +183,7 @@ if __name__ == '__main__':
     parser.add_argument('--beamer_templete_prompt', type=str, default=None)
     parser.add_argument('--course_plan', type=str, default=None, help='已审核课程教案 JSON')
     parser.add_argument('--script_concurrency', type=int, choices=range(1, 9), default=3, help='讲稿 API 同时请求数（1～8），不影响本地 GPU 串行')
+    parser.add_argument('--script_generation_id', type=str, default=None, help='同一次讲稿重写/恢复的缓存标识')
     parser.add_argument('--review_before_render', type=str2bool, default=False)
     parser.add_argument('--regenerate_pages', type=str, default=None, help='课程局部重写的零基页索引 JSON')
     parser.add_argument('--require_reuse_script', type=str2bool, default=False,
@@ -380,16 +381,18 @@ if __name__ == '__main__':
             if course_plan:
                 subtitle, usage_subtitle = course.generate_script(course_plan, slide_image_dir,
                     prompt_path, agent_config_v, args.result_dir, subtitle_cursor_gen,
-                    selected=json.loads(args.regenerate_pages) if args.regenerate_pages else None, workers=args.script_concurrency)
+                    selected=json.loads(args.regenerate_pages) if args.regenerate_pages else None, workers=args.script_concurrency,
+                    generation_id=args.script_generation_id)
             elif args.regenerate_pages:
                 subtitle, usage_subtitle = course.generate_selected(slide_image_dir, prompt_path,
-                    agent_config_v, args.result_dir, subtitle_cursor_gen, json.loads(args.regenerate_pages), workers=args.script_concurrency)
+                    agent_config_v, args.result_dir, subtitle_cursor_gen, json.loads(args.regenerate_pages), workers=args.script_concurrency,
+                    generation_id=args.script_generation_id)
             else:
                 subtitle, usage_subtitle = course.generate_script(None,
-                    slide_image_dir, prompt_path, agent_config_v, args.result_dir, subtitle_cursor_gen, workers=args.script_concurrency)
+                    slide_image_dir, prompt_path, agent_config_v, args.result_dir, subtitle_cursor_gen, workers=args.script_concurrency,
+                    generation_id=args.script_generation_id)
             # 显式 utf-8：读回处固定用 utf-8，写入端不该依赖环境默认编码
-            with open(subtitle_cursor_save_path, "w", encoding="utf-8") as f:
-                f.write(subtitle)
+            course.save_script(subtitle_cursor_save_path, subtitle)
         if args.review_before_render:
             course.write_json(path.join(args.result_dir, 'course_review.json'), {'ready': True})
             if course_plan:

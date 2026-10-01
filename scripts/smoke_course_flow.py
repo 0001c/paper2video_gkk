@@ -106,6 +106,8 @@ def main():
         script = result / 'subtitle_w_cursor.txt'
         script.write_text('\n###\n'.join('本页讲解内容。 | no' for _ in range(4)), encoding='utf-8')
         job['status'] = 'awaiting_review'
+        job['config'].update(script_concurrency=5, model_api_base='https://provider-one.invalid/v1')
+        web._remember_keys(job['id'], {'api_key': 'fake-original-key', 'api_base': 'https://provider-one.invalid/v1'})
         web._save_job(job)
         snapshot = client.get('/api/jobs/' + job['id'] + '/review').json()
         check(snapshot['editable'] and len(snapshot['pages']) == 4, '审核页读取课件和原始讲稿')
@@ -119,9 +121,11 @@ def main():
         check(len(list((result / 'script_versions').glob('*.txt'))) == 1, '讲稿旧版本被保留')
         check(client.put(route, json=edit).status_code == 409, '过期编辑不能覆盖新版本')
         current = saved.json()
-        render = client.post(route + '/run', json={'version': current['version'], 'pages': current['pages'], 'action': 'render'})
+        render = client.post(route + '/run', json={'version': current['version'], 'pages': current['pages'], 'action': 'render', 'api_base': 'https://provider-two.invalid/v1'})
         check(render.status_code == 200, '明确审核确认后创建配音合片任务')
         render_job = web._load_job(render.json()['job_id'])
+        check(render_job['config']['script_concurrency'] == 5, '审核调用未指定并发时保留任务原设置')
+        check(web._JOB_KEYS[render_job['id']] == {'api_key': 'fake-original-key', 'api_base': 'https://provider-two.invalid/v1'}, '续跑只补服务地址也保留任务 Key')
         check(not render_job['config']['review_before_render'] and render_job['config']['require_reuse_script'] and render_job['config']['stages'] == ['2', '3'], '配音只复用已审核讲稿，不再次调用模型')
         check(client.put(route, json={'version': current['version'], 'pages': current['pages']}).status_code == 409, '共享产物被占用时禁止保存')
         render_job['status'] = 'canceled'
@@ -130,6 +134,7 @@ def main():
         old_prompt = Path(old_prompt_path).read_text(encoding='utf-8')
         rewrite = client.post(route + '/run', json={'version': current['version'], 'pages': current['pages'], 'action': 'regenerate', 'page_ids': [1], 'refresh_prompt': True})
         rewrite_job = web._load_job(rewrite.json()['job_id'])
+        check(bool(rewrite_job['config']['script_generation_id']) and '--script_generation_id' in web._build_argv(rewrite_job), '每次重写有独立缓存标识并传入流水线')
         check(rewrite_job['config']['script_prompt_path'] != old_prompt_path
               and Path(old_prompt_path).read_text(encoding='utf-8') == old_prompt
               and '正在给学生上这门课' in Path(rewrite_job['config']['script_prompt_path']).read_text(encoding='utf-8'),
@@ -139,9 +144,11 @@ def main():
         retry_source = Path(rewrite_job['paper_latex_root'], 'main.tex')
         retry_source.parent.mkdir(parents=True, exist_ok=True)
         retry_source.write_text('测试课程原始工程', encoding='utf-8')
-        retry_rewrite = client.post('/api/jobs/' + rewrite_job['id'] + '/prepare-retry', json={})
+        retry_rewrite = client.post('/api/jobs/' + rewrite_job['id'] + '/prepare-retry', json={'api_key': 'fake-replacement-key'})
         assert retry_rewrite.status_code == 200, retry_rewrite.text
         retry_job = web._load_job(retry_rewrite.json()['job_id'])
+        check(retry_job['config']['script_generation_id'] == rewrite_job['config']['script_generation_id'], '失败恢复沿用同一次重写缓存标识')
+        check(web._JOB_KEYS[retry_job['id']] == {'api_key': 'fake-replacement-key', 'api_base': 'https://provider-one.invalid/v1'}, '准备恢复只补 Key 也保留服务地址')
         check(retry_rewrite.status_code == 200 and retry_job['config']['regenerate_pages'] == [1], '失败的局部重写恢复仍只操作原来选定的页')
         retry_job['status'] = 'canceled'
         web._save_job(retry_job)

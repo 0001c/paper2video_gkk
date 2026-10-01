@@ -10,7 +10,7 @@ from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -93,6 +93,51 @@ def main():
             recovered, _ = course.generate_script(None, slides, prompt, {}, failed_dir, failing, workers=2)
             assert saved.isdisjoint(failure_calls) and len(course.split_pages(recovered)) == 4
 
+            # 一次重写失败恢复只补缺页；用户再次重写则必须重新请求，不能冒充缓存成功。
+            rewrite_calls = []
+            original_script_sha = course.digest(Path(result, 'subtitle_w_cursor.txt').read_bytes())
+            rewrite_fails = True
+            def rewrite_page(*args, **kwargs):
+                i = int(Path(kwargs['image_paths'][0]).stem) - 1
+                rewrite_calls.append(i)
+                if i == 2 and rewrite_fails:
+                    raise RuntimeError('模拟重写中途失败')
+                return f'重新讲解 {i}。 | no', {}
+            try:
+                course.generate_selected(slides, prompt, {}, result, rewrite_page, [0, 2], workers=1, generation_id='rewrite-1')
+                raise AssertionError('重写失败未报告')
+            except RuntimeError:
+                assert 0 in rewrite_calls
+            rewrite_calls.clear()
+            rewrite_fails = False
+            rewritten, _ = course.generate_selected(slides, prompt, {}, result, rewrite_page, [0, 2], workers=1, generation_id='rewrite-1')
+            assert rewrite_calls == [2] and course.split_pages(rewritten)[1] == course.split_pages(output)[1]
+            assert (result / 'script_versions' / (original_script_sha + '.txt')).read_text(encoding='utf-8') == output
+            rewrite_calls.clear()
+            course.generate_selected(slides, prompt, {}, result, rewrite_page, [0], generation_id='rewrite-2')
+            assert rewrite_calls == [0], '新的重写操作不能直接复用上次讲稿'
+            rewrite_calls.clear()
+            course.generate_script(None, slides, prompt, {}, result, rewrite_page, generation_id='rewrite-all')
+            assert sorted(rewrite_calls) == [0, 1, 2, 3], '整套重写也必须避开初始缓存'
+            (result / 'course_script/0.json').write_text('[]', encoding='utf-8')
+            rewrite_calls.clear()
+            course.generate_script(None, slides, prompt, {}, result, rewrite_page, generation_id='rewrite-all')
+            assert rewrite_calls == [0], '损坏的缓存结构应视为缺页'
+            # 替换失败不能截断原文件，历史讲稿可回溯。
+            atomic = tmp / 'atomic.txt'
+            atomic.write_text('旧讲稿 | no', encoding='utf-8')
+            original_replace = Path.replace
+            def fail_replace(path, target):
+                if Path(target) == atomic:
+                    raise OSError('模拟替换前取消')
+                return original_replace(path, target)
+            with patch.object(Path, 'replace', fail_replace):
+                try:
+                    course.save_script(atomic, '新讲稿 | no')
+                    raise AssertionError('模拟失败未报告')
+                except OSError:
+                    assert atomic.read_text(encoding='utf-8') == '旧讲稿 | no'
+
             progress.unlink()
             progress_report.report('script', stage=2, done=0, total=30, total_pages=30)
             progress_report.report('script', stage=2, done=27, total=30, total_pages=30, generated_done=27, generation_elapsed_s=810, concurrency=3)
@@ -116,7 +161,7 @@ def main():
             assert web.artifact_cache.struct_key(a) != web.artifact_cache.struct_key(b)
             assert web.artifact_cache.deck_key(a) != web.artifact_cache.deck_key(b)
             assert web.artifact_cache.deck_key(a) != web.artifact_cache.deck_key({**a, 'script_generation_version': 1})
-            for bad in ({**config, 'script_concurrency': 9}, {**config, 'text_model': 'bad\nname'}):
+            for bad in ({**config, 'script_concurrency': 9}, *({**config, 'text_model': v} for v in ('bad\nname', '', False, 0))):
                 try:
                     web._normalize_models(bad)
                     raise AssertionError('非法模型设置未拒绝')
@@ -181,6 +226,28 @@ def main():
                 assert client.post('/api/models', json={**body, 'api_base': 'https://example.invalid/?key=secret'}).status_code == 422
                 assert client.post('/api/models', json=body, headers={'Origin': 'https://untrusted.invalid'}).status_code == 403
                 assert not web._JOB_KEYS, '读取列表不能持久化或记忆 API Key'
+                assert client.post('/api/models', json={**body, 'api_base': 'http://127.0.0.1:invalid'}).status_code == 422
+                assert client.post('/api/key/verify', json=body, headers={'Origin': 'https://untrusted.invalid'}).status_code == 403
+                assert client.post('/api/key/verify', json={**body, 'model': 'bad\nname'}).status_code == 422
+                fake_verify = MagicMock()
+                fake_verify.__enter__.return_value = fake_verify
+                fake_verify.chat.completions.create.return_value = SimpleNamespace(choices=[], usage=None)
+                with patch('openai.OpenAI', return_value=fake_verify):
+                    empty = client.post('/api/key/verify', json=body)
+                    assert not empty.json()['ok'] and empty.json()['kind'] == 'empty'
+                    fake_verify.chat.completions.create.side_effect = RuntimeError('connection fake-key')
+                    failed = client.post('/api/key/verify', json=body)
+                    assert failed.json()['kind'] == 'network' and 'fake-key' not in failed.text
+                    from starlette.requests import Request
+                    parent_thread = threading.get_ident()
+                    verify_threads = []
+                    def ping(**kwargs):
+                        verify_threads.append(threading.get_ident())
+                        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='pong'))], usage=None)
+                    fake_verify.chat.completions.create.side_effect = ping
+                    request = Request({'type': 'http', 'client': ('127.0.0.1', 50000), 'headers': []})
+                    verified = asyncio.run(web.api_key_verify(web.ModelVerifyRequest(**body), request))
+                    assert verified['ok'] and verify_threads[0] != parent_thread and fake_verify.__exit__.called
                 fallback = client.post('/api/models', json={**body, 'api_base': f'http://127.0.0.1:{server.server_port}/missing'})
                 assert not fallback.json()['ok'] and '手动输入' in fallback.json()['message']
                 web.CONTENT_ROOT = str(tmp / 'contents')

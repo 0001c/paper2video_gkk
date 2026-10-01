@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "tdesign-react";
 import { api, errorMessage, runExclusive } from "./flow";
 import { CursorPicker, type CursorOption } from './CursorPicker';
+import { Help, Section } from './Section';
 
 type Review = { version: string; pages: string[]; editable: boolean;
   timing: { estimated_minutes: number; actual_minutes: number | null; target_minutes: number | null;
@@ -43,12 +44,10 @@ export function ReviewPanel({ jobId, apiKey, apiBase, concurrency, cursors, curs
   const timing = review?.timing;
   const delta = timing?.actual_minutes != null && timing.target_minutes ? (timing.actual_minutes - timing.target_minutes) / timing.target_minutes : null;
   const estimatedDelta = timing?.target_minutes ? (timing.estimated_minutes - timing.target_minutes) / timing.target_minutes : null;
-  return <section className="review-panel" aria-label="课件与讲稿审核">
-    <div className="section-head"><h2 className="section-title">课件与讲稿审核</h2><Button variant="text" disabled={busy} onClick={() => {
+  return <Section title="课件与讲稿审核" important help="核对课件与讲稿后再确认配音合片。可逐页编辑；未变化的音频与定位结果可复用，最终视频会重新合成。光标选择用于下一次生成，已有成片不会自动更改。" actions={<Button variant="text" disabled={busy} onClick={() => {
       if (pages.join('\n') !== review?.pages.join('\n') && !window.confirm('重新读取会放弃未保存的讲稿编辑，是否继续？')) return;
       load();
-    }}>重新读取</Button></div>
-    <p className="hint">核对课件与讲稿后再开始配音合片。可修改单页，未变化的音频和定位结果会复用；最终视频会重新合成。</p>
+    }}>重新读取</Button>}>
     {error && <div className="notice err" role="alert">{error}。若版本已变化，请先复制未保存的编辑，再重新读取。</div>}
     {success && <p className="notice ok" role="status">{success}</p>}
     {!review && !error && <p role="status">正在读取审核内容…</p>}
@@ -59,17 +58,16 @@ export function ReviewPanel({ jobId, apiKey, apiBase, concurrency, cursors, curs
       <div className="field"><label htmlFor="review-page">查看页码</label><select id="review-page" value={selected} disabled={busy} onChange={(e) => setSelected(Number(e.target.value))}>{pages.map((_, i) => <option key={i} value={i}>第 {i + 1} 页{timing?.pages[i] ? ` · ${timing.pages[i].section}` : ""}</option>)}</select></div>
       <div className="review-grid">
         <a href={`/api/jobs/${jobId}/files/slide_imgs/${selected + 1}.png?v=${review.version}`} target="_blank" rel="noreferrer"><img alt={`第 ${selected + 1} 页课件`} src={`/api/jobs/${jobId}/files/slide_imgs/${selected + 1}.png?v=${review.version}`} /></a>
-        <div className="field"><label htmlFor="review-script">第 {selected + 1} 页讲稿与光标目标</label><textarea id="review-script" rows={14} maxLength={20000} disabled={!review.editable || busy} value={pages[selected] ?? ""} onChange={(e) => { setPages(pages.map((p, i) => i === selected ? e.target.value : p)); setAccepted(false); setSuccess(""); }} /><p className="hint">每行保留“讲稿 | 光标目标”，目标引用本页可见文字；没有目标写 no。页面分隔由系统维护。</p>
+        <div className="field"><div className="field-title"><label htmlFor="review-script">第 {selected + 1} 页讲稿与光标目标</label><Help title="讲稿输出格式" important>每行保留“讲稿 | 光标目标”，目标引用本页可见文字；没有目标写 no。页面分隔由系统维护。</Help></div><textarea id="review-script" rows={14} maxLength={20000} disabled={!review.editable || busy} value={pages[selected] ?? ""} onChange={(e) => { setPages(pages.map((p, i) => i === selected ? e.target.value : p)); setAccepted(false); setSuccess(""); }} />
         {timing?.pages[selected] && <p className="hint">本页预算 {timing.pages[selected].planned_minutes.toFixed(1)} 分钟，讲稿估算 {timing.pages[selected].estimated_minutes.toFixed(1)} 分钟{timing.pages[selected].actual_seconds != null ? `，实际音频 ${(timing.pages[selected].actual_seconds! / 60).toFixed(1)} 分钟` : ""}（保存后更新估算）。</p>}
         </div>
       </div>
       <label className="checkrow"><input type="checkbox" checked={refreshPrompt} disabled={!review.editable || busy} onChange={(e) => setRefreshPrompt(e.target.checked)} />重写时使用当前内容类型的最新讲稿模板（替换任务旧提示词）</label>
       <div className="actions"><Button variant="outline" disabled={!review.editable || busy} onClick={() => apply("save")}>保存全部讲稿修改</Button><Button variant="outline" disabled={!review.editable || busy || !apiKey.trim()} onClick={() => apply("regenerate")}>调用模型重写本页</Button></div>
       <CursorPicker options={cursors} style={style} scale={scale} disabled={!review.editable || busy} onStyle={(value) => { setStyle(value); setAccepted(false); }} onScale={(value) => { setScale(value); setAccepted(false); }} />
-      <p className="hint">此处选择用于下一次生成的视频；只换光标，可复用现有讲稿与配音。</p>
       <label className="checkrow"><input type="checkbox" checked={accepted} disabled={!review.editable || busy} onChange={(e) => setAccepted(e.target.checked)} />已核对所有课件和讲稿，确认开始配音与合片</label>
       <div className="actions"><Button theme="primary" loading={busy} disabled={!review.editable || !accepted || busy} onClick={() => apply("render")}>确认并生成配音视频</Button></div>
       {!review.editable && <p className="hint">有任务正在使用这份产物，暂不能编辑。结束后可重新读取。</p>}
     </>}
-  </section>;
+  </Section>;
 }

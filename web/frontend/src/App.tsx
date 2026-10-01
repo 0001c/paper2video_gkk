@@ -7,6 +7,7 @@ import { ReviewPanel } from "./ReviewPanel";
 import { ThemeToggle } from "./ThemeToggle";
 import { ModelSettings } from "./ModelSettings";
 import { CursorPicker, type CursorOption } from "./CursorPicker";
+import { Help, Section } from './Section';
 
 /* ─────────────────────────────────────────────────────────────
    接口层。三个注意点：
@@ -1058,7 +1059,7 @@ export default function App() {
         </div>
       )}
       <div hidden={view !== "new"}>
-      <p className="hint">这里的设置只用于新任务，不会更改已创建的任务。文字设置自动保存为本机草稿。</p>
+      <div className="draft-caption"><span>新任务编辑版</span><Help title="新任务草稿">这里的设置只用于新任务，不会更改已创建的任务。文字设置自动保存为本机草稿，文件需要重新选择。</Help></div>
       {(!paperFile && initialDraft.paperName || !portraitFile && initialDraft.portraitName) && (
         <div className="notice info">
           <span>已恢复文字设置。浏览器不能恢复文件选择，请重新选择
@@ -1069,12 +1070,11 @@ export default function App() {
       )}
       <fieldset className="draft-fields" disabled={submitting}>
       {/* ① 素材 */}
-      <section className="section">
-        <div className="section-head">
-          <span className="section-num">1</span>
-          <h2 className="section-title">素材</h2>
-          <span className="section-note">支持 Word / PDF / LaTeX</span>
-        </div>
+      <Section number="01" title="素材" summary={paperFile?.name ?? '未选择内容文件'} important help={<>
+        <p>支持 Word、PDF、LaTeX 或 ZIP，内容文件用于生成课件、讲稿、配音与字幕。上传后先提取并核对预览。</p>
+        <p>相同文件按内容指纹复用已有提取结果，不会重复保存与解析。</p>
+        <p>数字人只用于画面角落的小窗，人像与配音音色分别设置；未启用或未选人像时仍可输出完整讲解视频。</p>
+      </>}>
         <div className="grid grid-2 material-grid">
           <div className="material-panel">
             <div className="material-heading">
@@ -1098,7 +1098,6 @@ export default function App() {
                 setIngest(null);
               }}
             />
-            <div className="material-note">用于生成幻灯片、讲稿、配音与字幕。</div>
           </div>
           <div className="material-panel">
             <div className="material-heading">
@@ -1126,12 +1125,8 @@ export default function App() {
             ) : (
               <div className="material-skip">
                 <strong>已关闭数字人</strong>
-                <span>仍会输出带配音、光标和字幕的完整视频</span>
               </div>
             )}
-            <div className="material-note">
-              人像仅用于画面角落的小窗，与配音音色无关；音色可在下一节设置。
-            </div>
             {/* 人像校验结果内联在 Dropzone 下方（不用弹窗，避免遮住刚要确认的东西） */}
             {portraitInfo && (
               <div className="notice ok" style={{ marginTop: 8, fontSize: 11.5 }}>
@@ -1159,9 +1154,6 @@ export default function App() {
           <Button theme="primary" variant="outline" loading={ingesting} disabled={!paperFile || submitting} onClick={doIngest}>
             提取并预览
           </Button>
-          <span style={{ fontSize: 12, color: "var(--paper-ink-faint)" }}>
-            先确认提取结果，再开跑 —— 转换错了下游无法补救
-          </span>
         </div>
 
         {ingest?.error && (
@@ -1189,20 +1181,16 @@ export default function App() {
             不说一句的话，"秒出结果"会被当成"没真提取"（实测容易误判）。 */}
         {ingest?.cached && !ingest.error && (
           <div className="notice info">
-            <span>
-              <b>复用了已有结果</b>　这份文件之前上传过（按内容指纹识别），
-              服务器没有重复保存、也没有重复解析 —— 所以这次是秒出的。
-            </span>
+            <span><b>已复用提取结果</b> · 这份文件之前已上传</span>
           </div>
         )}
-      </section>
+      </Section>
 
       {/* ② 语言与类型 */}
-      <section className="section">
-        <div className="section-head">
-          <span className="section-num">2</span>
-          <h2 className="section-title">语言与内容类型</h2>
-        </div>
+      <Section number="02" title="语言与内容类型" summary={`${slideLang === 'zh' ? '中文' : '英文'}课件 / ${scriptLang === 'zh' ? '中文' : '英文'}讲解 · ${slideCount || '待填'} 页`} help={<>
+        <p>语言预设同时设置课件和讲稿语言，也可分别覆盖。页数包含封面和结束页，可设置 4～40 页。</p>
+        <p>{(opts?.script_prompt_profiles ?? []).find((x) => x.value === contentProfile)?.desc}</p>
+      </>}>
         <div className="grid grid-3">
           <div className="field">
             <label>语言预设</label>
@@ -1212,7 +1200,6 @@ export default function App() {
               options={[...(opts?.presets ?? []).map((x) => ({ label: x.label, value: x.value })), { label: "自定义语言组合", value: "custom" }]}
               style={{ width: "100%" }}
             />
-            <div className="hint">预设会同时设定下面两个轴，之后可单独覆盖</div>
           </div>
           <div className="field">
             <label>幻灯片语言</label>
@@ -1245,9 +1232,6 @@ export default function App() {
               }))}
               style={{ width: "100%" }}
             />
-            <div className="hint">
-              {(opts?.script_prompt_profiles ?? []).find((x) => x.value === contentProfile)?.desc}
-            </div>
           </div>
           <div className="field">
             <label>幻灯片页数</label>
@@ -1264,11 +1248,12 @@ export default function App() {
                 Math.max(opts?.slide_count?.min ?? 4, Math.round(Number(slideCount) || 12)),
               ))}
             />
-            <div className="hint">包含封面和结束页，可设置 4～40 页</div>
           </div>
         </div>
-        <details className="advanced-settings">
-          <summary>高级设置：提示词与布局</summary>
+        <Section title="高级设置：提示词与布局" compact defaultOpen={false} important help={<>
+          <p>可编辑角色、受众、讲解详略及课件风格。自定义内容在切换语言或类型后保留，使用“应用当前模板”可以替换。</p>
+          <p>课件输出必须保留 LaTeX Beamer 的 documentclass 与 frame；讲稿输出必须保留 ### 页分隔和“讲稿 | 光标目标”格式，否则字幕与光标无法解析。</p>
+        </>}>
           {(scriptPrompt !== promptTemplate || slidePrompt !== slidePromptTemplate) && (
             <p className="hint">正在使用自定义提示词。切换语言或内容类型会保留你的编辑；如需新模板，请点击对应的“应用当前模板”。</p>
           )}
@@ -1295,10 +1280,6 @@ export default function App() {
             >
               应用当前模板
             </Button>
-            <span className="hint">
-              可修改内容结构、视觉风格和信息密度；页数会作为强约束自动附加。
-              请保留 LaTeX Beamer 的 <code>documentclass</code> 与 <code>frame</code> 输出要求。
-            </span>
           </div>
         </div>
         <div className="field" style={{ marginTop: 16 }}>
@@ -1324,10 +1305,6 @@ export default function App() {
             >
               应用当前模板
             </Button>
-            <span className="hint">
-              可修改角色、语气、详略与受众；请保留 <code>###</code> 页分隔和
-              <code>讲稿 | 光标目标</code> 输出格式，否则后续光标与字幕无法解析。
-            </span>
           </div>
         </div>
         {/* 布局微调说明折叠进问号提示，避免一个复选框占据大段页面。 */}
@@ -1341,19 +1318,11 @@ export default function App() {
                 />
                 <span>{treeToggle.label}</span>
               </label>
-              <span className="help-tip" tabIndex={0} aria-label="查看布局微调说明">
-                ?
-                <span className="help-tip-content" role="tooltip">
-                  <b>{treeToggle.note}</b>
-                  {treeToggle.hint && <span>{treeToggle.hint}</span>}
-                  {treeToggle.cost && <span>额外消耗：{treeToggle.cost}</span>}
-                </span>
-              </span>
+              <Help title="布局微调" important><p>{treeToggle.note}</p>{treeToggle.hint && <p>{treeToggle.hint}</p>}{treeToggle.cost && <p>额外消耗：{treeToggle.cost}</p>}</Help>
               {ifTreeSearch && <span className="option-active">已开启，将增加生成时间</span>}
           </div>
         )}
-        </details>
-      </section>
+        </Section>
 
       <div className="course-switch">
         <label className="checkrow"><input type="checkbox" checked={courseEnabled} onChange={(e) => { setCourseEnabled(e.target.checked); setCoursePlan(null); }} />设置教学范围与目标时长（适用于课程授课）</label>
@@ -1365,22 +1334,18 @@ export default function App() {
         }}>使用中文授课语言推荐</button>}
       </div>
         {languageNotice && courseEnabled && <p className="notice info" role="status">{languageNotice}</p>}
+      </Section>
       {courseEnabled && <CoursePanel ingestId={ingest?.ingest_id} settings={courseSettings} onSettings={setCourseSettings}
         slideCount={slideCount} scriptLang={scriptLang} onPlan={setCoursePlan} />}
 
       {/* ③ 音色 —— 四种来源最终都归结为"一份参考音频 + 它的参考文本"。
           逐页合成始终是**本地** Qwen3-TTS：云端只用来造这一小段音色样本，
           所以免费额度、断网、没配 key 都不会影响出片（会回落到内置音色）。 */}
-      <section className="section">
-        <div className="section-head">
-          <span className="section-num">3</span>
-          <h2 className="section-title">音色</h2>
-          <span className="section-note">
-            {opts?.voice?.available
-              ? "可生成 / 可上传"
-              : "未配置 MIMO_API_KEY —— 仍可用内置音色与上传"}
-          </span>
-        </div>
+      <Section number="04" title="音色" summary={voiceMode === 'default' ? '内置默认音色' : voiceMode === 'preset' ? presetPick?.label ?? '待选择音色' : voiceMode === 'design' ? '描述生成' : '上传参考音频'} important={voiceMode === 'upload'} help={<>
+        <p>音色只影响说话人。内置音色无需联网；已保存音色直接复用，预置及设计音色按讲稿语言筛选。上传音频需自行核对语言，跨语言克隆可能影响发音。</p>
+        <p>{opts?.voice?.available ? '支持生成与上传；生成样本使用服务端已配置的音色接口，无需另外填凭据。同一音色生成后缓存，可反复使用。' : '服务端未配置音色接口，仍可使用内置音色、已保存的样本或上传音频。'}</p>
+        <p>描述音色时填写性别年龄、质感、语速与角色；混响和 EQ 等属于后期效果，不适合作为音色描述。</p>
+      </>}>
 
         <div className="field">
           <label>讲稿由谁来讲</label>
@@ -1396,12 +1361,6 @@ export default function App() {
           </RadioGroup>
         </div>
 
-        {voiceMode === "default" && (
-          <div className="hint" style={{ marginTop: 10 }}>
-            用讲稿语言对应的内置参考音频（现在是{scriptLang === "zh" ? "中文" : "英文"}）。
-            不需要额外音色接口凭据；想换人声可以选择其他音色来源。
-          </div>
-        )}
 
         {voiceMode === "preset" && (
           <div className="grid grid-2" style={{ marginTop: 12 }}>
@@ -1421,13 +1380,9 @@ export default function App() {
                 }))}
                 style={{ width: "100%" }}
               />
-              <div className="hint">
-                预置和设计音色按讲稿语言筛选；列表末尾是已保存的设计音色和上传音频。
-                上传音频的语言请自行核对，跨语言克隆可能影响发音。
-              </div>
             </div>
             <div className="field">
-              <label>试听</label>
+              <div className="field-title"><label>试听</label><Help title="音色试听">同一个音色样本只生成一次，之后从缓存读取；可反复试听和使用。</Help></div>
               <div className="actions">
                 <Button
                   variant="outline"
@@ -1437,7 +1392,6 @@ export default function App() {
                 >
                   {presetPick?.sample_url ? "试听已保存音色" : "生成并试听"}
                 </Button>
-                <span className="hint">同一个音色只生成一次，之后走缓存</span>
               </div>
             </div>
           </div>
@@ -1454,10 +1408,6 @@ export default function App() {
                 onChange={(e) => setDesignPrompt(e.target.value)}
                 placeholder="例：三十多岁的女性学者，音色清亮而稳，语速适中，咬字清晰，像在讲台上讲课。"
               />
-              <div className="hint">
-                写法：性别年龄 + 音色质感 + 语速节奏（可选：角色 / 场景）。
-                别写混响、EQ 这类后期处理词，模型会忽略它们。
-              </div>
             </div>
             <div className="actions">
               <Button
@@ -1476,9 +1426,6 @@ export default function App() {
               >
                 重新生成
               </Button>
-              <span className="hint">
-                同一段描述每次结果略有不同 —— 不满意就重掷；生成出来就自动存进"我的音色"，可反复用
-              </span>
             </div>
           </div>
         )}
@@ -1494,7 +1441,7 @@ export default function App() {
               onPick={uploadVoice}
             />
             <div className="field">
-              <label>参考文本（强烈建议填写）</label>
+              <div className="field-title"><label>参考文本</label><Help title="参考文本" important>填写音频里说的话。留空将由 ASR 自动转写，转写错误可能影响声音克隆效果，建议核对后填写。</Help></div>
               <textarea
                 className="voiceinput"
                 rows={3}
@@ -1502,10 +1449,6 @@ export default function App() {
                 onChange={(e) => setUploadText(e.target.value)}
                 placeholder="把这段音频里说的话原样打出来"
               />
-              <div className="hint">
-                留空会交给 ASR 自动转写 —— 实测<b>可能转错</b>，
-                而错的参考文本会让克隆出来的音色跑偏（这是本项目的已知坑）。
-              </div>
             </div>
           </div>
         )}
@@ -1539,29 +1482,21 @@ export default function App() {
           </div>
         ))}
 
-        <div className="hint" style={{ marginTop: 10 }}>
-          音色只影响讲稿的说话人。生成动作每个内容任务最多一次（同一个音色之后走缓存），
-          写在服务端的 <code>MIMO_API_KEY</code> 上，不需要你额外配置。
-        </div>
         {voiceMode === "upload" && !uploadSpec && initialDraft.voiceMode === "upload" && (
           <p className="hint">已恢复参考文本，请重新上传参考音频。</p>
         )}
-      </section>
+      </Section>
 
-      <section className="section">
-        <div className="section-head"><span className="section-num">4</span><h2 className="section-title">视频光标</h2><span className="section-note">随讲解定位目标</span></div>
+      <Section number="05" title="视频光标" summary={opts?.cursors?.find((item) => item.value === cursorStyle)?.label ?? '红色光点'} help="选择随讲解指向目标的视觉标记，可在审核界面再次调整。不同样式只改变最终画面，未变化的讲稿与配音可复用。">
         <CursorPicker options={opts?.cursors ?? []} style={cursorStyle} scale={cursorScale} onStyle={setCursorStyle} onScale={setCursorScale} />
-      </section>
+      </Section>
 
       {/* ⑤ API key */}
-      <section className="section">
-        <div className="section-head">
-          <span className="section-num">5</span>
-          <h2 className="section-title">接口凭据</h2>
-          <span className="section-note">
-            {rememberKey ? "保存在本机浏览器" : "仅本次会话（刷新即丢）"}
-          </span>
-        </div>
+      <Section number="06" title="接口凭据" summary={apiKey.trim() ? '已填写 · ' + (rememberKey ? '本机保存' : '本次会话') : '待填写'} important help={<>
+        <p>提交前建议连接自检；余额不足或接口空回复可能表现为连接失败。</p>
+        <p>凭据只保存在本机浏览器和服务进程内存，不写入文件或任务记录。勾选“记住本机”会写入浏览器 localStorage，同源页面可以读取；关闭后刷新需要重填。</p>
+        <p>服务端按任务隔离凭据，多人使用应各自填写。本机存储适合当前本地使用，公网部署需单独鉴权。</p>
+      </>}>
         <div className="grid grid-2">
           <div className="field">
             <label>API Key</label>
@@ -1581,7 +1516,7 @@ export default function App() {
               checked={rememberKey}
               onChange={(e) => setRememberKey(e.target.checked)}
             />
-            记住本机（存在浏览器 localStorage，刷新后不用重填）
+            记住本机
           </label>
           <button
             type="button"
@@ -1597,13 +1532,6 @@ export default function App() {
             清除本地凭据
           </button>
         </div>
-        <div className="hint">
-          提交前建议先自检 —— 余额不足时网关返回空响应，症状与网络抖动完全一样。
-          <br />
-          凭据只存<b>本机浏览器</b>与服务的进程内存，不写入任何文件、也不会写进任务记录；
-          服务端按任务隔离，多人共用同一服务时各自用自己的 key。
-          （localStorage 是同源可见的，本机/内网使用足够；将来开放公网访问需改为服务端会话。）
-        </div>
         {keyCheck && (
           <div className={"notice " + (keyCheck.ok ? "ok" : "err")}>
             <span>
@@ -1614,13 +1542,14 @@ export default function App() {
             </span>
           </div>
         )}
-      </section>
+      </Section>
 
       </fieldset>
-      <section className="section submit-section" aria-label="创建新任务">
-        <h2 className="section-title">生成课件与讲稿，进入审核</h2>
-        <p className="hint">所有讲解类型都会先暂停在审核界面。审核确认后，再生成配音和视频。</p>
-        {courseEnabled && <p>成片目标：{coursePlan ? `约 ${coursePlan.planned_minutes} 分钟` : "请先确认教案"}。此时长与生成等待时间分开计算。</p>}
+      <Section number="07" title="生成课件与讲稿，进入审核" label="创建新任务" summary={missing.length ? '待完善设置' : '准备就绪'} important help={<>
+        <p>所有讲解类型都先生成课件与讲稿并暂停审核；明确确认后才配音和合片。</p>
+        <p>生成等待时间与成片播放时长分别计算。长课程尚无完整耗时标定；讲稿阶段动态估计剩余等待时间，配音合片以实际进度为准。新任务按队列串行执行。</p>
+      </>}>
+        {courseEnabled && <p>成片目标：{coursePlan ? `约 ${coursePlan.planned_minutes} 分钟` : "请先确认教案"}。</p>}
         <p>
           幻灯片：{slideLang === "zh" ? "中文" : "英文"} · 讲解：{scriptLang === "zh" ? "中文" : "英文"}
           {` · ${slideCount || "待填写"} 页 · 数字人${generateTalking && portraitFile ? "启用" : "关闭"}`}
@@ -1628,8 +1557,8 @@ export default function App() {
         </p>
         {generateTalking && !portraitFile && <p className="hint">未选择人像，实际将生成无数字人小窗的视频。</p>}
         <p className="hint">
-          {courseEnabled ? "长课程尚无生成耗时标定；讲稿阶段按本次接口速度动态估计剩余时间，配音合片以实际进度为准。" : est ? `本地配音与合片参考 ${est.lo}～${est.hi} 分钟（${est.slides} 页），不含课件与讲稿的接口等待时间，不代表成片播放时长。` : "生成等待时间以任务实际进度为准。"}
-          {` 当前 ${activeCount} 个任务执行中、${queuedCount} 个排队中；新任务会串行排队。`}
+          {!courseEnabled && est ? `本地配音与合片参考 ${est.lo}～${est.hi} 分钟（${est.slides} 页） · ` : ''}
+          {`${activeCount} 个任务执行中 · ${queuedCount} 个排队中`}
         </p>
         <div className="actions">
           <Button theme="primary" loading={submitting} disabled={!ready || submitting} onClick={submit}>
@@ -1639,7 +1568,7 @@ export default function App() {
             {missing.length ? `还需：${missing.join("；")}` : ingesting || voiceBusy ? "正在准备素材，请稍候" : "素材已就绪，可以创建新任务"}
           </span>
         </div>
-      </section>
+      </Section>
       </div>
 
       {/* 已创建任务的详情与新任务草稿独立 */}

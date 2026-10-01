@@ -28,6 +28,9 @@ export async function toggleTheme(event: Click, onChange: (theme: Theme) => void
   const y = event.detail > 0 ? event.clientY : rect ? rect.top + rect.height / 2 : 48;
   const radius = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y));
   const clipPath = [`circle(0px at ${x}px ${y}px)`, `circle(${radius}px at ${x}px ${y}px)`];
+  // 新快照出现到 ready 回调之间也必须保持裁切，避免亮色先全屏闪出。
+  document.documentElement.style.setProperty('--theme-x', `${x}px`);
+  document.documentElement.style.setProperty('--theme-y', `${y}px`);
   switching = true;
   let transition: ViewTransition | undefined;
   try {
@@ -36,7 +39,7 @@ export async function toggleTheme(event: Click, onChange: (theme: Theme) => void
     await transition.ready;
     document.documentElement.animate(
       { clipPath: next === "dark" ? [...clipPath].reverse() : clipPath },
-      { duration: 600, easing: "ease-in-out", pseudoElement: next === "dark" ? "::view-transition-old(root)" : "::view-transition-new(root)" },
+      { duration: 600, easing: "ease-in-out", fill: "both", pseudoElement: next === "dark" ? "::view-transition-old(root)" : "::view-transition-new(root)" },
     );
     await transition.finished;
   } catch {

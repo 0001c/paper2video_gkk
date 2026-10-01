@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "tdesign-react";
 import { api, errorMessage, runExclusive } from "./flow";
+import { Help, Section } from './Section';
 
 export type CourseSettings = {
   section_ids: string[]; duration_mode: "auto" | "custom"; target_minutes: number;
@@ -49,12 +50,14 @@ export function CoursePanel({ ingestId, settings, onSettings, slideCount, script
       settings, slide_count: slideCount, script_lang: scriptLang });
     if (current === contextRef.current) { setDraftPlan(data); setPlanContext(current); setConfirmed(false); }
   }, (e) => setError(errorMessage(e)));
-  return <section className="section" aria-label="课程计划">
-    <div className="section-head"><h2 className="section-title">教学范围与目标时长</h2><span className="section-note">先审核教案，再生成课件与讲稿</span></div>
-    {!ingestId && <p className="hint">完成素材提取后，可选择本次要讲的章节或小节。</p>}
+  return <Section number="03" title="教学范围与目标时长" label="课程计划" summary={confirmed ? `已确认 · ${draftPlan?.planned_minutes} 分钟` : '待确认教案'} important help={<>
+    <p>先提取素材，再选择章节或小节。选整章会包含其小节，请避免重复选择；没有可靠标题时可以上传单独的小节文件。</p>
+    <p>预览教案在本机分配教学时间，不调用生成接口。核对后再生成课件与讲稿；修改范围或时间后需重新更新并确认。</p>
+    <p>目标时长用于讲稿预算，合成后显示实际时长及偏差。不保证精确到秒，建议验收范围 ±10%。</p>
+  </>}>
+    {!ingestId && <p className="notice info" role="status">请先提取素材，再选择教学范围。</p>}
     {sourceError && <p role="alert" className="notice err">{sourceError}</p>}
-    {source.length > 0 && <details className="advanced"><summary>选择教学范围 · 已选 {settings.section_ids.length} 项</summary>
-      <p className="hint">选整章会包含其小节；请避免同时选择章与它的小节。无可靠标题时，请上传单独的小节文件。</p>
+    {source.length > 0 && <Section title="选择教学范围" compact defaultOpen={false} summary={`已选 ${settings.section_ids.length} 项`}>
       <div className="course-sources">{source.map((s) => <label className="checkrow" key={s.id}>
         <input type="checkbox" checked={settings.section_ids.includes(s.id)} onChange={(e) => {
           const ids = s.id === "all" ? (e.target.checked ? ["all"] : []) : e.target.checked
@@ -62,18 +65,18 @@ export function CoursePanel({ ingestId, settings, onSettings, slideCount, script
           update({ section_ids: ids, sections: undefined });
         }} />{s.title} <span className="hint">{s.chars} 字符</span>
       </label>)}</div>
-    </details>}
+    </Section>}
     <div className="grid grid-2">
       <div className="field"><label htmlFor="course-mode">成片播放时长</label><select id="course-mode" value={settings.duration_mode} onChange={(e) => update({ duration_mode: e.target.value as "auto" | "custom", sections: undefined })}>
         <option value="auto">自动分配（审核教案时可调整）</option><option value="custom">自定义目标分钟数</option>
       </select></div>
       {settings.duration_mode === "custom" && <div className="field"><label htmlFor="course-target">目标分钟数（1～180）</label>
         <input id="course-target" type="number" min="1" max="180" step="0.5" value={settings.target_minutes} onChange={(e) => update({ target_minutes: Number(e.target.value), sections: undefined })} /></div>}
-      <div className="field"><label htmlFor="course-rate">预算语速（{scriptLang === "zh" ? "字" : "词"}/分钟）</label><input id="course-rate" type="number" min="80" max="400" value={settings.speech_rate} onChange={(e) => update({ speech_rate: Number(e.target.value) })} /><span className="hint">用于讲稿长度预算；不会改变已验证的音色或强行拉伸音频。</span></div>
+      <div className="field"><div className="field-title"><label htmlFor="course-rate">预算语速（{scriptLang === "zh" ? "字" : "词"}/分钟）</label><Help title="预算语速">用于讲稿长度预算；不会改变音色、语速或强行拉伸音频。最终时长需要实际配音后校准。</Help></div><input id="course-rate" type="number" min="80" max="400" value={settings.speech_rate} onChange={(e) => update({ speech_rate: Number(e.target.value) })} /></div>
       <div className="field"><label htmlFor="course-audience">学生基础 / 受众</label><input id="course-audience" maxLength={2000} placeholder="例如：大一学生，已学习集合和基本代数" value={settings.audience} onChange={(e) => update({ audience: e.target.value })} /></div>
       {([['objectives', '学习目标', '学完后学生应该能解释或完成什么'], ['focus', '重点与难点', '例如：公式推导和例题中容易混淆的步骤'], ['depth', '讲解深度与方式', '概念解释、推导、例题、易错点、小结']] as const).map(([key, label, hint]) => <div className="field" key={key}><label htmlFor={`course-${key}`}>{label}</label><textarea id={`course-${key}`} maxLength={2000} rows={3} placeholder={hint} value={settings[key]} onChange={(e) => update({ [key]: e.target.value })} /></div>)}
     </div>
-    <div className="actions"><Button variant="outline" loading={busy} disabled={!ingestId || !settings.section_ids.length} onClick={prepare}>预览 / 更新教案</Button><span className="hint">此步在本机分配教学时间，不调用生成接口。</span></div>
+    <div className="actions"><Button variant="outline" loading={busy} disabled={!ingestId || !settings.section_ids.length} onClick={prepare}>预览 / 更新教案</Button></div>
     {error && <p className="notice err" role="alert">{error}</p>}
     {draftPlan && <div className="course-plan">
       <p>计划成片约 {draftPlan.planned_minutes} 分钟。请核对标题和分节时间；修改后点击“更新教案”。</p>
@@ -84,7 +87,6 @@ export function CoursePanel({ ingestId, settings, onSettings, slideCount, script
       </tr>)}</tbody></table></div>
       {draftPlan.warnings.map((w) => <p key={w} className="notice warn">{w}</p>)}
       <label className="checkrow"><input type="checkbox" disabled={planContext !== context} checked={confirmed} onChange={(e) => { setConfirmed(e.target.checked); onPlan(e.target.checked ? draftPlan : null); }} />已核对教学范围和时间分配{planContext !== context ? "（设置已变化，请先更新教案）" : ""}</label>
-      <p className="hint">时长按讲稿预算，合成后显示实际时长及偏差；不保证精确到秒，建议验收范围 ±10%。</p>
     </div>}
-  </section>;
+  </Section>;
 }

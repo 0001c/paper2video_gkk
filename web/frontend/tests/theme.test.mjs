@@ -7,7 +7,7 @@ import { transformSync } from "esbuild";
 test("主题首屏、持久化、动画方向、连点互斥和兼容降级", async () => {
   const boot = readFileSync(new URL("../index.html", import.meta.url), "utf8").match(/<script>([\s\S]*?)<\/script>/)[1];
   const saved = new Map(), attributes = new Map(), animations = [];
-  const root = { style: {}, setAttribute: (k, v) => attributes.set(k, v), getAttribute: (k) => attributes.get(k),
+  const root = { style: { setProperty(name, value) { this[name] = value; } }, setAttribute: (k, v) => attributes.set(k, v), getAttribute: (k) => attributes.get(k),
     animate: (frames, options) => animations.push({ frames, options }) };
   const storage = { getItem: (key) => saved.get(key), setItem: (key, value) => saved.set(key, value) };
   const environment = { document: { documentElement: root }, localStorage: storage,
@@ -42,6 +42,8 @@ test("主题首屏、持久化、动画方向、连点互斥和兼容降级", as
     for (let i = 0; i < 5; i++) await toggleTheme(click, (theme) => changed.push(theme));
     assert.equal(starts, 1, "连点不叠加快照");
     assert.equal(animations[0].options.pseudoElement, "::view-transition-old(root)");
+    assert.equal(animations[0].options.fill, 'both', '动画前后都保持裁切，防止快照全屏闪出');
+    assert.equal(root.style['--theme-x'], '1010px');
     assert.match(animations[0].frames.clipPath[1], /circle\(0px at 1010px 60px\)/);
     const radius = Number(animations[0].frames.clipPath[0].match(/circle\(([\d.]+)px/)[1]);
     assert.ok(radius >= Math.hypot(1010, 740), "裁切半径覆盖最远角");
@@ -50,6 +52,10 @@ test("主题首屏、持久化、动画方向、连点互斥和兼容降级", as
     await Promise.resolve();
     assert.equal(animations[1].options.pseudoElement, "::view-transition-new(root)");
     assert.equal(animations[1].frames.clipPath[0], "circle(0px at 940px 50px)", "键盘触发从按钮中心开始");
+    const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+    assert.match(css, /theme-mode="light"\]::view-transition-new\(root\)\s*\{[^}]*clip-path:\s*circle\(0px/, 'ready 之前的新亮色快照必须有初始裁切');
+    assert.doesNotMatch(css, /::view-transition-group\(root\)\s*\{[^}]*animation:\s*none/, '保留 group 的快照尺寸动画，避免旧快照消失而露出白底');
+    assert.equal(animations[1].options.fill, 'both', '最终圆形覆盖要保留到快照层销毁');
     release(); await second;
     globalThis.matchMedia = () => ({ matches: true });
     await toggleTheme(click, () => {});

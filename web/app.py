@@ -1675,7 +1675,6 @@ async def _run_job(job):
     _save_job(job)
 
     env = dict(os.environ)
-    env['PAPER2VIDEO_FORCE_COMPATIBLE'] = '1'  # 网页填写的服务商端点统一使用 OpenAI 兼容协议。
     # P1：告诉流水线把结构化进度写到哪里。未设置该环境变量时，
     # 流水线**不生成任何额外文件**（命令行直接跑 pipeline.py 行为完全不变）。
     env["PAPER2VIDEO_PROGRESS_FILE"] = os.path.join(job_dir, "progress.jsonl")

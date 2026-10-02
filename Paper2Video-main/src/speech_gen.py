@@ -1,22 +1,6 @@
-"""语音合成与转写。
+"""本地 Qwen3 语音合成、参考音频转写与字词对齐。
 
-替换说明（2026-09，详见 docs/模型替换方案.md）
-------------------------------------------------
-原实现                          现实现                          许可证变化
-F5-TTS 0.34B                  Qwen3-TTS-12Hz-1.7B-Base        CC-BY-NC -> Apache-2.0
-whisperx large-v2/large-v3    Qwen3-ASR-0.6B                  BSD-4   -> Apache-2.0
-whisperx.align                Qwen3-ForcedAligner-0.6B        BSD-4   -> Apache-2.0
-
-关键实现细节
-------------
-1. **模型一律惰性单例**。原代码 ``inference_f5`` 每次调用都 ``F5TTS()``，
-   在逐页循环里等于每页重载一次模型；Qwen3-TTS 权重 3.9 GB，重载代价更高。
-2. **参考音频的音色 prompt 只编码一次**。``create_voice_clone_prompt`` 的结果
-   被缓存复用，避免逐页重复编码 ref_audio。
-3. **不使用 flash-attention**。Windows 上 flash-attn 几乎无法编译安装，
-   统一走 PyTorch 自带的 SDPA，精度无损失、速度差异在小模型上可忽略。
-4. 旧实现（F5-TTS / WhisperX）保留为可选分支，未安装对应依赖时会给出明确提示，
-   不影响 Qwen3 路径。
+模型惰性加载，音色 prompt 跨页复用；合成结果保留时长护栏与课程分块缓存。
 """
 
 import os
@@ -181,28 +165,7 @@ def align_with_qwen3(audio_path, text, lang="English"):
     return {"segments": [{"words": words}]}
 
 
-def transcribe_with_whisperx(audio_path, lang="en", device=None):
-    """[已弃用] 原 WhisperX 实现，仅用于对照排查，需要自行安装 whisperx。
 
-    新流程请用 :func:`transcribe_with_qwen3asr`。保留此函数是为了让
-    ``pipeline_light.py`` 里旧的调用点在迁移期不至于直接崩掉。
-    """
-    try:
-        import torch
-        import whisperx
-    except ImportError as exc:
-        raise RuntimeError(
-            "WhisperX 已从默认依赖中移除（改为 Qwen3-ASR）。"
-            "如需回退旧行为，请自行 pip install whisperx。原始报错: {}".format(exc)
-        )
-
-    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    model = whisperx.load_model("large-v2", device=device,
-                                compute_type="float16" if device == "cuda" else "int8")
-    result = model.transcribe(audio_path, language=lang)
-    model_a, metadata = whisperx.load_align_model(language_code=result["language"], device=device)
-    result_aligned = whisperx.align(result["segments"], model_a, metadata, audio_path, device)
-    return " ".join(seg["text"].strip() for seg in result_aligned["segments"])
 
 
 # ──────────────────────────────────────────────────────────────
@@ -313,18 +276,7 @@ def synth_page_qwen3tts(text_prompt, save_path, ref_audio, ref_text, language=No
     return save_path, dur
 
 
-def inference_f5(text_prompt, save_path, ref_audio, ref_text):
-    """[已弃用] 原 F5-TTS 实现（CC-BY-NC，不可商用），需自行安装 f5-tts。"""
-    try:
-        from f5_tts.api import F5TTS
-    except ImportError as exc:
-        raise RuntimeError(
-            "F5-TTS 已从默认依赖中移除（许可证为 CC-BY-NC，禁止商用）。"
-            "如需回退，请自行 pip install f5-tts。原始报错: {}".format(exc)
-        )
-    f5tts = F5TTS()
-    f5tts.infer(ref_file=ref_audio, ref_text=ref_text, gen_text=text_prompt,
-                file_wave=save_path, seed=None)
+
 
 
 def parse_script(script_text):
@@ -350,11 +302,14 @@ def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=
 
     与原版的差异
     ------------
-    - ``model_type`` 支持 ``"qwen3tts"``（默认推荐）与 ``"f5"``（旧路径）。
+    - ``model_type`` 当前仅支持 ``"qwen3tts"``。
     - **参考文本只转写一次**。原版把 ``transcribe_with_whisperx(ref_audio)``
       写在逐页循环内，等于每页都重新加载 ASR 模型并重新转写同一段音频。
     - 音色 prompt 通过 :func:`get_clone_prompt` 跨页复用。
     """
+    if model_type != "qwen3tts":
+        raise ValueError("不支持的配音模型: {}（当前仅支持 qwen3tts）".format(model_type))
+
     with open(script_path, "r", encoding="utf-8") as handle:
         script_with_cursor = "".join(handle.readlines())
     parsed_speech = parse_script(script_with_cursor)
@@ -421,10 +376,7 @@ def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=
                     part_key = course.digest({"voice": voice_key, "chunk": chunk})
                     saved = course.read_json(stamp, {})
                     if saved.get("key") != part_key or not path.isfile(part) or saved.get("wav_sha") != course.digest(open(part, "rb").read()):
-                        if model_type == "qwen3tts":
-                            synth_page_qwen3tts(chunk, part, ref_audio, ref_text, language=language, page_label="{}-{}".format(slide_idx + 1, j + 1))
-                        else:
-                            inference_f5(chunk, part, ref_audio, ref_text)
+                        synth_page_qwen3tts(chunk, part, ref_audio, ref_text, language=language, page_label="{}-{}".format(slide_idx + 1, j + 1))
                         course.write_json(stamp, {"key": part_key, "wav_sha": course.digest(open(part, "rb").read())})
                     wav, part_sr = sf.read(part, dtype="float32")
                     if sr is not None and sr != part_sr:
@@ -443,15 +395,9 @@ def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=
                 progress_report.report("tts", stage=2, done=_progress_done, total=_progress_total, page=slide_idx)
             continue
 
-        if model_type == "qwen3tts":
-            # 走带护栏的入口：退化生成最多被截断，不会让整轮卡住
-            synth_page_qwen3tts(subtitle, speech_result_path, ref_audio, ref_text,
-                                language=language,
-                                page_label="第 {} 页".format(slide_idx))
-        elif model_type == "f5":
-            inference_f5(subtitle, speech_result_path, ref_audio, ref_text)
-        else:
-            raise ValueError("未知 model_type: {}（可选 qwen3tts / f5）".format(model_type))
+        synth_page_qwen3tts(subtitle, speech_result_path, ref_audio, ref_text,
+                            language=language,
+                            page_label="第 {} 页".format(slide_idx))
 
         print("[speech_gen] 第 {} 页合成完成 -> {}".format(slide_idx, speech_result_path))
         _progress_done += 1

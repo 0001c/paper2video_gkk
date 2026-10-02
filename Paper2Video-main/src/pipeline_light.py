@@ -94,7 +94,7 @@ if __name__ == "__main__":
     parser.add_argument("--beamer_templete_prompt", type=str, default=None)
     parser.add_argument("--stage", type=str, default='["0"]')
     parser.add_argument("--tts_model", type=str, default="qwen3tts",
-                        choices=["qwen3tts", "f5"],
+                        choices=["qwen3tts"],
                         help="语音合成后端；qwen3tts 为默认（Apache-2.0）")
     parser.add_argument("--tts_language", type=str, default=None,
                         help="TTS/对齐语种；留空则跟随语言档位（见 --video_lang）")

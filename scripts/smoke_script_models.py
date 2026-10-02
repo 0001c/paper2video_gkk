@@ -180,7 +180,7 @@ def main():
                 requests.append(kwargs)
                 return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='虚构正文'), finish_reason='stop')], usage=None)
             fake = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=complete)))
-            with patch.dict(os.environ, {'OPENAI_API_KEY': 'fake-key', 'PAPER2VIDEO_FORCE_COMPATIBLE': '1'}), patch('openai.OpenAI', return_value=fake):
+            with patch.dict(os.environ, {'OPENAI_API_KEY': 'fake-key'}), patch('openai.OpenAI', return_value=fake):
                 paper_struct.call_llm('虚构系统提示', '虚构文本', model='provider/text')
                 assert 'max_tokens' not in requests[0], '不能给未知模型强塞 65536 输出上限'
                 paper_struct.call_llm('虚构系统提示', '虚构文本', model='provider/text', max_tokens=2048)

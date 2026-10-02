@@ -134,7 +134,7 @@ if __name__ == '__main__':
     # CUDA 扩展）、LongCat（注意力序列 36480，sm_120 上无可用高效 kernel）均在本机
     # 不可用，默认换成 MuseTalk —— 它只生成 256x256 人脸（序列仅 1024），标准
     # UNet2DConditionModel + SDPA 即可，结构性绕开该问题。
-    parser.add_argument('--model_name_talking', type=str, default='musetalk')
+    parser.add_argument('--model_name_talking', type=str, default='musetalk', choices=['musetalk'])
     parser.add_argument('--talking_profile', type=str, default=None,
                         help='数字人运行档位（见 talking_config.list_profiles()）：'
                              'musetalk-local 本机单卡 / musetalk-server 预留多卡；'
@@ -154,7 +154,7 @@ if __name__ == '__main__':
     parser.add_argument('--ref_text', type=str, default=None,
                         help='参考音频文本；不填则优先读同名 .txt，再退回 ASR 转写')
     parser.add_argument('--tts_model', type=str, default='qwen3tts',
-                        choices=['qwen3tts', 'f5'],
+                        choices=['qwen3tts'],
                         help='语音合成后端；qwen3tts 为默认（Apache-2.0）')
     parser.add_argument('--video_lang', type=str, default=None,
                         choices=sorted(language_config.VIDEO_PRESETS),

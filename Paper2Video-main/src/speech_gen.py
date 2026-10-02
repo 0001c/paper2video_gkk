@@ -165,9 +165,6 @@ def align_with_qwen3(audio_path, text, lang="English"):
     return {"segments": [{"words": words}]}
 
 
-
-
-
 # ──────────────────────────────────────────────────────────────
 # 语音合成
 # ──────────────────────────────────────────────────────────────
@@ -276,9 +273,6 @@ def synth_page_qwen3tts(text_prompt, save_path, ref_audio, ref_text, language=No
     return save_path, dur
 
 
-
-
-
 def parse_script(script_text):
     pages = script_text.strip().split("###\n")
     result = []
@@ -303,8 +297,7 @@ def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=
     与原版的差异
     ------------
     - ``model_type`` 当前仅支持 ``"qwen3tts"``。
-    - **参考文本只转写一次**。原版把 ``transcribe_with_whisperx(ref_audio)``
-      写在逐页循环内，等于每页都重新加载 ASR 模型并重新转写同一段音频。
+    - 参考文本缺失时只转写一次，不在逐页循环中重复识别。
     - 音色 prompt 通过 :func:`get_clone_prompt` 跨页复用。
     """
     if model_type != "qwen3tts":

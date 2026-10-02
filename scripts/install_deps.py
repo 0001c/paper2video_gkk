@@ -65,7 +65,6 @@ OTHER_PACKAGES = [
     "Pillow",
     # ── 权重下载 ──
     "huggingface_hub",
-    "modelscope",                # CAM++ 声纹模型走 ModelScope
     # ── LLM 调用（DeepSeek 走 OpenAI 兼容协议）──
     "camel-ai>=0.2.0",
     # camel-ai(0.2.90) 的 camel/toolkits/base.py 里写着

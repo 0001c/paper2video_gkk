@@ -19,6 +19,8 @@ import shutil
 import argparse
 import subprocess
 
+from download_models import CATALOG, LOCAL_DIR
+
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -34,7 +36,6 @@ PY_PACKAGES = [
     ("transformers", "transformers", True, "GUI-Owl / Qwen3-TTS 加载"),
     ("qwen-tts", "qwen_tts", True, "语音合成"),
     ("qwen-asr", "qwen_asr", True, "转写 + 强制对齐"),
-    ("modelscope", "modelscope", True, "CAM++ 声纹模型下载"),
     ("huggingface_hub", "huggingface_hub", True, "权重下载"),
     ("soundfile", "soundfile", True, "音频读写"),
     ("opencv-python", "cv2", True, "幻灯片图像处理"),
@@ -56,16 +57,7 @@ EXECUTABLES = [
 ]
 
 # 模型权重：(repo, 分组, 约 GB)
-MODEL_WEIGHTS = [
-    ("Qwen/Qwen3-TTS-12Hz-1.7B-Base", "phase1", 4.5),
-    ("Qwen/Qwen3-ASR-0.6B", "phase1", 1.9),
-    ("Qwen/Qwen3-ForcedAligner-0.6B", "phase1", 1.8),
-    ("mPLUG/GUI-Owl-1.5-4B-Instruct", "phase1", 8.9),
-    ("iic/speech_campplus_sv_zh-cn_16k-common", "eval", 0.03),
-    ("Wan-AI/Wan2.1-I2V-14B-480P", "phase3", 33.0),
-    ("MeiGen-AI/InfiniteTalk", "phase3", 12.0),
-    ("TencentGameMate/chinese-wav2vec2-base", "phase3", 0.4),
-]
+MODEL_WEIGHTS = [(repo, details[0], details[2]) for repo, details in CATALOG.items()]
 
 OK, WARN, BAD = "[OK]", "[!!]", "[XX]"
 
@@ -151,7 +143,10 @@ def check_weights(results):
         print("  {} 目录不存在，请运行 scripts/download_models.py".format(BAD))
 
     for repo, group, approx in MODEL_WEIGHTS:
-        local = os.path.join(pv_env.WEIGHTS_DIR, repo.replace("/", "__"))
+        weights_dir = pv_env.WEIGHTS_DIR
+        if group == "musetalk":
+            weights_dir = os.path.join(os.environ.get("PAPER2VIDEO_MUSETALK_ROOT", r"E:\ai-models\MuseTalk"), "models")
+        local = os.path.join(weights_dir, LOCAL_DIR.get(repo, repo.replace("/", "__")))
         if os.path.isdir(local):
             size = 0
             for root, _dirs, files in os.walk(local):
@@ -165,8 +160,8 @@ def check_weights(results):
             print("  {} [{:<6}] {:<44} {:>6.2f} GB".format(tag, group, repo, size / 1e9))
             results["weights"][repo] = {"ok": ratio > 0.9, "size_gb": round(size / 1e9, 2)}
         else:
-            tag = OK if group == "phase3" else WARN
-            note = "（Phase 3，暂不需要）" if group == "phase3" else "（需下载）"
+            tag = OK if group == "musetalk" else WARN
+            note = "（可选数字人模型）" if group == "musetalk" else "（需下载）"
             print("  {} [{:<6}] {:<44} 缺失 {}".format(tag, group, repo, note))
             results["weights"][repo] = {"ok": False, "group": group}
 
@@ -176,7 +171,7 @@ def check_env_config(results):
     print("\n── API 配置 ──")
     print("  .env 位置: {}".format(pv_env.REPO_ROOT / ".env"))
     for key, required in (("OPENAI_API_KEY", True), ("OPENAI_API_BASE", True),
-                          ("DASHSCOPE_API_KEY", False)):
+                          ("MIMO_API_KEY", False)):
         value = os.environ.get(key, "")
         masked = (value[:6] + "..." + value[-4:]) if len(value) > 12 else "(空)"
         if value:
@@ -184,7 +179,7 @@ def check_env_config(results):
             results["env"][key] = {"ok": True}
         else:
             tag = BAD if required else WARN
-            hint = "DeepSeek 必需" if key.startswith("OPENAI") else "仅视频理解环节需要"
+            hint = "兼容模型 API 必需" if key.startswith("OPENAI") else "仅生成参考音色时需要"
             print("  {} {:<20} 未配置（{}）".format(tag, key, hint))
             results["env"][key] = {"ok": False, "required": required}
 

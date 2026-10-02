@@ -14,6 +14,8 @@ import json
 import argparse
 import urllib.request
 
+from download_models import CATALOG
+
 ENDPOINTS = [
     "https://hf-mirror.com",
     "https://huggingface.co",
@@ -24,16 +26,7 @@ UA = (
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
-# 本次需要核对的模型：本地替换方案的全部入选者 + 备选
-DEFAULT_REPOS = [
-    "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
-    "Qwen/Qwen3-ASR-0.6B",
-    "Qwen/Qwen3-ForcedAligner-0.6B",
-    "mPLUG/GUI-Owl-1.5-4B-Instruct",
-    "MeiGen-AI/InfiniteTalk",
-    "OmniAvatar/OmniAvatar-1.3B",
-    "Wan-AI/Wan2.2-S2V-14B",
-]
+DEFAULT_REPOS = list(CATALOG)
 
 OUT_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs", "model_cards"

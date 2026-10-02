@@ -1,31 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""MuseTalk 数字人冒烟测试（端到端，走**真实生产入口**）。
-
-与 smoke_longcat.py 的区别
---------------------------
-smoke_longcat.py **绕过 subprocess** 直接调模型（为的是量显存峰值）；这个反过来
-——**不碰模型代码**，直接调 ``talking_gen.talking_gen_per_slide("musetalk", ...)``。
-
-目标不是「模型能不能跑」，而是**集成代码对不对**：单图 + 音频能否变成
-「落在契约路径、带音轨」的 ``merge_video.mp4``。所以它顺带覆盖了四件容易出错的事：
-
-1. 暂存到 ASCII 工作区（MuseTalk 用 ``cv2.imread``，读不了中文路径）
-2. 模型权重路径（unet/whisper 显式传，vae/face-parse 靠 cwd 相对的硬编码）
-3. 产物取回规则 ``<result_dir>/<version>/<name>.mp4``
-4. 搬回**中文路径**下 ``<save_dir>/<idx>/<ref_stem>/`` 的最终位置
-
-用法（在**项目 venv** 里跑；它会自己拉起 MuseTalk 的 venv 子进程）
-------------------------------------------------------------------
-
-    .venv/Scripts/python.exe scripts/smoke_musetalk.py
-
-可调环境变量
-------------
-- ``PAPER2VIDEO_SMOKE_TALKING_DIR``  产物根目录，默认 ``<repo>/result/_smoke_musetalk``
-  （刻意放在含中文的仓库路径下，从而把「搬回中文路径」这一步也测到）
-- ``PAPER2VIDEO_SMOKE_SECONDS``      只取音频前 N 秒（默认 0 = 整段）
-- ``PAPER2VIDEO_SMOKE_REF`` / ``PAPER2VIDEO_SMOKE_AUDIO``  换素材
+"""MuseTalk 单页链路验证工具；仅在用户明确要求时手动执行。
 """
 
 import json

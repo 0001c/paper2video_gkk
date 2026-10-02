@@ -1,17 +1,6 @@
-"""Paper2Video 环境与模型路径统一入口。
+"""环境、兼容 API 别名及本地模型路径。
 
-为什么需要这个模块
-------------------
-原仓库把 API Key 以空字符串硬编码在 5 个文件里（``os.environ["GEMINI_API_KEY"] = ""``），
-且模型一律用 HuggingFace repo id 从默认缓存加载 —— 而默认缓存落在 C 盘（本机仅剩 26 GB）。
-
-本模块做三件事：
-1. 零依赖解析仓库根目录下的 ``.env``，写进 ``os.environ``（不覆盖已存在的变量）；
-2. 把 HF / ModelScope / torch 的缓存目录指向 E 盘 SSD 的纯英文路径；
-3. 提供 :func:`model_path`，优先返回本地已下载的权重目录，否则回落到 repo id。
-
-注意路径约束：项目位于 ``E:\\Development\\26年\\paper2video``，含中文。
-Wan / InfiniteTalk 系的加载器遇到非 ASCII 路径会直接抛错，因此权重一律外置。
+读取仓库 .env，不覆盖已有环境配置；缓存和媒体暂存使用纯英文路径。
 """
 
 import os
@@ -205,11 +194,6 @@ def gpu_list(default=None):
     return [int(piece) for piece in parts]
 
 
-def low_vram():
-    """显存吃紧档位（数字人 8 GB 配置、量化加载等）。"""
-    return os.environ.get("PAPER2VIDEO_LOW_VRAM", "0").strip() in ("1", "true", "True", "yes")
-
-
 def print_banner():
     print("=" * 72)
     print("Paper2Video 环境")
@@ -217,7 +201,6 @@ def print_banner():
     print("  权重目录   : {}".format(WEIGHTS_DIR))
     print("  HF_HOME    : {}  (endpoint={})".format(HF_HOME, os.environ.get("HF_ENDPOINT", "-")))
     print("  GPU 列表   : {}".format(gpu_list()))
-    print("  低显存档位 : {}".format(low_vram()))
     try:
         import torch
         if torch.cuda.is_available():

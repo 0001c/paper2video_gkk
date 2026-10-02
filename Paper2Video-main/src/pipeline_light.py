@@ -1,30 +1,6 @@
-"""
-Paper2Video 无数字人版流水线（Phase 1 主链路）。
+"""无数字人的生成入口。
 
-    1. (LLM) 幻灯片生成：论文 LaTeX -> Beamer slides.tex -> 编译 -> 逐页 PNG
-    2. (VLM) 字幕与光标提示生成
-    3. TTS -> 音频；GUI grounding -> 光标坐标；强制对齐 -> 时间轴
-    4. 合片（本版不含数字人）
-
-本版相对上游的改动
-------------------
-1. **合片改用 Python 实现**（``merge_video.merge_slides_and_audio``）。
-   上游调用 ``./1_merage_light.bash``，在 Windows 上无法执行，且该脚本
-   把 ``list.txt`` 写在 cwd、内部用相对路径，cwd 一变就崩。
-2. **PDF 渲染改用 PyMuPDF**（``pdf_render.render_pdf_to_images``），
-   去掉 poppler / pdftoppm 依赖。
-3. **模型全部收敛到国产替代**：Qwen3-TTS（原 F5-TTS）、
-   GUI-Owl-1.5-4B（原 UI-TARS-1.5-7B）、Qwen3-ASR + ForcedAligner（原 WhisperX）。
-4. **API 收敛到 DeepSeek**：默认 ``deepseek-flash``；``wei_utils.get_agent_config``
-   的兜底分支会把未知模型名当作 OpenAI 兼容模型，因此无需新增白名单。
-5. **显示显存管理**：阶段之间显式释放模型，避免在 16 GB 卡上多模型叠加 OOM。
-6. 修掉 ``--gpu_list`` 默认空串导致的除零，以及 ``latex_code_gen`` 未定义的 NameError。
-
-阶段划分（--stage）：
-    "1" = 幻灯片 + 字幕/光标提示
-    "2" = TTS + 光标定位 + 时间轴
-    "3" = 合片
-    "0" = 全部
+兼容 API 生成课件与讲稿，本地 Qwen3 语音/对齐和 GUI-Owl 定位后合片。
 """
 
 import os

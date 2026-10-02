@@ -1,10 +1,5 @@
-'''
-    1. (LLM) slide generation 
-    2. (VLM) subtitle and cursor prompt generation
-    3. TTS->audio; GUI&WhisperX Grounding->cursor;
-    4. Talking Gen: local-[hallo2, fantasy, ...], api-[HeyGen]
-    5. Merage
-'''
+"""完整生成流水线：兼容 API 生成课件与讲稿，本地语音、对齐、光标定位与可选 MuseTalk 合片。
+"""
 import cv2
 import pdb
 import re
@@ -56,7 +51,6 @@ from subtitle_cursor_prompt_gen import subtitle_cursor_gen, validate_script_outp
 from wei_utils import get_agent_config
 
 
-# os.environ["GEMINI_API_KEY"] = ""
 # os.environ["OPENAI_API_KEY"] = ""
 
 
@@ -130,15 +124,10 @@ if __name__ == '__main__':
     parser.add_argument('--result_dir', type=str, default='./result/zeyu')
     parser.add_argument('--model_name_t', type=str, default='deepseek-flash') 
     parser.add_argument('--model_name_v', type=str, default='deepseek-flash') 
-    # 数字人后端：hallo2（cu118 无 sm_120）、InfiniteTalk（fp8 需现场编译 quanto
-    # CUDA 扩展）、LongCat（注意力序列 36480，sm_120 上无可用高效 kernel）均在本机
-    # 不可用，默认换成 MuseTalk —— 它只生成 256x256 人脸（序列仅 1024），标准
-    # UNet2DConditionModel + SDPA 即可，结构性绕开该问题。
     parser.add_argument('--model_name_talking', type=str, default='musetalk', choices=['musetalk'])
     parser.add_argument('--talking_profile', type=str, default=None,
                         help='数字人运行档位（见 talking_config.list_profiles()）：'
-                             'musetalk-local 本机单卡 / musetalk-server 预留多卡；'
-                             'longcat 后端另有 local-16g / server-8xa6000')
+                             'musetalk-local 本机单卡')
     parser.add_argument('--paper_latex_root', type=str, default='./assets/demo/latex_proj')
     parser.add_argument('--ref_img', type=str, default='./assets/demo/zeyu.png')
     # 原始论文文件（.pdf/.docx）。有它就从里面提插图放进工程 —— 上游入口是
@@ -411,9 +400,6 @@ if __name__ == '__main__':
         print("Subtitle and Cursor Prompt Generation", step2_time-start_time)
 
         ## Step 3-1: Speech Generation
-        # ⚠️ 原来写死 model_type='f5'，而 F5-TTS 已因许可证（CC-BY-NC）从默认
-        # 依赖里移除，speech_gen.inference_f5 会直接抛 RuntimeError
-        # -> 主流水线的 stage 2 曾经必然失败。改为可配置，默认 qwen3tts。
         tts_per_slide(model_type=args.tts_model, script_path=subtitle_cursor_save_path,
                     speech_save_dir=speech_save_dir, ref_audio=args.ref_audio,
                     ref_text=args.ref_text, language=lang["tts_language"], resume_audio=True)

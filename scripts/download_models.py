@@ -1,36 +1,8 @@
-"""统一下载 Paper2Video 所需的全部模型权重（纯标准库实现）。
+"""下载、校验当前 Qwen3/GUI-Owl 与 MuseTalk 权重。
 
-为什么不用 huggingface_hub / modelscope 的 snapshot_download
------------------------------------------------------------
-两者都会「先写临时文件 + 加 .lock + 完成后改名 + 清理临时目录」。
-在本机的受限沙箱里，**删除 .lock 与临时目录会被安全策略拦截**
-（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`），结果是大文件已经完整下载、
-却停在 `.cache/huggingface/download/<hash>.incomplete` 没有改名——
-命令退出码 1，模型目录看上去是空的。
-
-因此这里改为**直连 HTTP**：
-- 只用 urllib，不产生任何锁文件、临时目录；
-- 断点续传靠 `<file>.part` + HTTP Range；
-- 完成后 `os.replace()` 改名（改名不触发删除拦截，实测可用）。
-
-设计要点
---------
-1. **一律下载到纯英文路径**（``E:\\ai-models\\weights``）。项目本身位于
-   ``E:\\Development\\26年\\...``，路径含中文，而 Wan / InfiniteTalk 系的加载器
-   遇到非 ASCII 路径会直接抛错，所以权重必须与代码目录解耦。
-2. **优先 ModelScope，回退 HuggingFace 镜像**。国内 ModelScope 带宽通常显著
-   优于 hf-mirror；GUI-Owl 只有 HF 有，脚本会自动回退。
-3. 支持 ``--group`` 分组下载，先拿主链路（phase1，约 17 GB），
-   数字人链路（phase3，80 GB+）等前面跑通再下。
-4. 已存在且大小相符的文件直接跳过；大小不符的会续传补齐。
-
-用法
-----
-    ./.venv/Scripts/python.exe scripts/download_models.py --list
-    ./.venv/Scripts/python.exe scripts/download_models.py --group phase1
-    ./.venv/Scripts/python.exe scripts/download_models.py --model Qwen/Qwen3-ASR-0.6B
-    ./.venv/Scripts/python.exe scripts/download_models.py --group phase3 --source modelscope
-    ./.venv/Scripts/python.exe scripts/download_models.py --recover   # 抢救被中断的 .incomplete
+主链路：--group phase1；可选数字人：--group musetalk。
+MuseTalk 必须显式指定 --weights-dir <MuseTalk仓库>/models，保留上游目录布局。
+下载器只登记已接入模型，支持 HF/ModelScope HTTP 源及断点续传。
 """
 
 import argparse
@@ -58,155 +30,46 @@ MS_ENDPOINT = "https://modelscope.cn"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 
-# 每个条目：repo_id -> (分组, 说明, 约体积GB, 首选源)
-# 说明里的体积来自 HF API 的 siblings 实测，仅含该仓库自身文件（不含底模）。
-CATALOG = {
-    # ── Phase 1：主链路（无数字人）──
-    "Qwen/Qwen3-TTS-12Hz-1.7B-Base": (
-        "phase1", "语音合成：零样本音色克隆（替换 F5-TTS）", 4.5, "modelscope"),
-    "Qwen/Qwen3-ASR-0.6B": (
-        "phase1", "语音转写：52 语言/方言（替换 WhisperX 转写部分）", 1.9, "modelscope"),
-    "Qwen/Qwen3-ForcedAligner-0.6B": (
-        "phase1", "强制对齐：词级时间戳，误差 27.8ms（替换 WhisperX 对齐部分）", 1.8, "modelscope"),
-    "mPLUG/GUI-Owl-1.5-4B-Instruct": (
-        "phase1", "光标空间定位：输出 0-1000 归一化坐标（替换 UI-TARS-1.5-7B）", 8.9, "huggingface"),
+CATALOG = {'Qwen/Qwen3-TTS-12Hz-1.7B-Base': ('phase1', '语音合成：零样本音色克隆（替换 F5-TTS）', 4.5, 'modelscope'),
+ 'Qwen/Qwen3-ASR-0.6B': ('phase1', '语音转写：52 语言/方言（替换 WhisperX 转写部分）', 1.9, 'modelscope'),
+ 'Qwen/Qwen3-ForcedAligner-0.6B': ('phase1',
+                                   '强制对齐：词级时间戳，误差 27.8ms（替换 WhisperX 对齐部分）',
+                                   1.8,
+                                   'modelscope'),
+ 'mPLUG/GUI-Owl-1.5-4B-Instruct': ('phase1',
+                                   '光标空间定位：输出 0-1000 归一化坐标（替换 UI-TARS-1.5-7B）',
+                                   8.9,
+                                   'huggingface'),
+ 'TMElyralab/MuseTalk': ('musetalk',
+                         '口型同步主权重 v1.5（只取 musetalkV15/；v1.0 的 3.24GB 不要）',
+                         3.24,
+                         'huggingface'),
+ 'stabilityai/sd-vae-ft-mse': ('musetalk', 'SD VAE（编码人脸 latent）', 0.32, 'huggingface'),
+ 'openai/whisper-tiny': ('musetalk', '音频编码器 whisper-tiny', 0.15, 'huggingface'),
+ 'ManyOtherFunctions/face-parse-bisent': ('musetalk', '人脸解析 BiSeNet（生成嘴部遮罩）', 0.1, 'huggingface')}
 
-    # ── 评测链路 ──
-    "iic/speech_campplus_sv_zh-cn_16k-common": (
-        "eval", "音色相似度：CAM++ 说话人验证（替换 SpeechBrain ECAPA）", 0.03, "modelscope"),
+ALLOW_PATTERNS = {'TMElyralab/MuseTalk': ['musetalkV15/'],
+ 'stabilityai/sd-vae-ft-mse': ['config.json',
+                               'diffusion_pytorch_model.bin',
+                               'README.md',
+                               '.gitattributes'],
+ 'openai/whisper-tiny': ['config.json',
+                         'pytorch_model.bin',
+                         'preprocessor_config.json',
+                         'generation_config.json',
+                         'README.md',
+                         '.gitattributes'],
+ 'ManyOtherFunctions/face-parse-bisent': ['79999_iter.pth',
+                                          'resnet18-5c106cde.pth',
+                                          'README.md',
+                                          '.gitattributes']}
 
-    # ── Phase 3：数字人（体量大，前面跑通再下）──
-    # 2026-09-17 换型：InfiniteTalk 退役（其 fp8 路径在 Windows 上会触发 quanto
-    # 的 marlin CUDA 扩展 JIT 编译），改用美团 LongCat-Video-Avatar-1.5。
-    # 组件布局由 run_demo_avatar_single_audio_to_video.py:113-147 决定：
-    #   checkpoint_dir/../LongCat-Video  -> tokenizer / text_encoder(UMT5) / vae / scheduler
-    #   checkpoint_dir                   -> base_model_int8 / lora / whisper-large-v3
-    #                                       / vocal_separator / scheduler
-    "meituan-longcat/LongCat-Video": (
-        "phase3", "数字人底模：只取 tokenizer + UMT5 文本编码器 + VAE（仓库另含 50.6GB bf16 dit 与 5.3GB lora，均用不到）",
-        21.7, "huggingface"),
-    "meituan-longcat/LongCat-Video-Avatar-1.5": (
-        "phase3", "音频驱动数字人：int8 DiT + DMD 蒸馏 LoRA + Whisper-large-v3 + 人声分离 ONNX",
-        20.5, "huggingface"),
-
-    # ── 数字人（MuseTalk 路线，2026-09-17）──
-    # 换型原因：LongCat 的主注意力序列 36480，在 Blackwell(sm_120)+Windows 上
-    # flash-attn 装不了 / xformers kernel 只到 sm_90 / SDPA 太慢，三条路全堵。
-    # MuseTalk 只生成 256x256 人脸区域（注意力序列仅 1024，小 1270 倍），
-    # 且用标准 diffusers UNet2DConditionModel，SDPA 即可 —— 结构性绕开该死结。
-    # 详见 docs/MuseTalk接入方案.md
-    #
-    # ⚠️ 这组的落盘目录是 MuseTalk 仓库的 models/ 下（不是 weights/），
-    #    因为其代码把 VAE 与 face-parse 的路径写死了（见 LOCAL_DIR 注释）。
-    #    下载命令带 --weights-dir：
-    #      python scripts/download_models.py --group musetalk \
-    #          --weights-dir E:/ai-models/MuseTalk/models --source huggingface
-    "TMElyralab/MuseTalk": (
-        "musetalk", "口型同步主权重 v1.5（只取 musetalkV15/；v1.0 的 3.24GB 不要）", 3.24, "huggingface"),
-    "stabilityai/sd-vae-ft-mse": (
-        "musetalk", "SD VAE（编码人脸 latent）", 0.32, "huggingface"),
-    "openai/whisper-tiny": (
-        "musetalk", "音频编码器 whisper-tiny", 0.15, "huggingface"),
-    "ManyOtherFunctions/face-parse-bisent": (
-        "musetalk", "人脸解析 BiSeNet（生成嘴部遮罩）", 0.10, "huggingface"),
-}
-
-# 各仓库的白名单前缀。没有条目的仓库 = 全量下载。
-#
-# ⚠️ 这两个 LongCat 仓库必须白名单，否则会多下约 105 GB：
-#
-#   LongCat-Video 全仓 77.6 GB —— 其中 dit/(50.6GB, bf16) 与 lora/(5.3GB) 用不到。
-#   我们走 int8 DiT（在 Avatar 仓库内），底模只借 tokenizer + text_encoder + vae + scheduler。
-#
-#   Avatar 全仓 69.8 GB —— 三处旁支：
-#     · base_model/(30.2GB, bf16)  16GB 卡装不下，改走 base_model_int8/(15.1GB)
-#     · whisper-large-v3/ 内含 flax_model.msgpack(5.9GB) 与三份重复的 fp32 分片
-#       （model.fp32-*、pytorch_model.bin、pytorch_model.fp32-*），共约 26GB 冗余，
-#       只要一份 model.safetensors
-#     · assets/（视频样片）与其它用不到的量化变体
-ALLOW_PATTERNS = {
-    "meituan-longcat/LongCat-Video": [
-        "tokenizer/", "text_encoder/", "vae/", "scheduler/",
-        "README.md", ".gitattributes",
-    ],
-    "meituan-longcat/LongCat-Video-Avatar-1.5": [
-        "base_model_int8/",                      # int8 DiT + 量化 index
-        "lora/dmd_lora.safetensors",             # DMD2 蒸馏 LoRA（8 步采样必需）
-        "whisper-large-v3/model.safetensors",    # v1.5 音频编码器权重
-        "whisper-large-v3/config.json",
-        "whisper-large-v3/generation_config.json",
-        "whisper-large-v3/preprocessor_config.json",
-        "whisper-large-v3/tokenizer.json",
-        "whisper-large-v3/tokenizer_config.json",
-        "whisper-large-v3/special_tokens_map.json",
-        "whisper-large-v3/added_tokens.json",
-        "whisper-large-v3/normalizer.json",
-        "whisper-large-v3/vocab.json",
-        "whisper-large-v3/merges.txt",
-        "vocal_separator/Kim_Vocal_2.onnx",      # 人声分离（混音/多人场景）
-        "scheduler/scheduler_config.json",
-        "config.json",
-        "README.md", ".gitattributes",
-    ],
-
-    # ── MuseTalk 路线 ──
-    # 该仓库只有 4 个模型文件，其中 musetalk/（v1.0，3.24GB）用不到，只要 v1.5。
-    # 另：yzd-v/DWPose（388MB）与 ByteDance/LatentSync 的 syncnet 都不需要
-    #     —— 前者只服务于 mmpose（我们用 face-alignment 的 68 点替换掉了），
-    #     后者仅训练/评估用。
-    #
-    # ⚠️ 这里**刻意不下 README.md / .gitattributes**：本仓库的 LOCAL_DIR 是 ""
-    #    （见下），根级文件会落到共享的 models/ 根上，污染同级目录。
-    #    其余三家的根级文件落在各自的子目录里，无害，故保留。
-    "TMElyralab/MuseTalk": ["musetalkV15/"],
-    "stabilityai/sd-vae-ft-mse": [
-        "config.json", "diffusion_pytorch_model.bin", "README.md", ".gitattributes",
-    ],
-    "openai/whisper-tiny": [
-        "config.json", "pytorch_model.bin", "preprocessor_config.json",
-        "generation_config.json", "README.md", ".gitattributes",
-    ],
-    "ManyOtherFunctions/face-parse-bisent": [
-        "79999_iter.pth", "resnet18-5c106cde.pth", "README.md", ".gitattributes",
-    ],
-}
-
-# 多线程下载的并发度。HF 镜像实测单流可达 130 MB/s，这里主要用于
-# 「小文件多、大文件少」的仓库，避免被单个小文件拖住串行等待。
 MAX_WORKERS = 4
 
-# 落盘目录名的例外。
-#
-# 默认规则是 repo_id 里的 `/` 换成 `__`（如 `org/name` -> `org__name`），但
-# LongCat 必须破例：上游 `run_demo_avatar_single_audio_to_video.py:113-115` 把
-# 底模目录名**硬编码**成 `checkpoint_dir` 的兄弟节点 `LongCat-Video`：
-#
-#     AutoTokenizer.from_pretrained(os.path.join(checkpoint_dir, '..', 'LongCat-Video'), ...)
-#
-# 所以这两个目录必须叫 `LongCat-Video` 与 `LongCat-Video-Avatar-1.5`，否则
-# 加载时直接 FileNotFoundError。--verify 会按本表反查目录，故仍然可用。
-LOCAL_DIR = {
-    "meituan-longcat/LongCat-Video": "LongCat-Video",
-    "meituan-longcat/LongCat-Video-Avatar-1.5": "LongCat-Video-Avatar-1.5",
-
-    # MuseTalk 的路径写死在代码里，落盘名必须完全一致：
-    #   musetalk/models/vae.py           -> VAE(model_path="models/" + vae_type)，vae_type 默认 "sd-vae"
-    #   musetalk/utils/face_parsing/__init__.py:60 -> "./models/face-parse-bisent/resnet18-5c106cde.pth"
-    #   musetalk/utils/face_parsing/__init__.py:61 -> "./models/face-parse-bisent/79999_iter.pth"
-    #   而 scripts/inference.py 的 --whisper_dir 默认 "./models/whisper"
-    # 故配合 --weights-dir E:/ai-models/MuseTalk/models 使用。
-    "stabilityai/sd-vae-ft-mse": "sd-vae",
-    "openai/whisper-tiny": "whisper",
-    "ManyOtherFunctions/face-parse-bisent": "face-parse-bisent",
-
-    # TMElyralab/MuseTalk 例外为 ""：白名单只取 `musetalkV15/`，而 MuseTalk
-    # 期望的正是 `models/musetalkV15/{unet.pth,musetalk.json}`（上游默认值与
-    # README 的 v1.5 命令都是这个路径）。若按默认规则落成
-    # `models/TMElyralab__MuseTalk/musetalkV15/`，就必须给 inference.py 传
-    # 额外的前缀，且与 sd-vae/whisper/face-parse-bisent 三家的风格不一致。
-    # 置 "" 后 os.path.join(WEIGHTS_DIR, "") 即 models/ 根，子路径原样拼上。
-    "TMElyralab/MuseTalk": "",
-}
+LOCAL_DIR = {'stabilityai/sd-vae-ft-mse': 'sd-vae',
+ 'openai/whisper-tiny': 'whisper',
+ 'ManyOtherFunctions/face-parse-bisent': 'face-parse-bisent',
+ 'TMElyralab/MuseTalk': ''}
 
 
 def local_repo_dir(repo):
@@ -492,7 +355,7 @@ def verify_repo(repo, source="auto"):
     """逐个文件核对大小，返回 (是否全部相符, 问题列表)。
 
     清单来源：--source 指定的源优先，拉不到再试另一个。
-    注意 CAM++ 只存在于 ModelScope、GUI-Owl 只存在于 HF，因此**不能**
+    各模型在不同源的可用性不同，因此**不能**
     因为用户指定了某个源就对另一个源一概不查。
     """
     local_dir = local_repo_dir(repo)

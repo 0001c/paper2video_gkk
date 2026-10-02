@@ -7,35 +7,9 @@ import json
 import urllib.error
 import urllib.request
 
-REPOS = [
-    # --- 语音合成 (替代 F5-TTS) ---
-    "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
-    "FunAudioLLM/CosyVoice2-0.5B",
-    "IndexTeam/IndexTTS-2",
-    "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
-    "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
-    # --- 语音识别与对齐 (替代 WhisperX) ---
-    "Qwen/Qwen3-ASR-0.6B",
-    "Qwen/Qwen3-ASR-1.7B",
-    "Qwen/Qwen3-ForcedAligner-0.6B",
-    "FunAudioLLM/SenseVoiceSmall",
-    # --- 视觉语言 / GUI 定位 (替代 UI-TARS-1.5-7B) ---
-    "X-PLUG/GUI-Owl-1.5-4B",
-    "X-PLUG/GUI-Owl-1.5-2B",
-    "X-PLUG/GUI-Owl-7B",
-    "Qwen/Qwen3.5-4B",
-    "Qwen/Qwen3.5-9B",
-    "Qwen/Qwen3.5-35B-A3B",
-    "Qwen/Qwen3-VL-4B-Instruct",
-    "Qwen/Qwen3-VL-8B-Instruct",
-    "ByteDance-Seed/UI-TARS-1.5-7B",
-    # --- 数字人 (替代 Hallo2) ---
-    "MeiGen-AI/InfiniteTalk",
-    "MeiGen-AI/MultiTalk",
-    "Tencent-Hunyuan/HunyuanVideo-Avatar",
-    "BadToBest/EchoMimicV2",
-    "fudan-generative-ai/hallo2",
-]
+from download_models import CATALOG
+
+REPOS = list(CATALOG)
 
 ENDPOINTS = ["https://huggingface.co", "https://hf-mirror.com"]
 FIELDS = ("downloads", "likes", "lastModified", "pipeline_tag", "library_name")

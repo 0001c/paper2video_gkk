@@ -9,23 +9,23 @@ export function Help({ title, children, important = false }: { title: string; ch
       <strong>{important ? '重要提示 · ' : ''}{title}</strong><div className="editorial-help-copy">{children}</div>
     </div>}>
     <button type="button" className="editorial-help" data-important={important} aria-label={`查看${title}说明${important ? '（重要）' : ''}`}
-      aria-expanded={visible} aria-controls={visible ? id : undefined} onKeyDown={(event) => { if (event.key === 'Escape') setVisible(false); }}>?</button>
+      aria-expanded={visible} aria-controls={visible ? id : undefined} onKeyDown={(event) => { if (event.key === 'Escape') setVisible(false); }}><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" aria-hidden="true"><circle cx="10" cy="10" r="8" /><path d="M7.8 7.2a2.3 2.3 0 0 1 4.4.8c0 1.6-2.2 1.7-2.2 3.2" /><path d="M10 14h.01" /></svg></button>
   </Popup>;
 }
 
-export function Section({ title, number, summary, help, important, children, defaultOpen = true, compact = false, actions, label }: {
+export function Section({ title, number, summary, help, important, children, defaultOpen = true, compact = false, actions, label, anchor }: {
   title: string; number?: string; summary?: ReactNode; help?: ReactNode; important?: boolean;
-  children: ReactNode; defaultOpen?: boolean; compact?: boolean; actions?: ReactNode; label?: string;
+  children: ReactNode; defaultOpen?: boolean; compact?: boolean; actions?: ReactNode; label?: string; anchor?: string;
 }) {
   const id = useId();
   const [open, setOpen] = useState(defaultOpen);
   const Heading = compact ? 'h3' : 'h2';
-  return <section className={`section editorial-section${compact ? ' editorial-section-compact' : ''}`} data-open={open} aria-label={label ?? title}>
+  return <section id={anchor} className={`section editorial-section${compact ? ' editorial-section-compact' : ''}`} data-open={open} aria-label={label ?? title}>
     <div className="editorial-section-head">
       <Heading className="section-title"><button className="section-toggle" type="button" aria-expanded={open} aria-controls={id}
         aria-label={`${open ? '折叠' : '展开'}${title}`} onClick={() => setOpen(!open)}>
         {number && <span className="section-num">{number}</span>}
-        <span>{title}</span><span className="section-chevron" aria-hidden="true">⌄</span>
+        <span>{title}</span><svg className="section-chevron" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 8 4 4 4-4" /></svg>
       </button></Heading>
       {help && <Help title={title} important={important}>{help}</Help>}
       {summary && <span className="section-summary">{summary}</span>}

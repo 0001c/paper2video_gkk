@@ -996,16 +996,20 @@ export default function App() {
   return (
     <div className="sheet">
       <header className="masthead">
-        <div className="masthead-top"><h1>内容自动讲解视频</h1><ThemeToggle /></div>
-        <p className="sub">
-          上传文档、电子书、教材或故事内容，生成带配音、光标指引和可选数字人的讲解视频
-        </p>
-        <div className="meta">
-          <span>Paper2Video</span>
-          <span>本地服务 · {window.location.hostname}</span>
-          <span>单卡串行</span>
+        <div className="masthead-top">
+          <div className="brand"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><rect x="2" y="2" width="28" height="28" rx="4" stroke="currentColor" strokeWidth="1.5" /><path d="M10 10h7M10 14h4M10 18h4M19 15l7 4-7 4z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /></svg><span>Paper2Video</span><span className="brand-caption">内容制作</span></div>
+          <ThemeToggle />
         </div>
-
+        <div className="masthead-intro">
+          <div><p className="eyebrow">CONTENT / VOICE / VIDEO</p><h1>内容讲解工作台</h1><p className="sub">选好素材与声音，让内容成为讲解视频。</p></div>
+          <ol className="workflow-overview" aria-label="制作流程">
+            <li><span>01</span><div><strong>编排内容</strong><small>素材、语言与声音</small></div></li>
+            <li><span>02</span><div><strong>审核课件</strong><small>先校对课件与讲稿</small></div></li>
+            <li><span>03</span><div><strong>生成视频</strong><small>确认后配音与合片</small></div></li>
+          </ol>
+        </div>
+        <details className="system-details">
+          <summary><span className={"service-status" + (initError || sysError ? " has-error" : "")}><i />{initError ? "服务连接异常" : sysError ? "硬件信息异常" : opts ? "服务已连接" : "正在连接服务"}</span><span className="service-address">{window.location.hostname} · 单卡串行</span><span className="system-toggle-label">运行环境</span></summary>
         {/* 硬件栏：把"这台机器能跑多快"摆在心里有数的位置。
             页脚的预计时长就是从这三个数推出来的，所以放在一起看更合理。 */}
         <div className="hwbar">
@@ -1042,9 +1046,10 @@ export default function App() {
               </span>
             </>
           ) : (
-            <span>正在读取本机配置…</span>
+            <span>{sysError ? "暂时无法读取运行环境" : "正在读取本机配置…"}</span>
           )}
         </div>
+        </details>
       </header>
 
       <nav className="view-tabs" aria-label="任务导航">
@@ -1059,7 +1064,7 @@ export default function App() {
         </div>
       )}
       <div hidden={view !== "new"}>
-      <div className="draft-caption"><span>新任务编辑版</span><Help title="新任务草稿">这里的设置只用于新任务，不会更改已创建的任务。文字设置自动保存为本机草稿，文件需要重新选择。</Help></div>
+      <div className="workspace-heading"><div><p className="eyebrow">NEW PROJECT</p><div className="draft-caption"><h2>编排新任务</h2><Help title="新任务草稿">这里的设置只用于新任务，不会更改已创建的任务。文字设置自动保存为本机草稿，文件需要重新选择。</Help></div></div><span className="draft-status">本机草稿</span></div>
       {(!paperFile && initialDraft.paperName || !portraitFile && initialDraft.portraitName) && (
         <div className="notice info">
           <span>已恢复文字设置。浏览器不能恢复文件选择，请重新选择
@@ -1068,9 +1073,25 @@ export default function App() {
           </span>
         </div>
       )}
+      <div className="studio-layout">
+      <aside className="studio-sidebar">
+        <nav aria-label="新任务分区"><p className="sidebar-label">项目设置</p>
+          {[
+            ['material', '01', '素材'], ['language', '02', '语言与内容'],
+            ...(courseEnabled ? [['teaching', '03', '教学范围']] : []),
+            ['voice', '04', '音色'], ['cursor', '05', '视频光标'], ['credentials', '06', '接口与模型'], ['prepare', '07', '生成与审核'],
+          ].map(([anchor, number, title]) => <a key={anchor} href={'#' + anchor} onClick={() => {
+            const toggle = document.getElementById(anchor)?.querySelector<HTMLButtonElement>('.section-toggle');
+            if (toggle?.getAttribute('aria-expanded') === 'false') toggle.click();
+          }}><span>{number}</span>{title}</a>)}
+        </nav>
+        <div className="sidebar-queue"><p className="sidebar-label">运行队列</p><strong>{activeCount} <span>执行中</span><i /> {queuedCount} <span>排队中</span></strong></div>
+        <p className="sidebar-note">课件与讲稿准备好后，<br />会暂停等待你的审核。</p>
+      </aside>
+      <div className="studio-content">
       <fieldset className="draft-fields" disabled={submitting}>
       {/* ① 素材 */}
-      <Section number="01" title="素材" summary={paperFile?.name ?? '未选择内容文件'} important help={<>
+      <Section anchor="material" number="01" title="素材" summary={paperFile?.name ?? '未选择内容文件'} important help={<>
         <p>支持 Word、PDF、LaTeX 或 ZIP，内容文件用于生成课件、讲稿、配音与字幕。上传后先提取并核对预览。</p>
         <p>相同文件按内容指纹复用已有提取结果，不会重复保存与解析。</p>
         <p>数字人只用于画面角落的小窗，人像与配音音色分别设置；未启用或未选人像时仍可输出完整讲解视频。</p>
@@ -1187,7 +1208,7 @@ export default function App() {
       </Section>
 
       {/* ② 语言与类型 */}
-      <Section number="02" title="语言与内容类型" summary={`${slideLang === 'zh' ? '中文' : '英文'}课件 / ${scriptLang === 'zh' ? '中文' : '英文'}讲解 · ${slideCount || '待填'} 页`} help={<>
+      <Section anchor="language" number="02" title="语言与内容类型" summary={`${slideLang === 'zh' ? '中文' : '英文'}课件 / ${scriptLang === 'zh' ? '中文' : '英文'}讲解 · ${slideCount || '待填'} 页`} help={<>
         <p>语言预设同时设置课件和讲稿语言，也可分别覆盖。页数包含封面和结束页，可设置 4～40 页。</p>
         <p>{(opts?.script_prompt_profiles ?? []).find((x) => x.value === contentProfile)?.desc}</p>
       </>}>
@@ -1341,7 +1362,7 @@ export default function App() {
       {/* ③ 音色 —— 四种来源最终都归结为"一份参考音频 + 它的参考文本"。
           逐页合成始终是**本地** Qwen3-TTS：云端只用来造这一小段音色样本，
           所以免费额度、断网、没配 key 都不会影响出片（会回落到内置音色）。 */}
-      <Section number="04" title="音色" summary={voiceMode === 'default' ? '内置默认音色' : voiceMode === 'preset' ? presetPick?.label ?? '待选择音色' : voiceMode === 'design' ? '描述生成' : '上传参考音频'} important={voiceMode === 'upload'} help={<>
+      <Section anchor="voice" number="04" title="音色" summary={voiceMode === 'default' ? '内置默认音色' : voiceMode === 'preset' ? presetPick?.label ?? '待选择音色' : voiceMode === 'design' ? '描述生成' : '上传参考音频'} important={voiceMode === 'upload'} help={<>
         <p>音色只影响说话人。内置音色无需联网；已保存音色直接复用，预置及设计音色按讲稿语言筛选。上传音频需自行核对语言，跨语言克隆可能影响发音。</p>
         <p>{opts?.voice?.available ? '支持生成与上传；生成样本使用服务端已配置的音色接口，无需另外填凭据。同一音色生成后缓存，可反复使用。' : '服务端未配置音色接口，仍可使用内置音色、已保存的样本或上传音频。'}</p>
         <p>描述音色时填写性别年龄、质感、语速与角色；混响和 EQ 等属于后期效果，不适合作为音色描述。</p>
@@ -1487,12 +1508,12 @@ export default function App() {
         )}
       </Section>
 
-      <Section number="05" title="视频光标" summary={opts?.cursors?.find((item) => item.value === cursorStyle)?.label ?? '红色光点'} help="选择随讲解指向目标的视觉标记，可在审核界面再次调整。不同样式只改变最终画面，未变化的讲稿与配音可复用。">
+      <Section anchor="cursor" number="05" title="视频光标" summary={opts?.cursors?.find((item) => item.value === cursorStyle)?.label ?? '红色光点'} help="选择随讲解指向目标的视觉标记，可在审核界面再次调整。不同样式只改变最终画面，未变化的讲稿与配音可复用。">
         <CursorPicker options={opts?.cursors ?? []} style={cursorStyle} scale={cursorScale} onStyle={setCursorStyle} onScale={setCursorScale} />
       </Section>
 
       {/* ⑤ API key */}
-      <Section number="06" title="接口凭据" summary={apiKey.trim() ? '已填写 · ' + (rememberKey ? '本机保存' : '本次会话') : '待填写'} important help={<>
+      <Section anchor="credentials" number="06" title="接口凭据" summary={apiKey.trim() ? '已填写 · ' + (rememberKey ? '本机保存' : '本次会话') : '待填写'} important help={<>
         <p>提交前建议连接自检；余额不足或接口空回复可能表现为连接失败。</p>
         <p>凭据只保存在本机浏览器和服务进程内存，不写入文件或任务记录。勾选“记住本机”会写入浏览器 localStorage，同源页面可以读取；关闭后刷新需要重填。</p>
         <p>服务端按任务隔离凭据，多人使用应各自填写。本机存储适合当前本地使用，公网部署需单独鉴权。</p>
@@ -1545,7 +1566,7 @@ export default function App() {
       </Section>
 
       </fieldset>
-      <Section number="07" title="生成课件与讲稿，进入审核" label="创建新任务" summary={missing.length ? '待完善设置' : '准备就绪'} important help={<>
+      <Section anchor="prepare" number="07" title="生成与审核" label="创建新任务" summary={missing.length ? '待完善设置' : '准备就绪'} important help={<>
         <p>所有讲解类型都先生成课件与讲稿并暂停审核；明确确认后才配音和合片。</p>
         <p>生成等待时间与成片播放时长分别计算。长课程尚无完整耗时标定；讲稿阶段动态估计剩余等待时间，配音合片以实际进度为准。新任务按队列串行执行。</p>
       </>}>
@@ -1569,6 +1590,8 @@ export default function App() {
           </span>
         </div>
       </Section>
+      </div>
+      </div>
       </div>
 
       {/* 已创建任务的详情与新任务草稿独立 */}

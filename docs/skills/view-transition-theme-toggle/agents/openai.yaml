@@ -1,0 +1,8 @@
+interface:
+  display_name: "圆形擦换主题切换"
+  short_description: "从点击位置开始的整页明暗圆形擦换，支持多框架"
+  brand_color: "#3B82F6"
+  default_prompt: "Use $view-transition-theme-toggle to add a click-origin circular wipe to my light/dark theme toggle."
+
+policy:
+  allow_implicit_invocation: true

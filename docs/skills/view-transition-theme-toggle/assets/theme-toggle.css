@@ -1,0 +1,119 @@
+/*!
+ * theme-toggle.css —— 圆形扩散主题切换的必需样式
+ * 前三段是动画层的必需项，其余为可选的主题变量与示例开关样式。
+ */
+
+/* =========================================================
+ * 1. 必需：重置 View Transitions 的默认交叉淡入淡出
+ *    不重置时，你写的 clip-path 动画会被默认 cross-fade 盖住，
+ *    表现为「动了但很糊、几乎看不出圆」。
+ * ========================================================= */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+/* =========================================================
+ * 2. 必需：按博客原映射，变暗时收缩 old（亮色）快照
+ *    new 层默认盖在 old 层之上；要让 old 的圆形收缩可见，需要抬高它。
+ *    注意只在 .dark 状态下抬高，避免把另一方向的叠层顺序也改掉。
+ *    若你的主题类名不是 .dark，请同步修改此处（见文末说明）。
+ * ========================================================= */
+html.dark::view-transition-old(root) { z-index: 2; }
+html.dark::view-transition-new(root) { z-index: 1; }
+html:not(.dark)::view-transition-old(root) { z-index: 1; }
+html:not(.dark)::view-transition-new(root) { z-index: 2; }
+
+/* ready 回调之前先裁切新亮色快照。只作用于本次主题过渡，避免影响其他转场。 */
+html[data-theme-transition="light"]::view-transition-new(root) {
+  clip-path: circle(0px at var(--theme-x, 100%) var(--theme-y, 0px));
+}
+/* 不普遍禁用 group(root) 的几何动画；旧快照异常时先查尺寸与其他样式。 */
+
+/* =========================================================
+ * 3. 可选：主题色变量
+ *    不要给 background/color 加 transition，会和 view transition 抢戏。
+ * ========================================================= */
+:root {
+  --bg: #ffffff;
+  --fg: #1f2328;
+  --border: #d0d7de;
+  --muted: #f6f8fa;
+}
+
+html.dark {
+  --bg: #16181a;
+  --fg: #e6e6e6;
+  --border: #2c3035;
+  --muted: #1f2225;
+}
+
+html {
+  background-color: var(--bg);
+  color: var(--fg);
+}
+
+/* =========================================================
+ * 4. 可选：示例开关样式
+ * ========================================================= */
+.theme-toggle {
+  --size: 40px;
+  width: var(--size);
+  height: var(--size);
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--muted);
+  color: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+
+.theme-toggle:hover {
+  border-color: currentColor;
+}
+
+.theme-toggle:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+/* 图标随主题切换：暗色显示月亮，亮色显示太阳 */
+.theme-toggle .icon-dark {
+  display: none;
+}
+html.dark .theme-toggle .icon-dark {
+  display: inline;
+}
+html.dark .theme-toggle .icon-light {
+  display: none;
+}
+
+/* =========================================================
+ * 5. 无障碍：用户开启「减少动效」时彻底禁用过渡组动画
+ *    JS 已在检测到该偏好时跳过 startViewTransition，这里是双保险。
+ * ========================================================= */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(root),
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none !important;
+  }
+}
+
+/* =========================================================
+ * 附：主题类名不是 .dark 时怎么改
+ * ---------------------------------------------------------
+ * 若你的主题类名是 .theme-dark：
+ *     .theme-dark::view-transition-old(root) { z-index: 9999; }
+ * 若你像 TDesign 那样只用属性：
+ *     [theme-mode='dark']::view-transition-old(root) { z-index: 9999; }
+ * 若你用的是 <html data-theme="dark">：
+ *     [data-theme='dark']::view-transition-old(root) { z-index: 9999; }
+ * 总之：选择器必须与「当前处于深色」这一状态严格对应。
+ * ========================================================= */

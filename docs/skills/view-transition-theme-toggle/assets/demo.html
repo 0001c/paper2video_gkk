@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>圆形扩散主题切换 · 参考实现</title>
+
+<!-- ① 首屏防闪烁：必须在样式表之前同步执行 -->
+<script>
+  (function () {
+    try {
+      var saved;
+      try { saved = localStorage.getItem('color-scheme-preference'); } catch (e) {}
+      var dark = saved === 'dark' ||
+        ((!saved || saved === 'auto') && matchMedia('(prefers-color-scheme: dark)').matches);
+      if (dark) document.documentElement.classList.add('dark');
+      document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+    } catch (e) {}
+  })();
+</script>
+
+<!-- ② skill 附带的必需样式（含伪元素重置与 z-index 修正） -->
+<link rel="stylesheet" href="./theme-toggle.css">
+
+<style>
+  :root {
+    --card: #ffffff;
+    --muted-bg: #f6f8fa;
+    --shadow: 0 1px 3px rgba(0,0,0,.08), 0 8px 24px rgba(0,0,0,.06);
+  }
+  html.dark {
+    --card: #1e2124;
+    --muted-bg: #1a1c1f;
+    --shadow: 0 1px 3px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+  }
+  html { scrollbar-gutter: stable; }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    font: 15px/1.7 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: var(--muted-bg);
+    color: var(--fg);
+  }
+
+  header {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; padding: 14px 24px;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .2px; }
+  header .tag {
+    font-size: 12px; padding: 2px 8px; border-radius: 999px;
+    border: 1px solid var(--border); color: inherit; opacity: .7; margin-left: 10px;
+  }
+
+  main { max-width: 860px; margin: 0 auto; padding: 28px 24px 80px; }
+
+  .stage {
+    border: 1px dashed var(--border);
+    border-radius: 14px;
+    padding: 40px 24px;
+    text-align: center;
+    background: var(--card);
+    box-shadow: var(--shadow);
+    cursor: crosshair;
+    user-select: none;
+    margin-bottom: 24px;
+  }
+  .stage strong { font-size: 18px; display: block; margin-bottom: 6px; }
+  .stage p { margin: 0; opacity: .7; font-size: 14px; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px;
+    box-shadow: var(--shadow);
+  }
+  .card h3 { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
+  .card p { margin: 0; font-size: 13px; opacity: .75; }
+  code {
+    font-family: "Cascadia Code", Consolas, monospace;
+    font-size: 12.5px;
+    background: var(--muted-bg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 1px 5px;
+  }
+  ul { margin: 8px 0 0; padding-left: 20px; font-size: 13.5px; }
+  li { margin: 4px 0; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>圆形扩散主题切换</h1>
+    <span class="tag">View Transitions + clip-path</span>
+  </div>
+  <button class="theme-toggle" aria-label="切换亮暗主题" onclick="ThemeToggle.toggle(event)">
+    <span class="icon-light">🌞</span>
+    <span class="icon-dark">🌙</span>
+  </button>
+</header>
+
+<main>
+  <div class="stage" id="stage">
+    <strong>在这里任意位置点一下</strong>
+    <p>变亮时从点击位置扩散，变暗时收缩旧亮色快照，覆盖到最远的角落</p>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h3>① 起点</h3>
+      <p>取 <code>event.clientX / clientY</code>，不是按钮中心。</p>
+    </div>
+    <div class="card">
+      <h3>② 半径</h3>
+      <p><code>Math.hypot(max(x, W-x), max(y, H-y))</code> —— 到最远角的斜边。</p>
+    </div>
+    <div class="card">
+      <h3>③ 画圆</h3>
+      <p><code>clip-path: circle(r at x y)</code>，挂在根元素上。</p>
+    </div>
+    <div class="card">
+      <h3>④ 动起来</h3>
+      <p><code>startViewTransition</code> 包住主题变更，在 <code>.ready</code> 后跑 <code>animate()</code>。</p>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h3>本页已内置的工程化处理</h3>
+    <ul>
+      <li>不支持 View Transitions 的浏览器自动降级为无动画切换（功能不受影响）</li>
+      <li>开启系统「减少动效」后跳过扩散动画</li>
+      <li>键盘触发（<code>event.detail === 0</code>）时优先从按钮中心擦换</li>
+      <li>动画期间加互斥锁；每轮结束清理填充动画，避免影响下次切换</li>
+      <li>准备与收尾共用有限等待，异常时跳过过渡并解锁；迟到回调不重复提交主题</li>
+      <li>同步设置 <code>color-scheme</code>，滚动条与表单控件一起变色</li>
+      <li>首屏内联脚本提前打主题，刷新无亮暗闪烁</li>
+    </ul>
+  </div>
+</main>
+
+<!-- skill 附带的实现 -->
+<script src="./theme-toggle.js"></script>
+<script>
+  // 演示：点击舞台区域也触发切换，便于观察圆心跟随
+  document.getElementById('stage').addEventListener('click', function (e) {
+    ThemeToggle.toggle(e);
+  });
+</script>
+</body>
+</html>

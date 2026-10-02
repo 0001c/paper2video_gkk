@@ -26,6 +26,14 @@ export function replaceStage(config: ModelConfig, role: Role, stage: Stage): Mod
     ...(role === "tts" ? { timing: { source: stage.mode === "api" ? "tts_timestamp" : "local_forced_aligner" } } : {}) };
 }
 
+export function setTextParameter(config: ModelConfig, role: "text" | "vision", name: "temperature" | "max_output_tokens", value?: number): ModelConfig {
+  const stage = config.stages[role];
+  const parameters = { ...stage.parameters };
+  if (value === undefined) delete parameters[name];
+  else parameters[name] = value;
+  return replaceStage(config, role, { ...stage, parameters });
+}
+
 export function presetConfig(preset: "bailian_api" | "local_existing", connectionId = "", enabled = true, options?: ModelOptions): ModelConfig {
   const stages = Object.fromEntries(roles.map((role) => {
     const local = options?.local_models?.[role];

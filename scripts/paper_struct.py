@@ -153,7 +153,7 @@ def strip_code_fence(text):
 
 
 def call_llm(system_prompt, user_prompt, model=None, max_tokens=None,
-             temperature=0.2, timeout=900):
+             temperature=0.2, timeout=900, model_snapshot=None):
     """调用 OpenAI 兼容接口。返回 (正文, usage)。
 
     为什么直接用 openai SDK 而不是项目里的 camel：
@@ -163,26 +163,37 @@ def call_llm(system_prompt, user_prompt, model=None, max_tokens=None,
     sys.path.insert(0, PAPER2VIDEO_SRC)
     import pv_env  # noqa: F401  触发 .env 加载与别名同步
     from openai import OpenAI
+    from model_runtime import role_settings
 
-    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
-    base_url = os.environ.get("OPENAI_API_BASE", "").strip()
+    settings = role_settings(model_snapshot, 'text')
+    if settings:
+        if (model and model != settings['model_type']) or max_tokens is not None:
+            raise ValueError('v2结构化使用任务文字参数，不接受独立型号/输出上限覆盖')
+        model = settings['model_type']
+        api_key = os.environ[settings['api_key_env']]
+        base_url = settings['url']
+        parameters = {'temperature': temperature, **settings['model_config']}
+    else:
+        api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        base_url = os.environ.get("OPENAI_API_BASE", "").strip()
+        parameters = {'temperature': temperature}
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY 未配置（应在仓库根的 .env 里）")
+        raise RuntimeError("文字模型凭据未配置")
 
-    client = OpenAI(api_key=api_key, base_url=base_url or None, timeout=timeout)
     model = model or DEFAULT_MODEL
     # 未知服务商模型由其默认输出上限决定，不强塞 DeepSeek 的 65536 上限。
-    if max_tokens is None and model in ('deepseek-flash', 'deepseek-v4-flash', 'deepseek-chat', 'deepseek-reasoner'):
+    if not settings and max_tokens is None and model in ('deepseek-flash', 'deepseek-v4-flash', 'deepseek-chat', 'deepseek-reasoner'):
         max_tokens = int(os.environ.get('PAPER2VIDEO_MAX_TOKENS') or '65536')
 
     started = time.time()
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "system", "content": system_prompt},
-                  {"role": "user", "content": user_prompt}],
-        **({'max_tokens': max_tokens} if max_tokens is not None else {}),
-        temperature=temperature,
-    )
+    with OpenAI(api_key=api_key, base_url=base_url or None, timeout=timeout) as client:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "system", "content": system_prompt},
+                      {"role": "user", "content": user_prompt}],
+            **({'max_tokens': max_tokens} if max_tokens is not None else {}),
+            **parameters,
+        )
     elapsed = time.time() - started
 
     choice = resp.choices[0]
@@ -237,7 +248,7 @@ CONTINUE_TEMPLATE = """下面是一份 LaTeX 源码的**末尾片段**。它因�
 - **不要**重新输出 \\documentclass 或任何 \\usepackage（前言已经写过了）；
 - 若断点落在一张表 / 列表 / 环境的中间，先把那一处补完整，再继续往下写；
 - 不要输出解释文字，也不要加 markdown 代码块；
-- 一直写到 \\end{document} 为止。
+- 一直写到 \\end{{document}} 为止。
 
 ──────── 已输出内容的末尾片段（供你判断断点）────────
 {tail}
@@ -291,7 +302,7 @@ def _repair_unclosed(tex):
     return head + "\n\n\\end{document}\n", True
 
 
-def _continue_tex(tex, info, model, max_tokens, max_rounds=3):
+def _continue_tex(tex, info, model, max_tokens, max_rounds=3, model_snapshot=None):
     """撞上限后**续写**，尽量把整篇拿全。
 
     实测触发条件：24 页 / 6.6 万字符的论文，思维链就吃掉一大半额度
@@ -306,7 +317,7 @@ def _continue_tex(tex, info, model, max_tokens, max_rounds=3):
         rounds += 1
         tail = tex[-2500:]
         piece, more = call_llm(SYSTEM_PROMPT, CONTINUE_TEMPLATE.format(tail=tail),
-                               model=model, max_tokens=max_tokens)
+                               model=model, max_tokens=max_tokens, model_snapshot=model_snapshot)
         piece = strip_code_fence(piece)
         print("      续写第 %d 轮：%.1fs | finish=%s | +%d 字符"
               % (rounds, more["elapsed"], more["finish_reason"], len(piece)))
@@ -334,7 +345,7 @@ def _continue_tex(tex, info, model, max_tokens, max_rounds=3):
 
 
 def structurize(source, out_dir, model=None, max_tokens=None,
-                do_compile=True, keep_text=False, text_file=None):
+                do_compile=True, keep_text=False, text_file=None, model_snapshot=None):
     """完整流程：提取 → 结构化 → 落盘 → （可选）编译验证。"""
     os.makedirs(out_dir, exist_ok=True)
 
@@ -357,7 +368,7 @@ def structurize(source, out_dir, model=None, max_tokens=None,
         text=text)
     system_prompt = SYSTEM_PROMPT + ("\n本次材料是已选择的教学内容。保留教材或课程的原章节、公式、例题和推导，不套用论文研究结构。" if text_file else "")
     content, info = call_llm(system_prompt, user_prompt, model=model,
-                             max_tokens=max_tokens)
+                             max_tokens=max_tokens, model_snapshot=model_snapshot)
     tex = strip_code_fence(content)
     print("      %.1fs | tokens=%s | finish=%s"
           % (info["elapsed"], info["usage"].get("total_tokens"),
@@ -369,7 +380,7 @@ def structurize(source, out_dir, model=None, max_tokens=None,
         # 所以先尝试续写；实在拿不全再退化成"截到最后一个配平点 + 补 \end{document}"，
         # 保证产物至少是**可编译**的。
         print("      ⚠️ finish_reason=length —— 输出撞上限，开始续写 ...")
-        tex, info = _continue_tex(tex, info, model, max_tokens)
+        tex, info = _continue_tex(tex, info, model, max_tokens, model_snapshot=model_snapshot)
 
     tex_dir = os.path.join(out_dir, "latex_proj")
     os.makedirs(tex_dir, exist_ok=True)
@@ -425,14 +436,29 @@ def main(argv=None):
                                                       "struct_out"),
                         help="输出目录")
     parser.add_argument("--model", default=None, help="模型名（默认 deepseek-flash）")
+    parser.add_argument('--model-config', help='无秘密的v2任务快照；结构化与续写使用文字角色')
     parser.add_argument("--max-tokens", type=int, default=None, help='覆盖模型默认输出上限；DeepSeek 默认 65536')
     parser.add_argument("--no-compile", action="store_true", help="跳过 tectonic 编译")
     parser.add_argument("--text-file", help="使用已选定的课程正文（UTF-8），不重新提取整个源文件")
     args = parser.parse_args(argv)
 
+    model_snapshot = None
+    if args.model_config:
+        sys.path.insert(0, PAPER2VIDEO_SRC)
+        from model_runtime import load_model_snapshot, role_settings
+        model_snapshot, _ = load_model_snapshot(args.model_config)
+        os.environ['PAPER2VIDEO_MODEL_CONFIG_ORIGIN'] = model_snapshot['model_config_origin']
+        if model_snapshot['model_config_origin'] == 'v2':
+            for name in list(os.environ):
+                if name.startswith(('OPENAI_', 'DEEPSEEK_')):
+                    os.environ.pop(name)
+        settings = role_settings(model_snapshot, 'text')
+        if settings:
+            args.model = settings['model_type']
+
     tex, report = structurize(args.source, args.out, model=args.model,
                               max_tokens=args.max_tokens,
-                              do_compile=not args.no_compile, text_file=args.text_file)
+                              do_compile=not args.no_compile, text_file=args.text_file, model_snapshot=model_snapshot)
     print()
     print("=== 结果 ===")
     for key in ("tex_path", "tex_chars", "sections", "subsections", "has_ctex",

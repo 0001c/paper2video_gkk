@@ -94,7 +94,7 @@ if __name__ == "__main__":
     parser.add_argument('--cursor_style', choices=tuple(cursor_styles.STYLES), default=cursor_styles.DEFAULT)
     parser.add_argument('--cursor_scale', type=float, choices=(0.75, 1, 1.5), default=1)
     args = parser.parse_args()
-    apply_model_snapshot(args)
+    model_snapshot = apply_model_snapshot(args)
 
     stage = json.loads(args.stage)
     print("start", "stage:", stage, "gpu_list:", args.gpu_list)
@@ -118,8 +118,9 @@ if __name__ == "__main__":
     cursor_asset, cursor_hotspot = cursor_styles.resolve(args.cursor_style)
     cursor_img_path = str(cursor_asset) if cursor_asset else None
     os.makedirs(args.result_dir, exist_ok=True)
-    agent_config_t = get_agent_config(args.model_name_t)  # LLM
-    agent_config_v = get_agent_config(args.model_name_v)  # VLM
+    active_roles = args.required_model_roles if model_snapshot and model_snapshot['model_config_origin'] == 'v2' else ('text', 'vision')
+    agent_config_t = get_agent_config(args.model_name_t, 'text', model_snapshot) if 'text' in active_roles else None
+    agent_config_v = get_agent_config(args.model_name_v, 'vision', model_snapshot) if 'vision' in active_roles else None
 
     copy_latex_proj_path = os.path.join(args.result_dir, os.path.basename(args.paper_latex_root))
     if os.path.exists(copy_latex_proj_path) is False:

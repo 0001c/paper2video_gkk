@@ -569,10 +569,8 @@ def _configure_job_models(config, payload=None, source=None, portrait=None):
         snapshots, keys = _MODEL_CONNECTIONS.freeze(normalized, roles, previous, frozen)
         _MODEL_CATALOG.validate(normalized, roles, snapshots)
         _MODEL_CATALOG.annotate(snapshots)
-        text_connection = snapshots.get(normalized.stages.text.connection_id)
-        vision_connection = snapshots.get(normalized.stages.vision.connection_id)
-        selected = text_connection if 'text' in roles else vision_connection if 'vision' in roles else (text_connection or vision_connection)
-        config['model_api_base'] = selected.get('compatible_base_url') if selected else None
+        _MODEL_CATALOG.annotate_limits(snapshots, normalized, roles)
+        config.pop('model_api_base', None)
     else:
         normalized = model_settings.legacy_config(config)
         roles = model_settings.required_roles(normalized, config)
@@ -592,9 +590,9 @@ def _job_model_environment(config, keys):
     origin = config.get('model_config_origin', 'legacy')
     env['PAPER2VIDEO_MODEL_CONFIG_ORIGIN'] = origin
     if origin == 'v2':
-        for name in ('OPENAI_API_KEY', 'OPENAI_COMPATIBLE_MODEL_API_KEY', 'OPENAI_API_BASE', 'OPENAI_BASE_URL',
-                     'OPENAI_COMPATIBLE_MODEL_API_BASE', 'DEEPSEEK_API_KEY', 'DEEPSEEK_API_BASE'):
-            env.pop(name, None)
+        for name in list(env):
+            if name.startswith(('OPENAI_', 'DEEPSEEK_')):
+                env.pop(name)
         selected = _parse_model_config(config['model_config'])
         roles = config.get('required_model_roles') or model_settings.required_roles(selected, config)
         for role in roles:
@@ -603,15 +601,6 @@ def _job_model_environment(config, keys):
                 if connection_id not in keys.get('connections', {}):
                     raise model_settings.ConfigurationError('connection_id', '缺少任务连接凭据', 'connection_expired', 409)
                 env[f'PAPER2VIDEO_ROLE_{role.upper()}_API_KEY'] = keys['connections'][connection_id] or 'local-no-key'
-        primary = 'text' if 'text' in roles else 'vision' if 'vision' in roles else None
-        if primary:
-            stage = selected.roles()[primary]
-            api_key = env[f'PAPER2VIDEO_ROLE_{primary.upper()}_API_KEY']
-            base = config['model_connections'][stage.connection_id]['compatible_base_url']
-            for name in ('OPENAI_API_KEY', 'OPENAI_COMPATIBLE_MODEL_API_KEY'):
-                env[name] = api_key
-            for name in ('OPENAI_API_BASE', 'OPENAI_BASE_URL', 'OPENAI_COMPATIBLE_MODEL_API_BASE'):
-                env[name] = base
     else:
         if keys.get('api_key'):
             env['OPENAI_API_KEY'] = env['OPENAI_COMPATIBLE_MODEL_API_KEY'] = keys['api_key']
@@ -1676,6 +1665,13 @@ def _artifact_facts(job):
     cfg = job.get("config") or {}
     paper_text = os.path.join(job_dir, "ingest", "paper_text.md")
     main_tex = os.path.join(job.get("paper_latex_root") or "", "main.tex")
+    backends = {}
+    if cfg.get('model_config_origin') == 'v2':
+        for role in ('text', 'vision'):
+            stage = cfg['model_config']['stages'][role]
+            connection = (cfg.get('model_connections') or {}).get(stage.get('connection_id'), {})
+            backends[role] = {name: stage.get(name) for name in ('mode', 'provider', 'model', 'connection_id', 'parameters')}
+            backends[role].update(scope_id=connection.get('scope_id'), compatible_base_url=connection.get('compatible_base_url'), runtime_version=3)
     return {
         # 结构化看的是「提取出来的正文」；.tex/.zip 输入没有正文时退回原始上传件
         # 的内容指纹（两个都由内容库保证稳定，不会每次变）。
@@ -1701,8 +1697,9 @@ def _artifact_facts(job):
         "course_plan_sha": cfg.get("course_plan_sha"),
         "llm_model": cfg.get('text_model') or os.environ.get("PAPER2VIDEO_LLM_MODEL", "deepseek-flash"),
         "vlm_model": cfg.get('vision_model') or os.environ.get('PAPER2VIDEO_VLM_MODEL', 'deepseek-flash'),
-        "model_api_base": cfg.get('model_api_base') or os.environ.get('OPENAI_BASE_URL') or os.environ.get('OPENAI_API_BASE'),
-        "script_generation_version": 2,
+        "model_api_base": None if backends else cfg.get('model_api_base') or os.environ.get('OPENAI_BASE_URL') or os.environ.get('OPENAI_API_BASE'),
+        "text_backend": backends.get('text'), "vision_backend": backends.get('vision'),
+        "script_generation_version": 3 if backends else 2,
         "talking_profile": cfg.get("talking_profile", "musetalk-local"),
         # 幻灯片布局微调（树搜索）：它真的改变 stage 1 的幻灯片产物
         # （溢出页多出 4 个宽度候选、由 VLM 选一张），所以**必须在指纹里**。
@@ -1789,6 +1786,8 @@ async def _prepare_latex(job, job_dir, log, env):
 
     argv = [VENV_PY, "-u", os.path.join(SCRIPTS, "paper_struct.py"),
             source, "--out", job_dir, '--model', job['config'].get('text_model') or os.environ.get('PAPER2VIDEO_LLM_MODEL', 'deepseek-flash')]
+    if job['config'].get('model_config_origin') == 'v2':
+        argv += ['--model-config', os.path.join(job_dir, 'model_config.json')]
     if job.get("config", {}).get("course_plan_path"):
         argv += ["--text-file", os.path.join(job_dir, "ingest", "paper_text.md")]
     _log_line(log, "[struct] 正在把 {} 转成 LaTeX 工程（一次 API 调用，约 1~2 分钟）".format(
@@ -2243,8 +2242,10 @@ async def api_rebind_model_connections(job_id: str, payload: ConnectionRebindReq
             if stage.connection_id in payload.bindings:
                 stage.connection_id = payload.bindings[stage.connection_id]
         config['model_config'] = normalized.public_dict()
-        snapshots, keys = _MODEL_CONNECTIONS.freeze(normalized, model_settings.required_roles(normalized, config))
+        roles = config.get('required_model_roles') or model_settings.required_roles(normalized, config)
+        snapshots, keys = _MODEL_CONNECTIONS.freeze(normalized, roles)
         _MODEL_CATALOG.annotate(snapshots)
+        _MODEL_CATALOG.annotate_limits(snapshots, normalized, roles)
         config['model_connections'] = snapshots
         job['config'] = config
         _save_job(job)

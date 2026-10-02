@@ -10,6 +10,24 @@ async function load(name) {
 const models = await load("modelConfig");
 const storage = await load("storage");
 
+test("文字/视觉独立连接与参数覆盖不串线，清空只删除当前覆盖值", () => {
+  const config = models.presetConfig("local_existing", "text-connection", false);
+  config.stages.vision.connection_id = "vision-connection";
+  config.stages.vision.mode = "local";
+  const text = models.setTextParameter(config, "text", "max_output_tokens", 8192);
+  const vision = models.setTextParameter(text, "vision", "temperature", 0.3);
+  assert.equal(config.stages.text.parameters.max_output_tokens, undefined);
+  assert.equal(vision.stages.vision.connection_id, "vision-connection");
+  assert.equal(vision.stages.vision.mode, "local");
+  assert.equal(vision.stages.text.parameters.max_output_tokens, 8192);
+  assert.equal(vision.stages.vision.parameters.temperature, 0.3);
+  const cleared = models.setTextParameter(vision, "text", "max_output_tokens");
+  assert.deepEqual(cleared.stages.text.parameters, {});
+  assert.equal(cleared.stages.vision.parameters.temperature, 0.3);
+  assert.deepEqual(models.readModelConfig(vision), vision);
+  assert.equal(models.taskModelPayload({ model_config_origin: "v2", model_config: vision }).model_config, vision);
+});
+
 test("预设保留唯一数字人开关，切换TTS派生时间轴，文本本地是兼容服务", () => {
   const api = models.presetConfig("bailian_api", "connection", false);
   const local = models.presetConfig("local_existing", "connection", api.avatar.enabled);

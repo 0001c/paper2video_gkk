@@ -5,11 +5,9 @@ import os, sys
 from os import path
 from PIL import Image
 from pathlib import Path
-from camel.models import ModelFactory
-from camel.agents import ChatAgent
 from camel.messages import BaseMessage
 from camel.types import ModelPlatformType
-from wei_utils import get_agent_config
+from wei_utils import create_agent
 from script_validation import validate_script_output
 
 
@@ -74,12 +72,7 @@ def subtitle_cursor_gen(slide_imgs_dir, prompt_path, model_config, retries=None,
 
     重试次数可用 ``PAPER2VIDEO_VLM_RETRIES`` 覆盖。
     """
-    model = ModelFactory.create(
-        model_platform=model_config["model_platform"],
-        model_type=model_config["model_type"],
-        model_config_dict=model_config.get("model_config"),
-        url=model_config.get("url", None),)
-    agent = ChatAgent(model=model, system_message="",)
+    agent = create_agent(model_config)
 
     with open(prompt_path, 'r', encoding='utf-8') as f_prompt: task_prompt = prompt_text or f_prompt.read()
     slide_image_list = image_paths or [path.join(slide_imgs_dir, name) for name in os.listdir(slide_imgs_dir) if name.lower().endswith('.png')]

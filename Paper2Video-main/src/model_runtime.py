@@ -46,18 +46,11 @@ def apply_model_snapshot(args):
             stage = config.roles()[role]
             if stage.connection_id and (stage.connection_id not in connections or not os.environ.get(f"PAPER2VIDEO_ROLE_{role.upper()}_API_KEY")):
                 raise ConfigurationError(f"model_config.{role}", "任务级连接凭据缺失，禁止回落全局Key", "connection_expired", 409)
-        for name in ("OPENAI_API_KEY", "OPENAI_COMPATIBLE_MODEL_API_KEY", "OPENAI_API_BASE", "OPENAI_BASE_URL", "OPENAI_COMPATIBLE_MODEL_API_BASE", "DEEPSEEK_API_KEY", "DEEPSEEK_API_BASE"):
-            os.environ.pop(name, None)
-        primary = "text" if "text" in roles else "vision" if "vision" in roles else None
-        if primary:
-            stage = config.roles()[primary]
-            key = os.environ[f"PAPER2VIDEO_ROLE_{primary.upper()}_API_KEY"]
-            base = connections[stage.connection_id]["compatible_base_url"]
-            for name in ("OPENAI_API_KEY", "OPENAI_COMPATIBLE_MODEL_API_KEY"):
-                os.environ[name] = key
-            for name in ("OPENAI_API_BASE", "OPENAI_BASE_URL", "OPENAI_COMPATIBLE_MODEL_API_BASE"):
-                os.environ[name] = base
+        for name in list(os.environ):
+            if name.startswith(('OPENAI_', 'DEEPSEEK_')):
+                os.environ.pop(name)
         os.environ['PAPER2VIDEO_MODEL_CONFIG_ORIGIN'] = 'v2'
+    args.required_model_roles = roles
     args.model_name_t = config.stages.text.model
     args.model_name_v = config.stages.vision.model
     args.tts_model = config.stages.tts.model
@@ -66,3 +59,30 @@ def apply_model_snapshot(args):
     elif config.avatar.enabled:
         raise ValueError("light流水线不能启用数字人")
     return snapshot
+
+
+def role_settings(snapshot, role):
+    if not snapshot or snapshot.get('model_config_origin') != 'v2':
+        if os.environ.get('PAPER2VIDEO_MODEL_CONFIG_ORIGIN') == 'v2':
+            raise ConfigurationError(f'model_config.{role}', 'v2调用缺少任务快照，禁止借用全局配置')
+        return None
+    config = PipelineModelConfig.model_validate(snapshot['model_config'])
+    stage = config.roles()[role]
+    connection = (snapshot.get('model_connections') or {}).get(stage.connection_id)
+    field = f'config.model_config.stages.{role}'
+    if not connection or not connection.get('compatible_base_url') or connection.get('provider') != stage.provider:
+        raise ConfigurationError(field + '.connection_id', '任务连接快照缺失或提供方不一致', 'connection_expired', 409)
+    key_env = f'PAPER2VIDEO_ROLE_{role.upper()}_API_KEY'
+    if not os.environ.get(key_env):
+        raise ConfigurationError(field + '.connection_id', '任务角色凭据缺失，禁止回落全局Key', 'connection_expired', 409)
+    parameters = stage.parameters.model_dump(exclude_none=True)
+    if 'max_output_tokens' in parameters:
+        parameters['max_tokens'] = parameters.pop('max_output_tokens')
+    limits = (connection.get('model_limits') or {}).get(stage.model, {})
+    if parameters.get('max_tokens', 0) > limits.get('max_output_tokens', 131072):
+        raise ConfigurationError(field + '.parameters.max_output_tokens', '超过该型号目录记录的输出上限')
+    if stage.provider == 'bailian' and stage.model in ('qwen3.8-flash', 'qwen3.8-max', 'qwen3-vl-plus'):
+        parameters['extra_body'] = {'enable_thinking': False}
+    return {'model_type': stage.model, 'url': connection['compatible_base_url'], 'api_key_env': key_env,
+            'model_config': parameters, 'connection_id': stage.connection_id, 'scope_id': connection.get('scope_id'),
+            'context_window': limits.get('context_window')}

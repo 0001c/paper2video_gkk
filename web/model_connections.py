@@ -1,5 +1,6 @@
 """受信模型连接；秘密只保存于服务进程内存。"""
 
+import copy
 import ipaddress
 import os
 import uuid
@@ -154,7 +155,7 @@ class ConnectionStore:
                 entry = entries[connection_id]
                 snapshot = snapshots[connection_id]
             elif connection_id in (previous or {}) and connection_id in (credentials or {}):
-                snapshot = previous[connection_id]
+                snapshot = copy.deepcopy(previous[connection_id])
                 entry = {**snapshot, "api_key": credentials[connection_id]}
             else:
                 try:

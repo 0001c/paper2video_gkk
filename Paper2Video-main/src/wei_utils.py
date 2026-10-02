@@ -79,8 +79,14 @@ def _max_output_tokens():
     return 65536
 
 
-def get_agent_config(model_type):
-    """为所选模型构造兼容 API 配置，端点由环境变量提供。"""
+def get_agent_config(model_type, role=None, snapshot=None):
+    """v2按角色读取无秘密快照；旧任务保留环境配置。"""
+    from model_runtime import role_settings
+    settings = role_settings(snapshot, role) if role else None
+    if not role and os.environ.get('PAPER2VIDEO_MODEL_CONFIG_ORIGIN') == 'v2':
+        raise ValueError('v2模型调用必须指定角色和任务快照')
+    if settings:
+        return {**settings, 'model_platform': ModelPlatformType.OPENAI_COMPATIBLE_MODEL, 'max_images': 99}
     model_config = ChatGPTConfig().as_dict()
     if model_type in _OPENAI_COMPATIBLE_ALIASES:
         model_config["max_tokens"] = _max_output_tokens()
@@ -91,3 +97,20 @@ def get_agent_config(model_type):
         "max_images": 99,
         "url": os.environ.get('OPENAI_COMPATIBLE_MODEL_API_BASE') or os.environ.get('OPENAI_BASE_URL'),
     }
+
+
+def create_agent(model_config):
+    key_env = model_config.get('api_key_env')
+    if key_env:
+        api_key = os.environ.get(key_env)
+        if not api_key:
+            raise ValueError('任务角色凭据缺失，禁止回落全局Key')
+    else:
+        if os.environ.get('PAPER2VIDEO_MODEL_CONFIG_ORIGIN') == 'v2':
+            raise ValueError('v2模型调用缺少角色凭据引用')
+        api_key = os.environ.get('OPENAI_COMPATIBLE_MODEL_API_KEY') or os.environ.get('OPENAI_API_KEY')
+    from camel.agents import ChatAgent
+    from camel.models import ModelFactory
+    model = ModelFactory.create(model_platform=model_config['model_platform'], model_type=model_config['model_type'],
+                                model_config_dict=model_config.get('model_config'), url=model_config.get('url'), api_key=api_key)
+    return ChatAgent(model=model, system_message='', token_limit=model_config.get('context_window'))

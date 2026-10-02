@@ -191,7 +191,7 @@ if __name__ == '__main__':
     # talking-head: 3: 
     # all: 0
     args = parser.parse_args()
-    apply_model_snapshot(args)
+    model_snapshot = apply_model_snapshot(args)
     stage = json.loads(args.stage)
     print("start", "stage:", stage, args.gpu_list)
 
@@ -222,8 +222,9 @@ if __name__ == '__main__':
     course_plan = course.read_json(args.course_plan) if args.course_plan else None
     if args.course_plan and not course_plan:
         raise ValueError('课程教案不可读取，已停止')
-    agent_config_t = get_agent_config(args.model_name_t) # LLM
-    agent_config_v = get_agent_config(args.model_name_v) # VLM
+    active_roles = args.required_model_roles if model_snapshot and model_snapshot['model_config_origin'] == 'v2' else ('text', 'vision')
+    agent_config_t = get_agent_config(args.model_name_t, 'text', model_snapshot) if 'text' in active_roles else None
+    agent_config_v = get_agent_config(args.model_name_v, 'vision', model_snapshot) if 'vision' in active_roles else None
     copy_latex_proj_path = path.join(args.result_dir, path.basename(args.paper_latex_root))
     if path.exists(copy_latex_proj_path) is False:
         copy_folder(args.paper_latex_root, copy_latex_proj_path)

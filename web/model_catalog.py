@@ -38,7 +38,10 @@ def merged(compatible, native):
         identity = raw.get('model') or raw.get('id')
         if not model_id(identity):
             continue
-        records[identity] = {'id': identity, 'capabilities': [value for value in raw.get('capabilities', []) if isinstance(value, str)],
+        info = raw.get('model_info') if isinstance(raw.get('model_info'), dict) else {}
+        limits = {name: info[name] for name in ('context_window', 'max_input_tokens', 'max_output_tokens')
+                  if isinstance(info.get(name), int) and not isinstance(info[name], bool) and info[name] > 0}
+        records[identity] = {'id': identity, 'model_info': limits, 'capabilities': [value for value in raw.get('capabilities', []) if isinstance(value, str)],
                              'sources': ['native'], 'offline_time': (raw.get('inference_offline_info') or {}).get('offline_time')}
     for identity in compatible:
         if not model_id(identity):
@@ -219,6 +222,11 @@ class CatalogStore:
                 field = f'config.model_config.stages.{role}.model' if role != 'avatar' else 'config.model_config.avatar.model'
                 if item is None or not item['selectable']:
                     raise ConfigurationError(field, '已知目录声明的能力/协议不适配此环节，或型号已下线', 'model_not_supported')
+                if role in ('text', 'vision'):
+                    maximum = record.get('model_info', {}).get('max_output_tokens')
+                    requested = stage.parameters.max_output_tokens
+                    if maximum and requested and requested > maximum:
+                        raise ConfigurationError(field.rsplit('.', 1)[0] + '.parameters.max_output_tokens', f'目录记录该型号最大输出为{maximum} tokens')
 
     def annotate(self, snapshots):
         for identity, entry in snapshots.items():
@@ -226,6 +234,17 @@ class CatalogStore:
             if catalog:
                 entry['catalog_time'] = catalog['catalog_time']
                 entry['catalog_source'] = catalog['source']
+
+    def annotate_limits(self, snapshots, config, roles):
+        for role in set(roles) & {'text', 'vision'}:
+            stage = config.roles()[role]
+            entry = snapshots.get(stage.connection_id)
+            if not entry:
+                continue
+            catalog = self.current({**entry, 'id': stage.connection_id})
+            record = next((row for row in (catalog or {}).get('items', []) if row['id'] == stage.model), None)
+            if record and record.get('model_info'):
+                entry.setdefault('model_limits', {})[stage.model] = dict(record['model_info'])
 
 
 def options():

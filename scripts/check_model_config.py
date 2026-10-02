@@ -87,8 +87,8 @@ def main():
             os.environ.update(PAPER2VIDEO_ROLE_TEXT_API_KEY='unit-key-first', PAPER2VIDEO_ROLE_VISION_API_KEY='unit-key-first',
                               OPENAI_API_KEY='wrong-global-key', OPENAI_BASE_URL='http://wrong.example/v1')
             apply_model_snapshot(args)
-            assert os.environ['OPENAI_API_KEY'] == 'unit-key-first'
-            assert os.environ['OPENAI_BASE_URL'] == 'http://localhost:9000/v1'
+            assert 'OPENAI_API_KEY' not in os.environ
+            assert 'OPENAI_BASE_URL' not in os.environ
             assert args.model_name_t == 'unit-text' and args.generate_talking is False
             assert 'unit-key-first' not in path.read_text(encoding='utf-8')
             poisoned = copy.deepcopy(snapshot)
@@ -104,8 +104,8 @@ def main():
         assert credentials[replacement['id']] == 'unit-key-rebound'
         assert job_config['model_config_origin'] == 'v2' and job_config['text_model'] == 'unit-text'
         environment = web._job_model_environment(job_config, {'connections': credentials, 'api_key': 'old-global-key', 'api_base': 'http://wrong.example/v1'})
-        assert environment['OPENAI_API_KEY'] == 'unit-key-rebound'
-        assert environment['OPENAI_BASE_URL'] == 'http://localhost:9000/v1'
+        assert 'OPENAI_API_KEY' not in environment and 'OPENAI_BASE_URL' not in environment
+        assert environment['PAPER2VIDEO_ROLE_TEXT_API_KEY'] == 'unit-key-rebound'
         invalid = copy.deepcopy(incoming)
         invalid['stages']['tts']['provider'] = 'gui_owl'
         try:

@@ -2,9 +2,9 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Button, Select } from "tdesign-react";
 import { api, errorMessage, runExclusive } from "./flow";
 import { ModelConnections } from "./ModelConnections";
-import { presetConfig, replaceStage, roleLabels, roles, roleStage, type Connection, type ModelConfig, type ModelOptions, type Role, type Stage } from "./modelConfig";
+import { presetConfig, replaceStage, setTextParameter, roleLabels, roles, roleStage, type Connection, type ModelConfig, type ModelOptions, type Role, type Stage } from "./modelConfig";
 
-type Candidate = { id: string; selectable: boolean; adapter_implemented: boolean; status: string; verification: string; offline_time: string | null };
+type Candidate = { id: string; selectable: boolean; adapter_implemented: boolean; status: string; verification: string; offline_time: string | null; model_info?: { max_output_tokens?: number } };
 type Catalog = { items: Candidate[]; next_cursor: string | null; source: string; catalog_time: string | null; total: number; warnings: string[] };
 export function ModelSettings({ value, options, concurrency, onChange, onConcurrency, voice = { kind: "default" }, portraitPath, concurrencyEditable = true, onConnectionsChange }: {
   value: ModelConfig; options?: ModelOptions; concurrency: number; onChange: (value: ModelConfig) => void; onConcurrency: (value: number) => void;
@@ -108,10 +108,19 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
             onChange={(model) => onChange(replaceStage(value, item, { ...selected, model: String(model) }))}
             onCreate={(model) => onChange(replaceStage(value, item, { ...selected, model: String(model).trim() }))} />
             <span className="hint">{!implemented ? "适配器待接入，不会回退本地" : currentCandidate?.status === "retired" ? "已下线，禁止新执行" : needsConnection ? "兼容协议已接入，服务/权限未验证" : "已有本地路线"}</span></div>
+          {(item === "text" || item === "vision") && <details className="model-role-parameters"><summary>请求参数 · {selected.parameters.max_output_tokens == null && selected.parameters.temperature == null ? "未覆盖" : "已自定义"}</summary>
+            <div className="model-parameter-fields">
+              <div className="field"><label htmlFor={`${prefix}-tokens-${item}`}>最大输出 tokens</label><input id={`${prefix}-tokens-${item}`} type="number" min={1} max={Math.min(131072, currentCandidate?.model_info?.max_output_tokens ?? 131072)} step={1} placeholder="不覆盖服务默认值" disabled={!options?.implemented.role_model_parameters} value={selected.parameters.max_output_tokens ?? ""}
+                onChange={(event) => onChange(setTextParameter(value, item, "max_output_tokens", event.target.value === "" ? undefined : event.target.valueAsNumber))} /></div>
+              <div className="field"><label htmlFor={`${prefix}-temperature-${item}`}>温度 temperature</label><input id={`${prefix}-temperature-${item}`} type="number" min={0} max={2} step={0.1} placeholder="不覆盖默认温度" disabled={!options?.implemented.role_model_parameters} value={selected.parameters.temperature ?? ""}
+                onChange={(event) => onChange(setTextParameter(value, item, "temperature", event.target.value === "" ? undefined : event.target.valueAsNumber))} /></div>
+            </div><p className="hint">仅影响此角色；清空取消覆盖。范围：输出1～131072、温度0～2；已知型号还受目录上限约束，未知兼容服务以其文档为准。v2不借用旧任务全局参数。推荐百炼型号使用非思考模式输出课件/讲稿。</p>
+            {!options?.implemented.role_model_parameters && <p className="notice warn">后端尚未支持逐角色参数，请重载至P3版本。</p>}
+          </details>}
         </div>;
       })}
     </div>
-    <p className="hint">时间轴：{value.timing.source === "tts_timestamp" ? "随 API 配音返回（待P4/P5接入）" : "本地 ForcedAligner"}。文字 / 视觉的本地模式需要自行部署兼容服务，不自动加载权重。当前P3前两者必须共用同一连接。</p>
+    <p className="hint">时间轴：{value.timing.source === "tts_timestamp" ? "随 API 配音返回（待P4/P5接入）" : "本地 ForcedAligner"}。文字 / 视觉的本地模式需要自行部署兼容服务，不自动加载权重。{options?.implemented.independent_text_vision_connections ? "文字和视觉可分别选择本地/API连接，任务按角色独立调用。" : "当前后端仍要求文字和视觉共用连接，请重载至P3版本。"}</p>
     <p className={value.avatar.enabled ? "notice warn" : "hint"}>{value.avatar.enabled
       ? "数字人单段音频必须小于20秒。计划长讲解自动分段拼接，不限制整页/成片；分段适配尚待P6，当前v2数字人执行禁用。"
       : "未启用数字人，不施加20秒分段限制。"}</p>

@@ -167,10 +167,7 @@ def ensure_implemented(config, roles):
     for role in roles:
         stage = config.roles()[role]
         field = "config.model_config.avatar" if role == "avatar" else f"config.model_config.stages.{role}"
-        if role in ("text", "vision"):
-            if any(value is not None for value in stage.parameters.model_dump().values()):
-                raise ConfigurationError(field + ".parameters", "逐角色模型参数将在P3接入", "adapter_not_implemented")
-        elif stage.mode != "local" or stage.model != LOCAL_MODELS[role]:
+        if role not in ("text", "vision") and (stage.mode != "local" or stage.model != LOCAL_MODELS[role]):
             raise ConfigurationError(field, "该模型适配器尚未实现，不允许回退本地", "adapter_not_implemented")
         if role == "tts" and stage.parameters.speech_rate != 1.0:
             raise ConfigurationError(field + ".parameters.speech_rate", "当前本地TTS仅支持默认语速", "adapter_not_implemented")
@@ -178,15 +175,12 @@ def ensure_implemented(config, roles):
             raise ConfigurationError(field, "数字人严格分段将在P6实现；旧任务路线保持兼容", "adapter_not_implemented")
     if "tts" in roles and config.timing.source != "local_forced_aligner":
         raise ConfigurationError("config.model_config.timing.source", "API合成时间戳将在P4/P5接入", "adapter_not_implemented")
-    active_text = [config.roles()[role] for role in roles if role in ("text", "vision")]
-    if len({stage.connection_id for stage in active_text}) > 1:
-        raise ConfigurationError("config.model_config.stages", "文本/视觉独立连接将在P3接入", "adapter_not_implemented")
 
 
 def capabilities():
     return {"schema_version": 2, "schema": PipelineModelConfig.model_json_schema(),
             "implemented": {"compatible_text_vision": True, "local_tts_asr_grounding": True,
-                            "independent_text_vision_connections": False, "role_model_parameters": False,
+                            "independent_text_vision_connections": True, "role_model_parameters": True,
                             "cloud_voices": False, "tts_timestamps": False, "bailian_speech": False,
                             "bailian_grounding": False, "bailian_avatar": False, "avatar_segmentation": False}}
 

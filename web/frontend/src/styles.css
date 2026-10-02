@@ -7,6 +7,8 @@
 .model-role-row > div, .model-role-row .t-select { min-width: 0; }
 .model-role-row .hint, .connection-item .hint, .model-snapshot .hint { display: block; margin-top: 8px; overflow-wrap: anywhere; }
 .model-role-row .field { margin: 0; }
+.model-role-parameters { grid-column: 1 / -1; }
+.model-parameter-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .model-settings select, .task-model-settings select, .model-connection-form select { width: 100%; min-height: 38px; padding: 8px; color: var(--paper-ink); background: var(--paper-surface); border: 1px solid var(--paper-rule-strong); border-radius: 4px; }
 .model-settings .actions > select { width: auto; max-width: 100%; }
 .connection-list, .model-connection-form fieldset { display: grid; gap: 16px; }
@@ -19,7 +21,7 @@
 .task-model-settings { margin-block: 16px; }
 .model-settings summary, .task-model-settings summary { cursor: pointer; padding-block: 12px; font-weight: 600; }
 @media (max-width: 1023px) { .model-role-row { grid-template-columns: minmax(120px, 1fr) minmax(0, 2fr); } }
-@media (max-width: 767px) { .model-role-row { grid-template-columns: minmax(0, 1fr); } .model-presets > button { flex: 1 1 100%; } .model-snapshot > div { grid-template-columns: minmax(0, 1fr); gap: 4px; } }
+@media (max-width: 767px) { .model-role-row, .model-parameter-fields { grid-template-columns: minmax(0, 1fr); } .model-presets > button { flex: 1 1 100%; } .model-snapshot > div { grid-template-columns: minmax(0, 1fr); gap: 4px; } }
 
 :root, :root[theme-mode="light"] {
   --paper-bg: #f4f3ee;

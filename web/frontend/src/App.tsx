@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { Button, Dialog, MessagePlugin, Radio, RadioGroup, Select } from "tdesign-react";
 import { clearCredentials, loadCredentials, loadDraft, loadJobId, loadView, saveCredentials, saveDraft, saveJobId, saveView } from "./storage";
 import { api, applyTemplate, errorMessage, runExclusive } from "./flow";
@@ -997,7 +998,7 @@ export default function App() {
     <div className="sheet">
       <header className="masthead">
         <div className="masthead-top">
-          <div className="brand"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><rect x="2" y="2" width="28" height="28" rx="4" stroke="currentColor" strokeWidth="1.5" /><path d="M10 10h7M10 14h4M10 18h4M19 15l7 4-7 4z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /></svg><span>Paper2Video</span><span className="brand-caption">内容制作</span></div>
+          <div className="brand"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><rect x="2" y="2" width="28" height="28" rx="4" stroke="currentColor" strokeWidth="1.5" /><path d="M10 10h7M10 14h4M10 18h4M19 15l7 4-7 4z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /></svg><span>讲解工坊</span><span className="brand-caption">内容制作</span></div>
           <ThemeToggle />
         </div>
         <div className="masthead-intro">
@@ -1080,9 +1081,15 @@ export default function App() {
             ['material', '01', '素材'], ['language', '02', '语言与内容'],
             ...(courseEnabled ? [['teaching', '03', '教学范围']] : []),
             ['voice', '04', '音色'], ['cursor', '05', '视频光标'], ['credentials', '06', '接口与模型'], ['prepare', '07', '生成与审核'],
-          ].map(([anchor, number, title]) => <a key={anchor} href={'#' + anchor} onClick={() => {
-            const toggle = document.getElementById(anchor)?.querySelector<HTMLButtonElement>('.section-toggle');
-            if (toggle?.getAttribute('aria-expanded') === 'false') toggle.click();
+          ].map(([anchor, number, title]) => <a key={anchor} href={'#' + anchor} onClick={(event) => {
+            if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+            const section = document.getElementById(anchor);
+            if (!section) return;
+            event.preventDefault();
+            const toggle = section.querySelector<HTMLButtonElement>('.section-toggle');
+            if (toggle?.getAttribute('aria-expanded') === 'false') flushSync(() => toggle.click());
+            history.replaceState(null, '', '#' + anchor);
+            section.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'start' });
           }}><span>{number}</span>{title}</a>)}
         </nav>
         <div className="sidebar-queue"><p className="sidebar-label">运行队列</p><strong>{activeCount} <span>执行中</span><i /> {queuedCount} <span>排队中</span></strong></div>

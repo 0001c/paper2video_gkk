@@ -18,7 +18,11 @@ type Click = { detail: number; clientX: number; clientY: number;
 export async function toggleTheme(event: Click, onChange: (theme: Theme) => void) {
   if (switching) return;
   const next = currentTheme() === "dark" ? "light" : "dark";
-  const commit = () => { applyTheme(next); onChange(next); };
+  let committed = false;
+  const commit = () => {
+    if (committed) return;
+    committed = true; applyTheme(next); onChange(next);
+  };
   if (typeof document.startViewTransition !== "function" || matchMedia("(prefers-reduced-motion: reduce)").matches) {
     commit();
     return;
@@ -33,18 +37,29 @@ export async function toggleTheme(event: Click, onChange: (theme: Theme) => void
   document.documentElement.style.setProperty('--theme-y', `${y}px`);
   switching = true;
   let transition: ViewTransition | undefined;
+  let animation: Animation | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("主题过渡超时")), 2000);
+  });
   try {
     // 改主题和 React 按钮状态均在快照回调内同步完成。
     transition = document.startViewTransition(commit);
-    await transition.ready;
-    document.documentElement.animate(
+    // 两个 Promise 都立即监听失败，避免浏览器中止过渡时出现未处理拒绝。
+    void transition.finished.catch(() => {});
+    await Promise.race([transition.ready, timeout]);
+    animation = document.documentElement.animate(
       { clipPath: next === "dark" ? [...clipPath].reverse() : clipPath },
       { duration: 600, easing: "ease-in-out", fill: "both", pseudoElement: next === "dark" ? "::view-transition-old(root)" : "::view-transition-new(root)" },
     );
-    await transition.finished;
+    await Promise.race([transition.finished, timeout]);
   } catch {
     transition?.skipTransition();
     commit();
-    await transition?.finished.catch(() => {});
-  } finally { switching = false; }
+  } finally {
+    clearTimeout(timer);
+    // fill: both 只保留到快照销毁；否则裁切会继续作用于下一轮同名伪元素。
+    animation?.cancel();
+    switching = false;
+  }
 }

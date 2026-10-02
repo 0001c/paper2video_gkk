@@ -60,6 +60,8 @@ def load_env(dotenv_path=None):
     path = Path(dotenv_path) if dotenv_path else (REPO_ROOT / ".env")
     applied = {}
     for key, value in _parse_dotenv(path).items():
+        if os.environ.get('PAPER2VIDEO_MODEL_CONFIG_ORIGIN') == 'v2' and key.startswith(('OPENAI_', 'DEEPSEEK_')):
+            continue
         if os.environ.get(key):
             continue
         if value == "":

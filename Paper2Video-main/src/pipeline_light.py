@@ -27,6 +27,7 @@ from subtitle_cursor_prompt_gen import subtitle_cursor_gen
 import language_config
 
 from wei_utils import get_agent_config
+from model_runtime import apply_model_snapshot
 
 
 def copy_folder(src_dir, dst_dir):
@@ -69,6 +70,7 @@ if __name__ == "__main__":
     parser.add_argument("--if_tree_search", type=str2bool, default=True)
     parser.add_argument("--beamer_templete_prompt", type=str, default=None)
     parser.add_argument("--stage", type=str, default='["0"]')
+    parser.add_argument('--model-config', dest='model_config', default=None, help='无秘密的任务模型配置快照路径')
     parser.add_argument("--tts_model", type=str, default="qwen3tts",
                         choices=["qwen3tts"],
                         help="语音合成后端；qwen3tts 为默认（Apache-2.0）")
@@ -92,6 +94,7 @@ if __name__ == "__main__":
     parser.add_argument('--cursor_style', choices=tuple(cursor_styles.STYLES), default=cursor_styles.DEFAULT)
     parser.add_argument('--cursor_scale', type=float, choices=(0.75, 1, 1.5), default=1)
     args = parser.parse_args()
+    apply_model_snapshot(args)
 
     stage = json.loads(args.stage)
     print("start", "stage:", stage, "gpu_list:", args.gpu_list)

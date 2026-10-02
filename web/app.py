@@ -21,6 +21,7 @@
     python web/app.py            # 默认 127.0.0.1:8848
 """
 import asyncio
+import copy
 import hashlib
 import inspect
 import ipaddress
@@ -35,9 +36,10 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -51,6 +53,10 @@ if not os.path.isfile(VENV_PY):                       # Linux 上路径不同
 
 sys.path.insert(0, SCRIPTS)
 sys.path.insert(0, P2V_SRC)
+sys.path.insert(0, REPO_ROOT)
+
+from web import model_config as model_settings
+from web.model_connections import ConnectionCreate, ConnectionUpdate, ConnectionStore
 
 # 结构化进度的读写约定与流水线共用同一个模块（progress_report），
 # 避免两边对字段名/取值的理解跑偏。放 import 在这里是因为它依赖上面的 sys.path。
@@ -66,6 +72,24 @@ from script_validation import validate_script_output      # noqa: E402
 os.makedirs(JOBS_ROOT, exist_ok=True)
 app = FastAPI(title="Paper2Video Web", version="0.1.0")
 app.state.lan_networks = ()
+_MODEL_CONNECTIONS = ConnectionStore()
+
+
+@app.exception_handler(model_settings.ConfigurationError)
+async def model_configuration_error(request, exc):
+    return JSONResponse(status_code=exc.status, content={"detail": exc.detail()})
+
+
+@app.exception_handler(RequestValidationError)
+async def safe_request_validation_error(request, exc):
+    problems = []
+    for error in exc.errors():
+        field = '.'.join(str(part) for part in error['loc'] if part != 'body')
+        nested = error.get('ctx', {}).get('error')
+        if isinstance(nested, model_settings.ConfigurationError):
+            field += '.' + nested.field
+        problems.append({'field': field, 'message': error['msg']})
+    return JSONResponse(status_code=422, content={"detail": {"code": "invalid_request", "problems": problems}})
 
 
 def _lan_network(value):
@@ -102,7 +126,12 @@ async def trusted_lan_access(request, call_next):
 
 @app.middleware('http')
 async def review_body_limit(request, call_next):
-    if request.method in ('PUT', 'POST') and (request.url.path.endswith('/review') or request.url.path.endswith('/review/run') or request.url.path == '/api/course/plan'):
+    path = request.url.path
+    connection_request = path.startswith('/api/model-connections')
+    model_request = connection_request or path == '/api/model-config/validate' or path == '/api/jobs' or path.endswith(('/rerun', '/prepare-retry', '/model-connections/rebind'))
+    review_request = path.endswith(('/review', '/review/run')) or path == '/api/course/plan'
+    if request.method in ('PUT', 'POST', 'PATCH', 'DELETE') and (model_request or review_request):
+        limit = 16384 if connection_request else 512000 if review_request else 262144
         try:
             _local_write(request)
             length = int(request.headers.get('content-length') or 0)
@@ -110,8 +139,16 @@ async def review_body_limit(request, call_next):
             return JSONResponse(status_code=exc.status_code, content={'detail': exc.detail})
         except ValueError:
             return JSONResponse(status_code=400, content={'detail': 'Content-Length 无效'})
-        if length > 512000 or len(await request.body()) > 512000:
-            return JSONResponse(status_code=413, content={'detail': '审核请求体最多 512000 字节'})
+        if length < 0:
+            return JSONResponse(status_code=400, content={'detail': 'Content-Length 无效'})
+        if length > limit:
+            return JSONResponse(status_code=413, content={'detail': f'请求体最多 {limit} 字节'})
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > limit:
+                return JSONResponse(status_code=413, content={'detail': f'请求体最多 {limit} 字节'})
+            body.extend(chunk)
+        request._body = bytes(body)
     return await call_next(request)
 
 
@@ -162,12 +199,14 @@ class ReviewRunRequest(ReviewRequest):
     script_concurrency: int | None = Field(default=None, ge=1, le=8)
     cursor_style: str | None = Field(default=None, max_length=50)
     cursor_scale: float | None = None
+    model_options: model_settings.PipelineModelConfig | None = Field(default=None, alias="model_config")
 
 
 class PrepareRetryRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     api_key: str | None = Field(default=None, max_length=2000)
     api_base: str | None = Field(default=None, max_length=2000)
+    model_options: model_settings.PipelineModelConfig | None = Field(default=None, alias="model_config")
 
 
 @app.post('/api/jobs/{job_id}/prepare-retry')
@@ -182,7 +221,9 @@ async def api_prepare_retry(job_id: str, payload: PrepareRetryRequest, request: 
             raise HTTPException(409, detail='共享产物正在使用中，请等待结束')
         if not os.path.isfile(os.path.join(src.get('paper_latex_root') or '', 'main.tex')) and not os.path.isfile(src.get('source_path') or ''):
             raise HTTPException(409, detail='原素材不可用，请重新上传')
-        config = dict(src['config'])
+        config = copy.deepcopy(src['config'])
+        if payload.model_options is not None:
+            config['model_config'] = payload.model_options.public_dict()
         _normalize_models(config)
         if config.get('regenerate_pages') is not None and not config.get('script_generation_id'):
             config['script_generation_id'] = uuid.uuid4().hex  # 旧重写任务首次恢复后也具备稳定缓存标识。
@@ -190,6 +231,7 @@ async def api_prepare_retry(job_id: str, payload: PrepareRetryRequest, request: 
             config['model_api_base'] = _model_base(payload.api_base)
         config.update(result_dir=result, reuse_script=False, require_reuse_script=False,
                       review_before_render=True, stages=['2'] if os.path.isfile(os.path.join(result, 'slides_rendered.pdf')) else ['1', '2'])
+        connection_keys = _configure_job_models(config, payload.model_dump(by_alias=True, exclude_none=True), src, src.get('ref_img'))
         # 局部重写失败后继续重写原来选中的页，保留其它已审核的讲稿。
         new_id = 'job_' + time.strftime('%m%d_%H%M%S') + '_' + uuid.uuid4().hex[:4]
         new_dir = _job_dir(new_id)
@@ -199,6 +241,7 @@ async def api_prepare_retry(job_id: str, payload: PrepareRetryRequest, request: 
             shutil.copytree(ingest, os.path.join(new_dir, 'ingest'), dirs_exist_ok=True)
         _remember_keys(new_id, _JOB_KEYS.get(job_id))
         _remember_keys(new_id, payload.model_dump(exclude_none=True))
+        _JOB_KEYS[new_id]['connections'] = connection_keys
         job = {k: src.get(k) for k in ('ref_img', 'paper_latex_root', 'needs_struct', 'source_path', 'source_name', 'source_digest', 'ingest_id')}
         job.update(id=new_id, created_at=time.strftime('%Y-%m-%d %H:%M:%S'), status='queued', phase='排队中',
                    phase_key='queued', queue_ahead=_QUEUE.qsize(), config=config, resumed_from=job_id)
@@ -296,7 +339,9 @@ async def api_run_review(job_id: str, payload: ReviewRunRequest, request: Reques
     async with _JOB_LOCK:
         job = _load_job(job_id)
         text = _check_review(job, payload)
-        checked = dict(job.get('config') or {})
+        checked = copy.deepcopy(job.get('config') or {})
+        if payload.model_options is not None:
+            checked['model_config'] = payload.model_options.public_dict()
         if payload.script_concurrency is not None:
             checked['script_concurrency'] = payload.script_concurrency
         for field in ('text_model', 'vision_model'):
@@ -307,6 +352,10 @@ async def api_run_review(job_id: str, payload: ReviewRunRequest, request: Reques
                 checked[field] = getattr(payload, field)
         _normalize_models(checked)
         _model_base(payload.api_base)
+        checked.update(stages=['2', '3'] if payload.action == 'render' else ['2'],
+                       reuse_script=payload.action == 'render', require_reuse_script=payload.action == 'render',
+                       review_before_render=payload.action == 'regenerate')
+        _configure_job_models(checked, payload.model_dump(by_alias=True, exclude_none=True), job, job.get('ref_img'))
         if payload.action == "regenerate":
             if not payload.page_ids or len(set(payload.page_ids)) != len(payload.page_ids) or any(i < 0 or i >= len(payload.pages) for i in payload.page_ids):
                 raise HTTPException(422, detail="page_ids：请选择有效且不重复的零基页索引")
@@ -322,7 +371,8 @@ async def api_run_review(job_id: str, payload: ReviewRunRequest, request: Reques
             "refresh_script_prompt": payload.refresh_prompt and payload.action == 'regenerate',
             "text_model": payload.text_model, "vision_model": payload.vision_model,
             "script_concurrency": payload.script_concurrency,
-            "cursor_style": payload.cursor_style, "cursor_scale": payload.cursor_scale})
+            "cursor_style": payload.cursor_style, "cursor_scale": payload.cursor_scale,
+            "model_config": payload.model_options.public_dict() if payload.model_options else None})
         return response
 
 # ──────────────────────────────────────────────────────────────
@@ -447,6 +497,10 @@ def _normalize_script_prompt(config):
 
 
 def _normalize_models(config):
+    if config.get('model_config') and config.get('model_config_origin') != 'legacy':
+        normalized = _parse_model_config(config['model_config'])
+        config.update(text_model=normalized.stages.text.model, vision_model=normalized.stages.vision.model,
+                      generate_talking=normalized.avatar.enabled)
     try:
         cursor_styles.normalize(config)
     except ValueError as exc:
@@ -462,6 +516,106 @@ def _normalize_models(config):
     if type(value) is not int or not 1 <= value <= 8:
         raise HTTPException(422, detail='script_concurrency：必须为 1～8 的整数')
     config['script_concurrency'] = value
+
+
+def _parse_model_config(value, schema=model_settings.PipelineModelConfig, prefix='config.model_config'):
+    try:
+        return schema.model_validate(value)
+    except ValidationError as exc:
+        problems = []
+        for error in exc.errors():
+            field = prefix + ('.' + '.'.join(map(str, error['loc'])) if error['loc'] else '')
+            nested = error.get('ctx', {}).get('error')
+            if isinstance(nested, model_settings.ConfigurationError):
+                field += '.' + nested.field
+            problems.append({'field': field, 'message': error['msg']})
+        raise HTTPException(422, detail={"code": "invalid_model_configuration", "problems": problems}) from None
+
+
+def _configure_job_models(config, payload=None, source=None, portrait=None):
+    payload = payload or {}
+    supplied = payload.get('config') if isinstance(payload.get('config'), dict) else payload
+    incoming = supplied.get('model_config')
+    origin = 'v2' if incoming is not None else (source or {}).get('config', {}).get('model_config_origin', 'legacy')
+    model_settings.reject_embedded_secrets(config)
+    if origin == 'v2':
+        conflicts = [name for name in ('text_model', 'vision_model', 'generate_talking', 'api_key', 'api_base')
+                     if supplied.get(name) is not None or payload.get(name) is not None]
+        if conflicts:
+            raise model_settings.ConfigurationError('config.model_config', 'v2配置不能与旧控制字段同时提供：' + ', '.join(conflicts))
+        normalized = _parse_model_config(incoming if incoming is not None else config.get('model_config'))
+        if normalized.avatar.enabled and not (portrait and os.path.isfile(portrait)):
+            raise model_settings.ConfigurationError('portrait_path', '已开启数字人，请上传有效肖像或关闭数字人')
+        if normalized.avatar.enabled and not Path(portrait).resolve().is_relative_to(Path(JOBS_ROOT).resolve()):
+            raise model_settings.ConfigurationError('portrait_path', '请使用本服务上传的肖像')
+        voice = config.get('voice') or {'kind': 'default'}
+        if not isinstance(voice, dict) or voice.get('kind', 'default') not in ('default', 'upload'):
+            raise model_settings.ConfigurationError('config.voice', 'v2暂只支持本地默认/上传音色；云音色在P4接入', 'adapter_not_implemented')
+        voice = _parse_model_config(voice, model_settings.LocalVoice, 'config.voice').model_dump(exclude_none=True)
+        config['voice'] = voice
+        if voice.get('kind') == 'upload':
+            voice_path = Path(voice.get('path') or '').resolve()
+            if not voice_path.is_file() or not voice_path.is_relative_to(Path(mimo_voice.CACHE_DIR).resolve()):
+                raise model_settings.ConfigurationError('config.voice.path', '请使用本服务上传的参考音频，不允许回退默认音色')
+            config['ref_audio'], config['ref_text'] = str(voice_path), voice.get('ref_text') or config.get('ref_text') or None
+        roles = model_settings.required_roles(normalized, config)
+        if (source or {}).get('needs_struct'):
+            roles = sorted(set(roles) | {'text'})
+        model_settings.ensure_implemented(normalized, roles)
+        previous = (source or {}).get('config', {}).get('model_connections') or {}
+        frozen = (_JOB_KEYS.get((source or {}).get('id')) or {}).get('connections') or {}
+        snapshots, keys = _MODEL_CONNECTIONS.freeze(normalized, roles, previous, frozen)
+        text_connection = snapshots.get(normalized.stages.text.connection_id)
+        vision_connection = snapshots.get(normalized.stages.vision.connection_id)
+        selected = text_connection if 'text' in roles else vision_connection if 'vision' in roles else (text_connection or vision_connection)
+        config['model_api_base'] = selected.get('compatible_base_url') if selected else None
+    else:
+        normalized = model_settings.legacy_config(config)
+        roles = model_settings.required_roles(normalized, config)
+        snapshots = {'legacy': {'id': 'legacy', 'provider': 'openai_compatible', 'source': 'legacy',
+                                'scope_id': 'legacy', 'compatible_base_url': config.get('model_api_base')}}
+        keys = {}
+    config.update(model_config=normalized.public_dict(), model_config_origin=origin,
+                  model_connections=snapshots, derived_policy=model_settings.derived_policy(normalized),
+                  text_model=normalized.stages.text.model, vision_model=normalized.stages.vision.model,
+                  generate_talking=normalized.avatar.enabled,
+                  required_model_roles=roles, effective_model_mode=model_settings.effective_mode(normalized, roles))
+    return keys
+
+
+def _job_model_environment(config, keys):
+    env = {name: value for name, value in os.environ.items() if not name.startswith('PAPER2VIDEO_ROLE_')}
+    origin = config.get('model_config_origin', 'legacy')
+    env['PAPER2VIDEO_MODEL_CONFIG_ORIGIN'] = origin
+    if origin == 'v2':
+        for name in ('OPENAI_API_KEY', 'OPENAI_COMPATIBLE_MODEL_API_KEY', 'OPENAI_API_BASE', 'OPENAI_BASE_URL',
+                     'OPENAI_COMPATIBLE_MODEL_API_BASE', 'DEEPSEEK_API_KEY', 'DEEPSEEK_API_BASE'):
+            env.pop(name, None)
+        selected = _parse_model_config(config['model_config'])
+        roles = config.get('required_model_roles') or model_settings.required_roles(selected, config)
+        for role in roles:
+            connection_id = selected.roles()[role].connection_id
+            if connection_id:
+                if connection_id not in keys.get('connections', {}):
+                    raise model_settings.ConfigurationError('connection_id', '缺少任务连接凭据', 'connection_expired', 409)
+                env[f'PAPER2VIDEO_ROLE_{role.upper()}_API_KEY'] = keys['connections'][connection_id] or 'local-no-key'
+        primary = 'text' if 'text' in roles else 'vision' if 'vision' in roles else None
+        if primary:
+            stage = selected.roles()[primary]
+            api_key = env[f'PAPER2VIDEO_ROLE_{primary.upper()}_API_KEY']
+            base = config['model_connections'][stage.connection_id]['compatible_base_url']
+            for name in ('OPENAI_API_KEY', 'OPENAI_COMPATIBLE_MODEL_API_KEY'):
+                env[name] = api_key
+            for name in ('OPENAI_API_BASE', 'OPENAI_BASE_URL', 'OPENAI_COMPATIBLE_MODEL_API_BASE'):
+                env[name] = base
+    else:
+        if keys.get('api_key'):
+            env['OPENAI_API_KEY'] = env['OPENAI_COMPATIBLE_MODEL_API_KEY'] = keys['api_key']
+        base = keys.get('api_base') or config.get('model_api_base')
+        if base:
+            for name in ('OPENAI_API_BASE', 'OPENAI_BASE_URL', 'OPENAI_COMPATIBLE_MODEL_API_BASE'):
+                env[name] = base
+    return env
 
 
 def _normalize_slide_prompt(config, profile):
@@ -511,6 +665,8 @@ _JOB_KEYS = {}
 def _remember_keys(job_id, payload):
     """记下这个任务自己的凭据（缺项不覆盖已有值）。"""
     entry = _JOB_KEYS.setdefault(job_id, {})
+    if isinstance((payload or {}).get('connections'), dict):
+        entry['connections'] = dict(payload['connections'])
     for field in ("api_key", "api_base"):
         value = (payload or {}).get(field)
         if value and str(value).strip():
@@ -712,6 +868,14 @@ def _result_dir(job):
 
 
 def _save_job(job):
+    config = job.get('config') or {}
+    model_settings.reject_embedded_secrets(config)
+    if config.get('model_config'):
+        target = Path(_job_dir(job['id']), 'model_config.json')
+        temporary = target.with_suffix('.json.tmp')
+        snapshot = {name: config.get(name) for name in ('model_config', 'model_config_origin', 'model_connections', 'derived_policy')}
+        temporary.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding='utf-8')
+        temporary.replace(target)
     job["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     with io.open(os.path.join(_job_dir(job["id"]), "job.json"), "w",
                  encoding="utf-8", newline="") as handle:
@@ -1437,6 +1601,8 @@ def _build_argv(job):
     ]
     if job.get("ref_img"):
         argv += ["--ref_img", job["ref_img"]]
+    if cfg.get('model_config'):
+        argv += ['--model-config', os.path.join(_job_dir(job['id']), 'model_config.json')]
     prompt_file = cfg.get("script_prompt_path")
     if prompt_file:
         argv += ["--script_prompt_file", prompt_file]
@@ -1665,6 +1831,8 @@ async def _run_job(job):
     log_path = os.path.join(job_dir, "run.log")
     argv = _build_argv(job)
     keys = _JOB_KEYS.get(job_id) or {}
+    if job.get('config', {}).get('model_config_origin') == 'v2':
+        keys['connections'] = _configure_job_models(job['config'], source=job, portrait=job.get('ref_img'))
 
     job["status"] = "running"
     job["phase"] = "启动中"
@@ -1674,7 +1842,7 @@ async def _run_job(job):
     job["argv"] = argv
     _save_job(job)
 
-    env = dict(os.environ)
+    env = _job_model_environment(job['config'], keys)
     # P1：告诉流水线把结构化进度写到哪里。未设置该环境变量时，
     # 流水线**不生成任何额外文件**（命令行直接跑 pipeline.py 行为完全不变）。
     env["PAPER2VIDEO_PROGRESS_FILE"] = os.path.join(job_dir, "progress.jsonl")
@@ -1700,15 +1868,6 @@ async def _run_job(job):
     env["PYTHONUTF8"] = "1"
     # 凭据来自**这个任务自己**那份（_JOB_KEYS[job_id]），不是全局会话 ——
     # 多人共用同一服务时不会互相覆盖。
-    if keys.get("api_key"):
-        env["OPENAI_API_KEY"] = keys["api_key"]
-        env["OPENAI_COMPATIBLE_MODEL_API_KEY"] = keys["api_key"]
-    model_base = keys.get('api_base') or job['config'].get('model_api_base')
-    if model_base:
-        env["OPENAI_API_BASE"] = model_base
-        env["OPENAI_BASE_URL"] = model_base
-        env["OPENAI_COMPATIBLE_MODEL_API_BASE"] = model_base
-
     started = time.time()
     # 产物缓存（阶段 3）的决策与结果，最后会记进任务记录。
     cache_only = False
@@ -1717,7 +1876,9 @@ async def _run_job(job):
         log.write("### 命令 {}\n".format(" ".join(argv)))
         # 凭据来源必须写进日志：**回落路径要可见**，否则"没配 key 的机器上静默
         # 用错凭据"这种问题在开发机（.env 里有 key）永远暴露不出来。
-        if keys.get("api_key"):
+        if job['config'].get('model_config_origin') == 'v2':
+            _log_line(log, '[keys] 使用任务快照对应的连接凭据；禁止回落全局环境Key')
+        elif keys.get("api_key"):
             _log_line(log, "[keys] 使用本任务随请求提供的 API key（{}）".format(
                 _mask(keys["api_key"])))
         else:
@@ -1910,6 +2071,7 @@ async def api_options():
                 "slide_lang": v["slide_lang"], "script_lang": v["script_lang"]}
                for k, v in lc.VIDEO_PRESETS.items()]
     return {
+        "model_configuration": model_settings.capabilities(),
         "cursors": cursor_styles.options(),
         "presets": presets,
         "slide_langs": [{"value": k, "label": v["desc"]} for k, v in lc.SLIDE_LANGS.items()],
@@ -1982,6 +2144,99 @@ class ModelListRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     api_key: str = Field(min_length=1, max_length=2000)
     api_base: str = Field(default='', max_length=2000)
+
+
+class ModelConfigurationRequest(model_settings.StrictModel):
+    model_options: model_settings.PipelineModelConfig = Field(alias='model_config')
+    voice: model_settings.LocalVoice = Field(default_factory=model_settings.LocalVoice)
+    portrait_path: str | None = Field(default=None, max_length=2000)
+    reference_text: str | None = Field(default=None, max_length=20000)
+    requested_stages: list[str] = Field(default_factory=lambda: ['1', '2', '3'], min_length=1, max_length=4)
+
+
+class ConnectionRebindRequest(model_settings.StrictModel):
+    bindings: dict[model_settings.ConnectionID, model_settings.ConnectionID] = Field(min_length=1, max_length=7)
+
+
+@app.get('/api/model-connections')
+async def api_model_connections():
+    return {'items': _MODEL_CONNECTIONS.list()}
+
+
+@app.post('/api/model-connections', status_code=201)
+async def api_create_model_connection(payload: ConnectionCreate, request: Request):
+    _local_write(request)
+    networks = [str(network) for network in app.state.lan_networks]
+    networks.extend(value.strip() for value in os.environ.get('PAPER2VIDEO_MODEL_NETWORKS', '').split(',') if value.strip())
+    return _MODEL_CONNECTIONS.create(payload, networks)
+
+
+@app.patch('/api/model-connections/{connection_id}')
+async def api_update_model_connection(connection_id: str, payload: ConnectionUpdate, request: Request):
+    _local_write(request)
+    return _MODEL_CONNECTIONS.update(connection_id, payload)
+
+
+@app.delete('/api/model-connections/{connection_id}')
+async def api_delete_model_connection(connection_id: str, request: Request):
+    _local_write(request)
+    async with _JOB_LOCK:
+        for job in _list_jobs():
+            if job.get('status') in ('queued', 'running') and connection_id in job.get('config', {}).get('model_connections', {}):
+                raise HTTPException(409, detail='连接仍被排队/运行任务引用')
+        _MODEL_CONNECTIONS.delete(connection_id)
+    return {'ok': True}
+
+
+@app.post('/api/model-config/validate')
+async def api_validate_model_configuration(payload: ModelConfigurationRequest, request: Request):
+    _local_write(request)
+    values = payload.model_dump(by_alias=True, exclude_none=True)
+    config = {'model_config': values['model_config'], 'voice': values['voice'],
+              'stages': payload.requested_stages, 'ref_text': payload.reference_text}
+    _configure_job_models(config, values, portrait=payload.portrait_path)
+    roles = model_settings.required_roles(payload.model_options, config)
+    return {'normalized_model_config': config['model_config'], 'required_roles': roles,
+            'effective_mode': config['effective_model_mode'],
+            'inactive_roles': sorted(set(payload.model_options.roles()) - set(roles)),
+            'derived_policy': config['derived_policy'], 'validation_level': 'configuration_only',
+            'warnings': ['未进行推理权限、额度、模型效果或媒体检测验证'],
+            'capabilities': model_settings.capabilities()['implemented']}
+
+
+@app.post('/api/jobs/{job_id}/model-connections/rebind')
+async def api_rebind_model_connections(job_id: str, payload: ConnectionRebindRequest, request: Request):
+    _local_write(request)
+    async with _JOB_LOCK:
+        job = _load_job(job_id)
+        if job.get('status') in ('queued', 'running'):
+            raise HTTPException(409, detail='运行/排队任务不能重新绑定连接')
+        config = copy.deepcopy(job.get('config') or {})
+        if config.get('model_config_origin') != 'v2':
+            raise HTTPException(409, detail='旧任务继续使用原有凭据恢复入口')
+        normalized = _parse_model_config(config['model_config'])
+        known = {stage.connection_id for stage in normalized.roles().values() if stage.connection_id}
+        if set(payload.bindings) - known:
+            raise model_settings.ConfigurationError('bindings', '只允许重新绑定此任务已有连接')
+        previous = config.get('model_connections') or {}
+        for old_id, new_id in payload.bindings.items():
+            expected = previous.get(old_id)
+            if expected is None:
+                raise model_settings.ConfigurationError('bindings', '原连接无归属快照，不能隐式继承云资源')
+            replacement = _MODEL_CONNECTIONS.public(_MODEL_CONNECTIONS._entry(new_id))
+            fields = ('provider', 'scope_id', 'compatible_base_url', 'native_http_base_url', 'websocket_url')
+            if any(expected.get(field) != replacement.get(field) for field in fields):
+                raise model_settings.ConfigurationError('bindings', '重新绑定须保持同一连接范围和端点；更换账号/模型请新建任务', status=409)
+        for stage in normalized.roles().values():
+            if stage.connection_id in payload.bindings:
+                stage.connection_id = payload.bindings[stage.connection_id]
+        config['model_config'] = normalized.public_dict()
+        snapshots, keys = _MODEL_CONNECTIONS.freeze(normalized, model_settings.required_roles(normalized, config))
+        config['model_connections'] = snapshots
+        job['config'] = config
+        _save_job(job)
+        _JOB_KEYS.setdefault(job_id, {})['connections'] = keys
+        return {'ok': True, 'job_id': job_id, 'model_connections': snapshots, 'resumed': False}
 
 
 def _model_base(value):
@@ -2433,9 +2688,11 @@ async def api_create_job(payload: dict):
     config.pop("regenerate_pages", None)
     config.pop('script_generation_id', None)
     config.pop("course_plan_path", None)
+    connection_keys = _configure_job_models(config, payload, portrait=portrait)
 
     job_id = "job_" + time.strftime("%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:4]
     _remember_keys(job_id, payload)          # 凭据跟着任务走，不是全局一份
+    _JOB_KEYS[job_id]['connections'] = connection_keys
     job_dir = _job_dir(job_id)
     os.makedirs(job_dir, exist_ok=True)
 
@@ -2598,7 +2855,9 @@ async def api_rerun_job(job_id: str, payload: dict):
         raise HTTPException(status_code=400,
                             detail="原任务没有 result 目录，无法续跑（可能从未开始）")
 
-    config = dict(src_job.get("config") or {})
+    config = copy.deepcopy(src_job.get("config") or {})
+    if payload.get('model_config') is not None:
+        config['model_config'] = payload['model_config']
     for field in ('text_model', 'vision_model', 'script_concurrency', 'cursor_style', 'cursor_scale'):
         if payload.get(field) is not None:
             config[field] = payload[field]
@@ -2634,12 +2893,14 @@ async def api_rerun_job(job_id: str, payload: dict):
     if payload.get("review_pages") is not None:
         config["regenerate_pages"] = payload["review_pages"]
         config["review_before_render"] = True
+    connection_keys = _configure_job_models(config, payload, src_job, portrait)
 
     new_id = "job_" + time.strftime("%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:4]
     # 续跑的凭据：优先用请求里带的（前端有本地保存），否则沿用原任务那份。
     # 两者都没有时**不猜** —— _run_job 会明确记一行日志说明回落到了环境变量。
     _remember_keys(new_id, _JOB_KEYS.get(job_id))
     _remember_keys(new_id, payload)
+    _JOB_KEYS[new_id]['connections'] = connection_keys
     new_dir = _job_dir(new_id)
     os.makedirs(new_dir, exist_ok=True)
     src_ingest = os.path.join(_job_dir(job_id), "ingest")

@@ -49,6 +49,7 @@ import cursor_styles
 from subtitle_cursor_prompt_gen import subtitle_cursor_gen, validate_script_output
 
 from wei_utils import get_agent_config
+from model_runtime import apply_model_snapshot
 
 
 # os.environ["OPENAI_API_KEY"] = ""
@@ -181,6 +182,7 @@ if __name__ == '__main__':
     parser.add_argument('--require_reuse_script', type=str2bool, default=False,
                         help='讲稿不可复用时停止，不自动调用模型重新生成')
     parser.add_argument('--stage', type=str, default="[\"0\"]") 
+    parser.add_argument('--model-config', dest='model_config', default=None, help='无秘密的任务模型配置快照路径')
     parser.add_argument('--talking_head_env', type=str, default="") 
     parser.add_argument('--generate_talking', type=str2bool, default=True,
                         help='是否生成数字人；False 时 stage 3 改为幻灯片+音频直接合片')
@@ -189,6 +191,7 @@ if __name__ == '__main__':
     # talking-head: 3: 
     # all: 0
     args = parser.parse_args()
+    apply_model_snapshot(args)
     stage = json.loads(args.stage)
     print("start", "stage:", stage, args.gpu_list)
 

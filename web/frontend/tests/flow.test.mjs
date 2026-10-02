@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { transformSync } from "esbuild";
+import { buildSync } from "esbuild";
+import { fileURLToPath } from "node:url";
 
 async function sourceModule(name) {
-  const source = readFileSync(new URL(`../src/${name}.ts`, import.meta.url), "utf8");
-  const { code } = transformSync(source, { loader: "ts", format: "esm" });
+  const { outputFiles } = buildSync({ entryPoints: [fileURLToPath(new URL(`../src/${name}.ts`, import.meta.url))], bundle: true, write: false, format: "esm" });
+  const code = outputFiles[0].text;
   return import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
 }
 const { api, runExclusive, applyTemplate } = await sourceModule("flow");

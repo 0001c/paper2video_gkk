@@ -1,16 +1,4 @@
-/* 浏览器本地存储的**唯一入口**。
- *
- * 为什么单独成模块，而不是在组件里直接写 localStorage：
- *   同一个信息一旦有多个读写点，就一定会漂移 —— 这个项目已经在后端踩过一次
- *   （续跑任务的产物目录"写入侧用 config.result_dir、读取侧各拼各的 <job_dir>/result"，
- *    导致产物列表为空、文件服务 404，见 web/app.py `_result_dir` 的注释）。
- *   凭据与"当前正在看哪个任务"都属于这类信息，所以收在一处，键名也只在这里定义。
- *
- * 安全边界（要如实告诉使用者，不能只在界面上写"仅存内存"）：
- *   localStorage 是**同源可见**的，本机/内网工具够用；
- *   将来若开放公网访问，必须换成服务端会话（HttpOnly cookie + 每用户隔离），
- *   不能靠 localStorage 存密钥。见 docs/前端体验改进方案.md 的 #5。
- */
+import { readModelConfig, type ModelConfig } from "./modelConfig";
 
 const NS = "p2v";
 
@@ -45,24 +33,23 @@ function safeSet(key: string, value: string | null) {
 export type Credentials = {
   apiKey: string;
   apiBase: string;
-  /* 是否记住。关掉时要**顺手把已存的清掉** —— 否则会出现
-     "界面上没勾记住、但 key 还躺在本地"这种看不见的残留。 */
   remember: boolean;
 };
 
 export function loadCredentials(): Credentials {
-  const remember = safeGet(KEYS.remember) !== "0";
+  safeSet(KEYS.apiKey, null);
+  safeSet(KEYS.remember, null);
   return {
-    apiKey: remember ? safeGet(KEYS.apiKey) || "" : "",
-    apiBase: (remember ? safeGet(KEYS.apiBase) : "") || "",
-    remember,
+    apiKey: "",
+    apiBase: safeGet(KEYS.apiBase) || "",
+    remember: false,
   };
 }
 
 export function saveCredentials(c: Credentials) {
-  safeSet(KEYS.remember, c.remember ? "1" : "0");
-  safeSet(KEYS.apiKey, c.remember && c.apiKey ? c.apiKey : null);
-  safeSet(KEYS.apiBase, c.remember && c.apiBase ? c.apiBase : null);
+  safeSet(KEYS.remember, null);
+  safeSet(KEYS.apiKey, null);
+  safeSet(KEYS.apiBase, c.apiBase || null);
 }
 
 export function clearCredentials() {
@@ -90,6 +77,8 @@ export function saveView(view: "new" | "detail" | "history") {
 }
 
 export type Draft = {
+  schema_version?: 2;
+  model_config?: ModelConfig;
   preset: string;
   slideLang: string;
   scriptLang: string;
@@ -121,6 +110,8 @@ export function loadDraft(): Partial<Draft> {
     const raw = JSON.parse(safeGet(KEYS.draft) || "{}");
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
     const draft: Record<string, unknown> = {};
+    const modelConfig = readModelConfig(raw.model_config);
+    if (modelConfig) { draft.schema_version = 2; draft.model_config = modelConfig; }
     for (const key of ["preset", "scriptPrompt", "slidePrompt", "scriptTemplate", "slideTemplate",
       "presetSpec", "designPrompt", "uploadText", "paperName", "portraitName", "courseSettings", "textModel", "visionModel", "cursorStyle"]) {
       if (typeof raw[key] === "string") draft[key] = raw[key];
@@ -145,5 +136,11 @@ export function loadDraft(): Partial<Draft> {
 }
 
 export function saveDraft(draft: Draft) {
-  safeSet(KEYS.draft, JSON.stringify(draft));
+  const allowed = ["preset", "slideLang", "scriptLang", "contentProfile", "scriptPrompt", "slidePrompt", "scriptTemplate", "slideTemplate",
+    "slideCount", "generateTalking", "ifTreeSearch", "voiceMode", "presetSpec", "designPrompt", "uploadText", "paperName", "portraitName",
+    "courseEnabled", "courseSettings", "textModel", "visionModel", "scriptConcurrency", "cursorStyle", "cursorScale"] as const;
+  const clean = Object.fromEntries(allowed.filter((key) => draft[key] !== undefined).map((key) => [key, draft[key]]));
+  const modelConfig = readModelConfig(draft.model_config);
+  safeSet(KEYS.apiKey, null);
+  safeSet(KEYS.draft, JSON.stringify({ ...clean, schema_version: 2, ...(modelConfig ? { model_config: modelConfig } : {}) }));
 }

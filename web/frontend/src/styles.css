@@ -2,6 +2,25 @@
    暖纸底、墨绿操作色、轻边界；正文与编辑控件统一使用无衬线字体。
    保留同一套 TDesign 控件、主题圆形擦换与高度裁切折叠，不新增依赖。 */
 
+.model-role-list { display: grid; gap: 16px; margin-block: 16px; }
+.model-role-row { display: grid; grid-template-columns: minmax(110px, .8fr) minmax(120px, 1fr) minmax(140px, 1fr) minmax(180px, 1.8fr); gap: 12px; align-items: start; padding-block: 16px; border-bottom: 1px solid var(--paper-rule); }
+.model-role-row > div, .model-role-row .t-select { min-width: 0; }
+.model-role-row .hint, .connection-item .hint, .model-snapshot .hint { display: block; margin-top: 8px; overflow-wrap: anywhere; }
+.model-role-row .field { margin: 0; }
+.model-settings select, .task-model-settings select, .model-connection-form select { width: 100%; min-height: 38px; padding: 8px; color: var(--paper-ink); background: var(--paper-surface); border: 1px solid var(--paper-rule-strong); border-radius: 4px; }
+.model-settings .actions > select { width: auto; max-width: 100%; }
+.connection-list, .model-connection-form fieldset { display: grid; gap: 16px; }
+.model-connection-form fieldset { border: 0; padding: 0; margin-top: 16px; }
+.connection-item { display: grid; gap: 8px; padding-block: 16px; border-bottom: 1px solid var(--paper-rule); }
+.connection-item code { overflow-wrap: anywhere; font-size: 12px; }
+.model-snapshot { display: grid; gap: 12px; }
+.model-snapshot > div { display: grid; grid-template-columns: minmax(100px, .4fr) minmax(0, 1fr); gap: 12px; }
+.model-snapshot dd { margin: 0; overflow-wrap: anywhere; }
+.task-model-settings { margin-block: 16px; }
+.model-settings summary, .task-model-settings summary { cursor: pointer; padding-block: 12px; font-weight: 600; }
+@media (max-width: 1023px) { .model-role-row { grid-template-columns: minmax(120px, 1fr) minmax(0, 2fr); } }
+@media (max-width: 767px) { .model-role-row { grid-template-columns: minmax(0, 1fr); } .model-presets > button { flex: 1 1 100%; } .model-snapshot > div { grid-template-columns: minmax(0, 1fr); gap: 4px; } }
+
 :root, :root[theme-mode="light"] {
   --paper-bg: #f4f3ee;
   --paper-surface: #fffefb;

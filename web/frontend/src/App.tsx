@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { Button, Dialog, MessagePlugin, Radio, RadioGroup, Select } from "tdesign-react";
-import { clearCredentials, loadCredentials, loadDraft, loadJobId, loadView, saveCredentials, saveDraft, saveJobId, saveView } from "./storage";
+import { loadCredentials, loadDraft, loadJobId, loadView, saveDraft, saveJobId, saveView } from "./storage";
 import { api, applyTemplate, errorMessage, runExclusive } from "./flow";
 import { CoursePanel, defaultCourse, type CourseSettings, type CoursePlan } from "./CoursePanel";
 import { ReviewPanel } from "./ReviewPanel";
 import { ThemeToggle } from "./ThemeToggle";
 import { ModelSettings } from "./ModelSettings";
+import { TaskModelSettings } from "./TaskModelSettings";
+import { migratedConfig, presetConfig, roles, roleStage, taskModelPayload, type Connection, type ModelConfig, type ModelOptions } from "./modelConfig";
 import { CursorPicker, type CursorOption } from "./CursorPicker";
 import { Help, Section } from './Section';
 
@@ -51,6 +53,7 @@ type ScriptPromptProfile = {
 };
 
 type Options = {
+  model_configuration?: ModelOptions;
   cursors?: CursorOption[];
   presets: (Opt & { slide_lang: string; script_lang: string })[];
   slide_langs: Opt[];
@@ -186,10 +189,12 @@ type Job = {
   config?: { generate_talking?: boolean; content_profile?: string; slide_lang?: string;
     script_lang?: string; slide_count?: number; voice_note?: string; talking_note?: string;
     review_before_render?: boolean; target_minutes?: number | null; text_model?: string; vision_model?: string; script_concurrency?: number;
-    cursor_style?: string; cursor_scale?: number };
+    cursor_style?: string; cursor_scale?: number; model_config?: ModelConfig; model_config_origin?: string;
+    model_connections?: Record<string, { label?: string; scope_id: string; provider: string; compatible_base_url: string; catalog_time?: string; catalog_source?: string }>; portrait_path?: string };
 };
 
 type RerunPlan = {
+  model_source?: Job["config"];
   job_id: string;
   can_rerun: boolean;
   can_reuse_script: boolean;
@@ -383,8 +388,6 @@ export default function App() {
   const submitLock = useRef(false);
   const ingestLock = useRef(false);
   const voiceLock = useRef(false);
-  const verifyLock = useRef(false);
-  const verifyVersion = useRef(0);
   const rerunLock = useRef(false);
   const cancelLock = useRef(false);
   const initLock = useRef(false);
@@ -414,23 +417,24 @@ export default function App() {
     catch { return defaultCourse; }
   });
   const [coursePlan, setCoursePlan] = useState<CoursePlan | null>(null);
-  const [generateTalking, setGenerateTalking] = useState(initialDraft.generateTalking ?? true);
+  const [modelConfig, setModelConfig] = useState<ModelConfig>(() => initialDraft.model_config
+    ?? (initialDraft.textModel || initialDraft.visionModel
+      ? migratedConfig(initialDraft.textModel || "deepseek-flash", initialDraft.visionModel || "deepseek-flash", initialDraft.generateTalking ?? true)
+      : presetConfig("bailian_api", "", initialDraft.generateTalking ?? true)));
+  const generateTalking = modelConfig.avatar.enabled;
+  const setGenerateTalking = (enabled: boolean) => setModelConfig((value) => ({ ...value, avatar: { ...value.avatar, enabled } }));
+  const [taskOverride, setTaskOverride] = useState<{ jobId: string; value: ModelConfig } | null>(null);
+  const [modelConnections, setModelConnections] = useState<Connection[] | null>(null);
   /* 幻灯片布局微调（树搜索）—— 默认关，与后端 `_build_argv` 的默认值一致。
      两边默认值必须相同：界面显示"未勾选"而后端当成 True 跑，就是在
      使用者不知情的情况下多花钱，且看不出来。 */
   const [ifTreeSearch, setIfTreeSearch] = useState(initialDraft.ifTreeSearch ?? false);
 
-  // ③ API key
-  // 初值从浏览器本地存储回填（storage.ts 是唯一入口）：刷新页面后不用重填。
-  // 勾选框允许关掉，关掉会把本地已存的那份一并清掉（见 saveCredentials）。
   const initialCreds = useMemo(loadCredentials, []);
   const [apiKey, setApiKey] = useState(initialCreds.apiKey);
   const [apiBase, setApiBase] = useState(initialCreds.apiBase);
-  const [rememberKey, setRememberKey] = useState(initialCreds.remember);
-  const [keyCheck, setKeyCheck] = useState<{ ok: boolean; message: string; kind: string } | null>(null);
-  const [checking, setChecking] = useState(false);
-  const [textModel, setTextModel] = useState(initialDraft.textModel ?? "deepseek-flash");
-  const [visionModel, setVisionModel] = useState(initialDraft.visionModel ?? "deepseek-flash");
+  const textModel = modelConfig.stages.text.model;
+  const visionModel = modelConfig.stages.vision.model;
   const [scriptConcurrency, setScriptConcurrency] = useState(initialDraft.scriptConcurrency ?? 3);
   const [cursorStyle, setCursorStyle] = useState(initialDraft.cursorStyle ?? 'laser-red');
   const [cursorScale, setCursorScale] = useState(initialDraft.cursorScale ?? 1);
@@ -468,6 +472,7 @@ export default function App() {
   useEffect(() => { setPreview(null); }, [voiceContext]);
 
   const { job, streamState, streamError } = useJobStream(jobId);
+  const taskModels = taskOverride && taskOverride.jobId === job?.id ? taskOverride.value : job?.config?.model_config;
   const [filesJobId, setFilesJobId] = useState<string | null>(null);
   const [filesVersion, setFilesVersion] = useState(0);
   const visibleArtifacts = filesJobId === jobId ? artifacts : [];
@@ -520,34 +525,11 @@ export default function App() {
     return { kind: "default" };
   }, [voiceMode, presetPick, designPrompt, uploadSpec, uploadText]);
 
-  // 试听 = 让后端生成（或取缓存）这段参考音频，然后直接播它。
-  // 听参考音频 = 听最终音色（逐页合成只是把同一音色套到别的文本上）。
   const genVoice = useCallback(
     async (force: boolean) => runExclusive(voiceLock, setVoiceBusy, async () => {
-      const context = voiceContextRef.current;
-      if (voiceMode === "preset" && presetPick?.sample_url) {
-        setPreview({ ...presetPick, ref_text: presetPick.ref_text || presetPick.spec.ref_text, cached: true });
-        return;
-      }
-      const selected = voiceMode === "preset" ? presetPick?.spec : { kind: "design", prompt: designPrompt };
-      if (!selected || selected.kind === "upload") throw new Error("请重新选择音色");
-      const { data } = await api.post("/api/voices/generate", {
-        ...selected,
-        lang: scriptLang,
-        force,
-      });
-      if (!data.ok) {
-        MessagePlugin.error(`${data.error || "生成失败"}${data.detail ? "：" + data.detail : ""}`);
-        return;
-      }
-      if (context === voiceContextRef.current) setPreview(data);
-      await refreshOptions();
-      MessagePlugin.success(
-        data.cached ? "已取回这个音色（缓存命中，未调用接口）"
-                    : "音色已生成并保存 —— 以后再用它不会重复调用接口",
-      );
+      throw new Error("新任务v2云音色待P4接入；不会调用旧MiMo接口生成音色，请选择默认或上传参考音频");
     }, reportError),
-    [voiceMode, presetPick, designPrompt, scriptLang],
+    [],
   );
 
   const uploadVoice = useCallback(
@@ -583,17 +565,6 @@ export default function App() {
     ]);
   }, reportError), []);
   useEffect(() => { void initialize(); }, [initialize]);
-  useEffect(() => {
-    verifyVersion.current += 1;
-    setKeyCheck(null);
-  }, [apiKey, apiBase, textModel]);
-
-  // 凭据变化就写回本地（含"关掉记住"时清除）。
-  // 放在这里而不是 submit 里：使用者在自检时填了 key 却还没建任务就刷新，
-  // 那份 key 也应该留住。
-  useEffect(() => {
-    saveCredentials({ apiKey, apiBase, remember: rememberKey });
-  }, [apiKey, apiBase, rememberKey]);
 
   // 选中任务变化就记住（null 表示回到未选中状态）。
   useEffect(() => {
@@ -672,7 +643,7 @@ export default function App() {
   }, [slidePromptTemplate]);
 
   useEffect(() => {
-    saveDraft({ preset, slideLang, scriptLang, contentProfile, scriptPrompt, slidePrompt,
+    saveDraft({ schema_version: 2, model_config: modelConfig, preset, slideLang, scriptLang, contentProfile, scriptPrompt, slidePrompt,
       scriptTemplate: promptTemplate || initialDraft.scriptTemplate || "",
       slideTemplate: slidePromptTemplate || initialDraft.slideTemplate || "",
       slideCount: Number(slideCount) || 12, generateTalking, ifTreeSearch, voiceMode,
@@ -682,7 +653,7 @@ export default function App() {
       courseEnabled, courseSettings: JSON.stringify(courseSettings), textModel, visionModel, scriptConcurrency, cursorStyle, cursorScale });
   }, [preset, slideLang, scriptLang, contentProfile, scriptPrompt, slidePrompt,
     promptTemplate, slidePromptTemplate, slideCount, generateTalking, ifTreeSearch, voiceMode,
-    presetPick, designPrompt, uploadText, paperFile, portraitFile, initialDraft, courseEnabled, courseSettings, textModel, visionModel, scriptConcurrency, cursorStyle, cursorScale]);
+    presetPick, designPrompt, uploadText, paperFile, portraitFile, initialDraft, courseEnabled, courseSettings, textModel, visionModel, scriptConcurrency, cursorStyle, cursorScale, modelConfig]);
 
   const doIngest = useCallback(async () => runExclusive(ingestLock, setIngesting, async () => {
     if (!paperFile) return MessagePlugin.warning("请先选择内容文件");
@@ -699,19 +670,14 @@ export default function App() {
     setCourseSettings((s) => ({ ...s, section_ids: ["all"], sections: undefined }));
   }, reportError), [paperFile]);
 
-  const verifyKey = useCallback(async () => runExclusive(verifyLock, setChecking, async () => {
-    setKeyCheck(null);
-    const version = verifyVersion.current;
-    const { data } = await api.post("/api/key/verify", { api_key: apiKey, api_base: apiBase, model: textModel });
-    if (version === verifyVersion.current) setKeyCheck(data);
-  }, reportError), [apiKey, apiBase, textModel]);
-
   const submit = useCallback(async () => runExclusive(submitLock, setSubmitting, async () => {
     setSubmitPhase("正在准备…");
     if (ingestLock.current || voiceLock.current) throw new Error("请等待文件提取或音色准备完成");
     if (!ingest || ingest.error) return MessagePlugin.warning("请先上传内容文件并完成提取预览");
     if (courseEnabled && !coursePlan) return MessagePlugin.warning("请预览并确认教案和时间分配");
-    if (!apiKey) return MessagePlugin.warning("请填写 API Key（幻灯片与讲稿生成需要）");
+    if (generateTalking && !portraitFile) return MessagePlugin.warning("开启数字人必须上传肖像，不会自动跳过");
+    if (generateTalking) return MessagePlugin.warning("v2数字人需等待P6严格分段适配，请关闭后准备课件");
+    if (voiceMode === "preset" || voiceMode === "design") return MessagePlugin.warning("v2当前只支持默认/上传参考音色；云音色请等待P4");
     if (!scriptPrompt.trim()) return MessagePlugin.warning("讲稿提示词不能为空");
     if (!slidePrompt.trim() || slidePrompt.length > (opts?.slide_prompt_max_chars ?? 30000)) {
       return MessagePlugin.warning("请填写有效的幻灯片提示词，并检查字符上限");
@@ -725,12 +691,6 @@ export default function App() {
     }
     // 音色没选全就提交，会静默回落到内置音色 —— 使用者只会觉得"我选的音色没生效"。
     // 在这里拦住，比在成片里听出来划算得多。
-    if (voiceMode === "preset" && !presetPick) {
-      return MessagePlugin.warning("请选择一个预置音色（或改回「内置默认音色」）");
-    }
-    if (voiceMode === "design" && !designPrompt.trim()) {
-      return MessagePlugin.warning("请填写音色描述（或改回「内置默认音色」）");
-    }
     if (voiceMode === "upload" && !uploadSpec) {
       return MessagePlugin.warning("请先上传参考音频（或改回「内置默认音色」）");
     }
@@ -752,9 +712,10 @@ export default function App() {
         return MessagePlugin.error(up.data?.error || "人像图上传失败");
       }
       setPortraitInfo(up.data);
-    } else if (generateTalking && !portraitFile) {
-      MessagePlugin.info("未上传人像，本次将自动跳过数字人并生成幻灯片讲解视频");
     }
+
+    await api.post("/api/model-config/validate", { model_config: modelConfig, voice: voiceSpecNow(),
+      portrait_path: portraitPath, requested_stages: ["1", "2"], review_before_render: true });
 
     setSubmitPhase("正在创建任务…");
     const { status, data } = await api.post("/api/jobs", {
@@ -764,15 +725,9 @@ export default function App() {
       // 原始文件路径必须带上：PDF / Word 输入时后端要靠它先转成 LaTeX 工程
       // （流水线入口要「含 main.tex 的目录」）。只有 .tex 输入才不需要。
       source_path: ingest.source_path || undefined,
-      // 凭据随任务一起提交（后端只存进程内存）。
-      // 不传的话后端就没有可注入子进程的 key，会退回读 .env ——
-      // 本地因为 .env 有 key 所以看不出问题，换成没配 .env 的服务器就会静默失败。
-      api_key: apiKey,
-      api_base: apiBase || undefined,
       course_plan_token: courseEnabled ? coursePlan?.token : undefined,
       config: {
-        text_model: textModel,
-        vision_model: visionModel,
+        model_config: modelConfig,
         script_concurrency: scriptConcurrency,
         cursor_style: cursorStyle,
         cursor_scale: cursorScale,
@@ -785,14 +740,11 @@ export default function App() {
         content_profile: contentProfile,
         course: courseEnabled ? courseSettings : undefined,
         script_prompt: scriptPrompt,
-        generate_talking: talkingWillRun,
         // 幻灯片布局微调（树搜索）。**必须显式传**：后端读不到这个字段时按
         // 默认 False 处理，但把"界面上的勾选状态"原样送到后端，才谈得上
         // "所见即所跑"。它也进了产物指纹，所以关/开产出的幻灯片不会互相命中。
         if_tree_search: ifTreeSearch,
         reuse_script: false,
-        // 音色：只提交"选择"，参考音频/文本由后端解析（能把失败回落成内置音色，
-        // 并把实际用了哪个音色回给界面 —— 见响应里的 voice_note）。
         voice: voiceSpecNow(),
       },
     });
@@ -809,7 +761,7 @@ export default function App() {
   }, reportError), [ingest, portraitFile, generateTalking, apiKey, apiBase, slideLang, scriptLang,
       contentProfile, scriptPrompt, slidePrompt, slideCount, opts, ifTreeSearch,
       voiceMode, presetPick, designPrompt, uploadSpec, uploadText, voiceSpecNow, selectJob,
-      courseEnabled, coursePlan, courseSettings, textModel, visionModel, scriptConcurrency, cursorStyle, cursorScale]);
+      courseEnabled, coursePlan, courseSettings, textModel, visionModel, scriptConcurrency, cursorStyle, cursorScale, modelConfig]);
 
   // 任务列表：每 5 秒刷新。本地工具，这点开销可以忽略，
   // 换来的是"后端重启前留下的任务也能看到最新状态"。
@@ -874,27 +826,23 @@ export default function App() {
     };
   }, [jobId, job?.status, phaseKeyNow, runningNow, filesVersion]);
 
-  // 续跑：默认只重跑 stage 2/3 且复用已有讲稿。
-  // 讲稿生成是整条链路里唯一付费的一步（占约 76% token），复用即零 API 费用。
-  // 凭据要一起带上：服务端把 key 挂在**任务**上（不落盘），重启服务后
-  // 内存里那份就没了；而前端本地存着，随手带上最省事。
   const prepareRerun = useCallback(async (id: string) => runExclusive(rerunLock, setRerunning, async () => {
-    const plan = await api.get(`/api/jobs/${id}/rerun-plan`);
+    const [plan, source] = await Promise.all([api.get(`/api/jobs/${id}/rerun-plan`), api.get(`/api/jobs/${id}`)]);
+    plan.model_source = { ...source.config, ...(taskOverride?.jobId === id ? { model_config: taskOverride.value } : {}) };
     setRegenerateScript(false);
     setRerunPlan(plan);
-  }, reportError), []);
+  }, reportError), [taskOverride]);
 
   const retryPreparation = () => runExclusive(rerunLock, setRerunning, async () => {
     if (!job || !window.confirm("继续准备课件与讲稿可能调用生成接口。已完成的课程讲稿页会复用，是否继续？")) return;
-    const { data } = await api.post(`/api/jobs/${job.id}/prepare-retry`, { api_key: apiKey || undefined, api_base: apiBase || undefined });
+    const { data } = await api.post(`/api/jobs/${job.id}/prepare-retry`, taskModelPayload({ ...job.config, model_config: taskModels }, apiKey, apiBase));
     selectJob(data.job_id);
   }, reportError);
 
   const doRerun = useCallback(async () => runExclusive(rerunLock, setRerunning, async () => {
     if (!rerunPlan) return;
     const { status, data } = await api.post(`/api/jobs/${rerunPlan.job_id}/rerun`, {
-      api_key: apiKey || undefined,
-      api_base: apiBase || undefined,
+      ...taskModelPayload(rerunPlan.model_source, apiKey, apiBase),
       plan_token: rerunPlan.token,
       reuse_script: !regenerateScript,
       require_reuse_script: !regenerateScript,
@@ -969,9 +917,24 @@ export default function App() {
   const running = job && ["running", "queued"].includes(job.status);
   const missing: string[] = [];
   if (!opts || initError) missing.push("加载服务配置");
+  if (opts && !opts.model_configuration?.recommended_models) missing.push("重载支持P2目录的后端");
   if (!ingest || ingest.error) missing.push("选择内容文件并完成提取预览");
   if (courseEnabled && !coursePlan) missing.push("预览并确认教案和时间分配");
-  if (!apiKey.trim()) missing.push("填写 API Key");
+  for (const role of roles) {
+    const stage = roleStage(modelConfig, role);
+    if ((stage.mode === "api" || role === "text" || role === "vision") && !stage.connection_id) {
+      missing.push(`选择${role}连接（可重新应用预设填充）`);
+    }
+  }
+  for (const role of ["text", "vision"] as const) {
+    const stage = modelConfig.stages[role];
+    const connection = modelConnections?.find((entry) => entry.id === stage.connection_id);
+    if (!connection || (stage.mode === "api" && !connection.key_present)) missing.push(`${role}连接失效或缺密钥`);
+  }
+  if (!opts?.model_configuration?.implemented.independent_text_vision_connections
+    && modelConfig.stages.text.connection_id !== modelConfig.stages.vision.connection_id) missing.push("P3前文字/视觉需共用连接");
+  if (generateTalking) missing.push(!portraitFile ? "数字人需肖像；当前严格分段待P6" : "关闭尚待P6适配的数字人");
+  if (voiceMode === "preset" || voiceMode === "design") missing.push("选择默认或上传音色，云音色待P4");
   if (!textModel.trim() || !visionModel.trim()) missing.push("选择文字和视觉模型");
   if (!Number.isInteger(scriptConcurrency) || scriptConcurrency < 1 || scriptConcurrency > 8) missing.push("填写 1～8 的整数并发数");
   if (!slidePrompt.trim() || slidePrompt.length > (opts?.slide_prompt_max_chars ?? 30000)) missing.push("检查幻灯片提示词");
@@ -1141,7 +1104,7 @@ export default function App() {
             </div>
             {generateTalking ? (
               <Dropzone
-                hint="上传正面人像图；留空会自动跳过数字人"
+                hint="上传正面人像图；开启时必填，严格分段待P6"
                 accept="image/*"
                 picked={portraitFile?.name ?? null}
                 disabled={submitting}
@@ -1369,7 +1332,12 @@ export default function App() {
       {/* ③ 音色 —— 四种来源最终都归结为"一份参考音频 + 它的参考文本"。
           逐页合成始终是**本地** Qwen3-TTS：云端只用来造这一小段音色样本，
           所以免费额度、断网、没配 key 都不会影响出片（会回落到内置音色）。 */}
-      <Section anchor="voice" number="04" title="音色" summary={voiceMode === 'default' ? '内置默认音色' : voiceMode === 'preset' ? presetPick?.label ?? '待选择音色' : voiceMode === 'design' ? '描述生成' : '上传参考音频'} important={voiceMode === 'upload'} help={<>
+      <Section anchor="credentials" number="04" title="模型配置" summary={modelConfig.preset === 'bailian_api' ? '百炼全 API · 后续适配待接入' : modelConfig.preset === 'local_existing' ? '保留现有本地推理' : '自定义组合'} important>
+        {!initialDraft.model_config && (initialDraft.textModel || initialDraft.visionModel) && <p className="notice warn">已保留旧草稿的型号与本地路线，未沿用浏览器密钥。请添加兼容连接并重新选择；不会自动改成百炼默认。</p>}
+        <ModelSettings value={modelConfig} options={opts?.model_configuration} concurrency={scriptConcurrency} onChange={setModelConfig} onConcurrency={setScriptConcurrency} voice={voiceSpecNow()} portraitPath={portraitInfo?.portrait_path} onConnectionsChange={setModelConnections} />
+      </Section>
+
+      <Section anchor="voice" number="05" title="音色" summary={voiceMode === 'default' ? '内置默认音色' : voiceMode === 'preset' ? presetPick?.label ?? '待选择音色' : voiceMode === 'design' ? '描述生成' : '上传参考音频'} important={voiceMode === 'upload'} help={<>
         <p>音色只影响说话人。内置音色无需联网；已保存音色直接复用，预置及设计音色按讲稿语言筛选。上传音频需自行核对语言，跨语言克隆可能影响发音。</p>
         <p>{opts?.voice?.available ? '支持生成与上传；生成样本使用服务端已配置的音色接口，无需另外填凭据。同一音色生成后缓存，可反复使用。' : '服务端未配置音色接口，仍可使用内置音色、已保存的样本或上传音频。'}</p>
         <p>描述音色时填写性别年龄、质感、语速与角色；混响和 EQ 等属于后期效果，不适合作为音色描述。</p>
@@ -1377,12 +1345,13 @@ export default function App() {
 
         <div className="field">
           <label>讲稿由谁来讲</label>
+          <p className="notice info">P2只开放默认 / 上传参考音色。百炼系统音色、复刻与设计待P4；选择API配音不等于已有云音色资源。</p>
           <RadioGroup value={voiceMode} onChange={(v) => { setVoiceMode(v as VoiceSpec["kind"]); setPreview(null); }}>
             <Radio value="default">内置默认音色（无需联网）</Radio>
-            <Radio value="preset" disabled={!opts?.voice?.available && !voiceList.some((item) => item.sample_url)}>
+            <Radio value="preset" disabled>
               预置 / 已保存音色
             </Radio>
-            <Radio value="design" disabled={!opts?.voice?.available}>
+            <Radio value="design" disabled>
               用一句话描述生成
             </Radio>
             <Radio value="upload">上传我的音频</Radio>
@@ -1515,61 +1484,8 @@ export default function App() {
         )}
       </Section>
 
-      <Section anchor="cursor" number="05" title="视频光标" summary={opts?.cursors?.find((item) => item.value === cursorStyle)?.label ?? '红色光点'} help="选择随讲解指向目标的视觉标记，可在审核界面再次调整。不同样式只改变最终画面，未变化的讲稿与配音可复用。">
+      <Section anchor="cursor" number="06" title="视频光标" summary={opts?.cursors?.find((item) => item.value === cursorStyle)?.label ?? '红色光点'} help="选择随讲解指向目标的视觉标记，可在审核界面再次调整。不同样式只改变最终画面，未变化的讲稿与配音可复用。">
         <CursorPicker options={opts?.cursors ?? []} style={cursorStyle} scale={cursorScale} onStyle={setCursorStyle} onScale={setCursorScale} />
-      </Section>
-
-      {/* ⑤ API key */}
-      <Section anchor="credentials" number="06" title="接口凭据" summary={apiKey.trim() ? '已填写 · ' + (rememberKey ? '本机保存' : '本次会话') : '待填写'} important help={<>
-        <p>提交前建议连接自检；余额不足或接口空回复可能表现为连接失败。</p>
-        <p>凭据只保存在本机浏览器和服务进程内存，不写入文件或任务记录。勾选“记住本机”会写入浏览器 localStorage，同源页面可以读取；关闭后刷新需要重填。</p>
-        <p>服务端按任务隔离凭据，多人使用应各自填写。本机存储适合当前本地使用，公网部署需单独鉴权。</p>
-      </>}>
-        <div className="grid grid-2">
-          <div className="field">
-            <label>API Key</label>
-            <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-..." />
-          </div>
-          <div className="field">
-            <label>API Base</label>
-            <input type="text" value={apiBase} onChange={(e) => setApiBase(e.target.value)} placeholder="https://api.deepseek.com" />
-          </div>
-        </div>
-        <ModelSettings apiKey={apiKey} apiBase={apiBase} textModel={textModel} visionModel={visionModel} concurrency={scriptConcurrency} onText={setTextModel} onVision={setVisionModel} onConcurrency={setScriptConcurrency} />
-        <div className="actions">
-          <Button variant="outline" loading={checking} disabled={!apiKey.trim() || !textModel.trim()} onClick={verifyKey}>连接自检（文字模型）</Button>
-          <label className="checkline">
-            <input
-              type="checkbox"
-              checked={rememberKey}
-              onChange={(e) => setRememberKey(e.target.checked)}
-            />
-            记住本机
-          </label>
-          <button
-            type="button"
-            className="linkbtn"
-            onClick={() => {
-              setApiKey("");
-              setApiBase("");
-              clearCredentials();
-              setKeyCheck(null);
-              MessagePlugin.info("已清除本机保存的凭据");
-            }}
-          >
-            清除本地凭据
-          </button>
-        </div>
-        {keyCheck && (
-          <div className={"notice " + (keyCheck.ok ? "ok" : "err")}>
-            <span>
-              <b>{keyCheck.ok ? "连接正常" : keyCheck.message}</b>
-              {!keyCheck.ok && keyCheck.kind === "insufficient_balance" && (
-                <>　—— 请先充值，这类失败不会给出明确错误码</>
-              )}
-            </span>
-          </div>
-        )}
       </Section>
 
       </fieldset>
@@ -1583,7 +1499,7 @@ export default function App() {
           {` · ${slideCount || "待填写"} 页 · 数字人${generateTalking && portraitFile ? "启用" : "关闭"}`}
           {` · 音色：${voiceMode === "default" ? "内置默认" : voiceMode === "preset" ? presetPick?.label || "未选择" : voiceMode === "design" ? "描述生成" : "上传参考音频"}`}
         </p>
-        {generateTalking && !portraitFile && <p className="hint">未选择人像，实际将生成无数字人小窗的视频。</p>}
+        {generateTalking && !portraitFile && <p className="notice warn">开启数字人时肖像必填，不会自动关闭。当前v2分段适配待P6。</p>}
         <p className="hint">
           {!courseEnabled && est ? `本地配音与合片参考 ${est.lo}～${est.hi} 分钟（${est.slides} 页） · ` : ''}
           {`${activeCount} 个任务执行中 · ${queuedCount} 个排队中`}
@@ -1632,7 +1548,17 @@ export default function App() {
           </p>
         )}
         {filesError && <div className="notice err" role="alert"><span>产物读取失败：{filesError}</span><Button variant="outline" onClick={() => setFilesVersion((value) => value + 1)}>重试读取</Button></div>}
-        {job && !running && visiblePages?.pages?.length > 0 && <ReviewPanel key={job.id} jobId={job.id} apiKey={apiKey} apiBase={apiBase} concurrency={job.config?.script_concurrency ?? 3} cursors={opts?.cursors ?? []} cursorStyle={job.config?.cursor_style ?? 'classic-red'} cursorScale={job.config?.cursor_scale ?? 1} onJob={selectJob} onSaved={() => setFilesVersion((v) => v + 1)} />}
+        {job?.config?.model_config_origin === "v2" && job.config.model_config && taskModels && <TaskModelSettings key={job.id}
+          jobId={job.id} snapshot={job.config.model_config} value={taskModels} connections={job.config.model_connections} options={opts?.model_configuration}
+          concurrency={job.config.script_concurrency ?? 3} disabled={!!running} onChange={(value) => setTaskOverride({ jobId: job.id, value })} />}
+        {job && job.config?.model_config_origin !== "v2" && <details><summary>旧任务凭据恢复（仅当前页面内存）</summary>
+          <p className="hint">只用于旧任务继续/重跑，不影响v2草稿；刷新即清空，不做连接推理自检。</p>
+          <div className="grid grid-2"><div className="field"><label htmlFor="legacy-key">旧任务 API Key</label><input id="legacy-key" type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} /></div>
+            <div className="field"><label htmlFor="legacy-base">旧任务 API Base</label><input id="legacy-base" value={apiBase} onChange={(event) => setApiBase(event.target.value)} /></div></div>
+          <Button variant="text" onClick={() => { setApiKey(""); setApiBase(""); }}>清空本次凭据</Button>
+        </details>}
+        {job && !running && visiblePages?.pages?.length > 0 && <ReviewPanel key={job.id} jobId={job.id} apiKey={apiKey} apiBase={apiBase}
+          modelConfig={taskModels} modelOrigin={job.config?.model_config_origin} concurrency={job.config?.script_concurrency ?? 3} cursors={opts?.cursors ?? []} cursorStyle={job.config?.cursor_style ?? 'classic-red'} cursorScale={job.config?.cursor_scale ?? 1} onJob={selectJob} onSaved={() => setFilesVersion((v) => v + 1)} />}
 
         {job && (
           <div style={{ marginTop: 18 }}>

@@ -57,6 +57,7 @@ sys.path.insert(0, REPO_ROOT)
 
 from web import model_config as model_settings
 from web.model_connections import ConnectionCreate, ConnectionUpdate, ConnectionStore
+from web import model_catalog
 
 # 结构化进度的读写约定与流水线共用同一个模块（progress_report），
 # 避免两边对字段名/取值的理解跑偏。放 import 在这里是因为它依赖上面的 sys.path。
@@ -73,6 +74,7 @@ os.makedirs(JOBS_ROOT, exist_ok=True)
 app = FastAPI(title="Paper2Video Web", version="0.1.0")
 app.state.lan_networks = ()
 _MODEL_CONNECTIONS = ConnectionStore()
+_MODEL_CATALOG = model_catalog.CatalogStore()
 
 
 @app.exception_handler(model_settings.ConfigurationError)
@@ -565,6 +567,8 @@ def _configure_job_models(config, payload=None, source=None, portrait=None):
         previous = (source or {}).get('config', {}).get('model_connections') or {}
         frozen = (_JOB_KEYS.get((source or {}).get('id')) or {}).get('connections') or {}
         snapshots, keys = _MODEL_CONNECTIONS.freeze(normalized, roles, previous, frozen)
+        _MODEL_CATALOG.validate(normalized, roles, snapshots)
+        _MODEL_CATALOG.annotate(snapshots)
         text_connection = snapshots.get(normalized.stages.text.connection_id)
         vision_connection = snapshots.get(normalized.stages.vision.connection_id)
         selected = text_connection if 'text' in roles else vision_connection if 'vision' in roles else (text_connection or vision_connection)
@@ -2071,7 +2075,7 @@ async def api_options():
                 "slide_lang": v["slide_lang"], "script_lang": v["script_lang"]}
                for k, v in lc.VIDEO_PRESETS.items()]
     return {
-        "model_configuration": model_settings.capabilities(),
+        "model_configuration": {**model_settings.capabilities(), **model_catalog.options()},
         "cursors": cursor_styles.options(),
         "presets": presets,
         "slide_langs": [{"value": k, "label": v["desc"]} for k, v in lc.SLIDE_LANGS.items()],
@@ -2152,6 +2156,9 @@ class ModelConfigurationRequest(model_settings.StrictModel):
     portrait_path: str | None = Field(default=None, max_length=2000)
     reference_text: str | None = Field(default=None, max_length=20000)
     requested_stages: list[str] = Field(default_factory=lambda: ['1', '2', '3'], min_length=1, max_length=4)
+    review_before_render: bool = False
+    reuse_script: bool = False
+    require_reuse_script: bool = False
 
 
 class ConnectionRebindRequest(model_settings.StrictModel):
@@ -2174,7 +2181,9 @@ async def api_create_model_connection(payload: ConnectionCreate, request: Reques
 @app.patch('/api/model-connections/{connection_id}')
 async def api_update_model_connection(connection_id: str, payload: ConnectionUpdate, request: Request):
     _local_write(request)
-    return _MODEL_CONNECTIONS.update(connection_id, payload)
+    result = _MODEL_CONNECTIONS.update(connection_id, payload)
+    _MODEL_CATALOG.invalidate(connection_id)
+    return result
 
 
 @app.delete('/api/model-connections/{connection_id}')
@@ -2185,6 +2194,7 @@ async def api_delete_model_connection(connection_id: str, request: Request):
             if job.get('status') in ('queued', 'running') and connection_id in job.get('config', {}).get('model_connections', {}):
                 raise HTTPException(409, detail='连接仍被排队/运行任务引用')
         _MODEL_CONNECTIONS.delete(connection_id)
+        _MODEL_CATALOG.invalidate(connection_id)
     return {'ok': True}
 
 
@@ -2193,7 +2203,9 @@ async def api_validate_model_configuration(payload: ModelConfigurationRequest, r
     _local_write(request)
     values = payload.model_dump(by_alias=True, exclude_none=True)
     config = {'model_config': values['model_config'], 'voice': values['voice'],
-              'stages': payload.requested_stages, 'ref_text': payload.reference_text}
+              'stages': payload.requested_stages, 'ref_text': payload.reference_text,
+              'review_before_render': payload.review_before_render,
+              'reuse_script': payload.reuse_script, 'require_reuse_script': payload.require_reuse_script}
     _configure_job_models(config, values, portrait=payload.portrait_path)
     roles = model_settings.required_roles(payload.model_options, config)
     return {'normalized_model_config': config['model_config'], 'required_roles': roles,
@@ -2232,6 +2244,7 @@ async def api_rebind_model_connections(job_id: str, payload: ConnectionRebindReq
                 stage.connection_id = payload.bindings[stage.connection_id]
         config['model_config'] = normalized.public_dict()
         snapshots, keys = _MODEL_CONNECTIONS.freeze(normalized, model_settings.required_roles(normalized, config))
+        _MODEL_CATALOG.annotate(snapshots)
         config['model_connections'] = snapshots
         job['config'] = config
         _save_job(job)
@@ -2256,18 +2269,26 @@ def _model_base(value):
 
 
 @app.post('/api/models')
-async def api_models(payload: ModelListRequest, request: Request):
+async def api_models(payload: ModelListRequest | model_catalog.CatalogRequest, request: Request):
     _local_write(request)
+    if isinstance(payload, model_catalog.CatalogRequest):
+        entry = _MODEL_CONNECTIONS._entry(payload.connection_id)
+        return await asyncio.to_thread(_MODEL_CATALOG.query, dict(entry), payload)
     base = _model_base(payload.api_base)
     def fetch():
         import pv_env  # noqa: F401
         from openai import OpenAI
         with OpenAI(api_key=payload.api_key.strip(), base_url=base or None, timeout=15, max_retries=0) as client:
-            data = client.models.list().data
-            return sorted({m.id for m in data if isinstance(m.id, str) and 0 < len(m.id) <= 200 and not any(ord(c) < 32 for c in m.id)})[:500]
+            ids = set()
+            for model in client.models.list():
+                if model_catalog.model_id(model.id):
+                    ids.add(model.id)
+                if len(ids) > 10000:
+                    raise ValueError('目录超过大小限制')
+            return sorted(ids)
     try:
         ids = await asyncio.to_thread(fetch)
-        return {'ok': True, 'models': ids, 'message': '已获取 {} 个模型；服务商列表通常不标注视觉能力，请确认讲稿模型支持图像。'.format(len(ids))}
+        return {'ok': True, 'models': ids, 'message': '旧凭据目录接口即将弃用，请迁移连接引用；已获取 {} 个模型，未验证视觉能力或推理权限。'.format(len(ids))}
     except Exception as exc:
         code = getattr(exc, 'status_code', None)
         message = '鉴权失败，请检查 API Key' if code in (401, 403) else '该服务未提供可读取的模型列表，或连接超时；可以手动输入模型 ID。'

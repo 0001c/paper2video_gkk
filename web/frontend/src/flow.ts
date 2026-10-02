@@ -10,7 +10,9 @@ async function request(path: string, init: RequestInit = {}) {
     const data = await response.json().catch(() => null);
     if (!response.ok) {
       const detail = data?.detail || data?.error;
-      throw new Error(typeof detail === "string" ? detail : `请求失败（HTTP ${response.status}）`);
+      const problems = detail?.problems ?? (Array.isArray(detail) ? detail.map((item: any) => ({ field: item.loc?.join("."), message: item.msg })) : []);
+      throw new Error(typeof detail === "string" ? detail : problems.length
+        ? problems.map((item: any) => `${item.field || "配置"}：${item.message}`).join("；") : `请求失败（HTTP ${response.status}）`);
     }
     if (data === null) throw new Error("服务返回了无法读取的响应，请检查服务后重试");
     return { status: response.status, data };
@@ -26,6 +28,8 @@ async function request(path: string, init: RequestInit = {}) {
 }
 
 export const api = {
+  patch: (path: string, body: unknown) => request(path, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+  delete: (path: string) => request(path, { method: "DELETE" }),
   put: (path: string, body: unknown) => request(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
   get: (path: string) => request(path).then((r) => r.data),
   post: (path: string, body?: unknown) => request(path, {

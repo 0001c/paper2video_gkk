@@ -673,7 +673,7 @@ def _open_pdf_locator(pdf_path, img_width, img_height, page_count):
 
 def cursor_gen_per_sentence(script_path, slide_img_dir, slide_audio_dir,
                             cursor_save_path, gpu_list=None, language="English",
-                            slide_pdf_path=None, resume_cache=False):
+                            slide_pdf_path=None, resume_cache=False, timing_source='local_forced_aligner'):
     """逐句定位光标并生成时间轴，写入 cursor_save_path。
 
     定位分两条路，**优先 PDF 文本坐标**（像素级精确、零推理开销、可离线复现），
@@ -830,12 +830,21 @@ def cursor_gen_per_sentence(script_path, slide_img_dir, slide_audio_dir,
             continue
 
         # 用**原始文本**做强制对齐（clean_text 去掉了标点与大小写，会伤对齐精度）
-        alignment_key = course.digest({'v': 1, 'audio': course.digest(open(slide_audio_path, 'rb').read()), 'texts': raw_texts, 'cursor': cursor, 'language': language}) if resume_cache else None
+        api_alignment = None
+        if timing_source == 'tts_timestamp':
+            from bailian_speech import read_pair, plain_text
+            pcm, api_alignment = read_pair(slide_audio_path)
+            if plain_text(api_alignment['text']) != plain_text(' '.join(raw_texts)):
+                raise ValueError('时间戳原稿与光标稿不一致，禁止回退本地对齐')
+        alignment_identity = {'v': 1, 'audio': course.digest(open(slide_audio_path, 'rb').read()), 'texts': raw_texts, 'cursor': cursor, 'language': language}
+        if api_alignment is not None:
+            alignment_identity.update(v=2, source=timing_source, timing=api_alignment)
+        alignment_key = course.digest(alignment_identity) if resume_cache else None
         cached_alignment = alignments.get(alignment_key)
         if cached_alignment is not None:
             sentence_timesteps = [dict(item) for item in cached_alignment]
         else:
-            aligned = align_with_qwen3(slide_audio_path, " ".join(raw_texts), lang=language)
+            aligned = api_alignment if api_alignment is not None else align_with_qwen3(slide_audio_path, " ".join(raw_texts), lang=language)
             sentence_timesteps = timesteps(subtitle, aligned, slide_audio_path)
 
         # 句数可能因词数统计偏差而对不齐，取较短的一侧做保护性配对

@@ -10,6 +10,13 @@ async function load(name) {
 const models = await load("modelConfig");
 const storage = await load("storage");
 
+test("P4任务音色只取当前任务载荷，不借用新任务草稿或旧密钥", () => {
+  const config = models.presetConfig("bailian_api", "task-connection", false);
+  const voice = { kind: "cloud", resource_id: "voice_saved_task" };
+  assert.deepEqual(models.taskModelPayload({ model_config_origin: "v2", model_config: config, voice }, "forbidden-old-key"), { model_config: config, voice });
+  assert.equal(models.taskModelPayload({ model_config_origin: "legacy", voice }, "old-key").voice, undefined);
+});
+
 test("文字/视觉独立连接与参数覆盖不串线，清空只删除当前覆盖值", () => {
   const config = models.presetConfig("local_existing", "text-connection", false);
   config.stages.vision.connection_id = "vision-connection";

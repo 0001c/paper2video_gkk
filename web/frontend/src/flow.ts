@@ -32,9 +32,9 @@ export const api = {
   delete: (path: string) => request(path, { method: "DELETE" }),
   put: (path: string, body: unknown) => request(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
   get: (path: string) => request(path).then((r) => r.data),
-  post: (path: string, body?: unknown) => request(path, {
+  post: (path: string, body?: unknown, headers?: Record<string, string>) => request(path, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
   }),
   postForm: (path: string, form: FormData) => request(path, { method: "POST", body: form }),

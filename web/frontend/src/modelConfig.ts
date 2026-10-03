@@ -1,5 +1,6 @@
 export const roles = ["text", "vision", "tts", "asr", "grounding", "avatar"] as const;
 export type Role = typeof roles[number];
+export const bailianSpeechModels = ['cosyvoice-v3.5-plus', 'cosyvoice-v3.5-flash', 'cosyvoice-v3-plus', 'cosyvoice-v3-flash', 'cosyvoice-v2'] as const;
 export const roleLabels: Record<Role, string> = { text: "文字 / 课件", vision: "视觉 / 讲稿", tts: "配音", asr: "参考录音识别", grounding: "光标定位", avatar: "数字人" };
 export type Stage = { mode: "api" | "local"; provider: "bailian" | "openai_compatible" | "qwen3" | "gui_owl" | "musetalk";
   connection_id?: string; model: string; parameters: { speech_rate?: number; temperature?: number; max_output_tokens?: number } };
@@ -54,8 +55,8 @@ export function migratedConfig(text: string, vision: string, enabled: boolean): 
   return config;
 }
 
-export function taskModelPayload(config?: { model_config_origin?: string; model_config?: ModelConfig }, apiKey = "", apiBase = "") {
-  return config?.model_config_origin === "v2" ? { model_config: config.model_config }
+export function taskModelPayload(config?: { model_config_origin?: string; model_config?: ModelConfig; voice?: unknown }, apiKey = "", apiBase = "") {
+  return config?.model_config_origin === "v2" ? { model_config: config.model_config, ...(config.voice ? { voice: config.voice } : {}) }
     : { api_key: apiKey || undefined, api_base: apiBase || undefined };
 }
 

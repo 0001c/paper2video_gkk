@@ -18,7 +18,7 @@ def load_model_snapshot(filename):
     if path.stat().st_size > 262144:
         raise ValueError("模型快照超过256KiB")
     snapshot = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(snapshot, dict) or set(snapshot) - {"model_config", "model_config_origin", "model_connections", "derived_policy"}:
+    if not isinstance(snapshot, dict) or set(snapshot) - {"model_config", "model_config_origin", "model_connections", "derived_policy", "voice_resource"}:
         raise ValueError("模型快照字段无效")
     reject_embedded_secrets(snapshot, "model_snapshot")
     config = PipelineModelConfig.model_validate(snapshot["model_config"])

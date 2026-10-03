@@ -406,7 +406,8 @@ if __name__ == '__main__':
         ## Step 3-1: Speech Generation
         tts_per_slide(model_type=args.tts_model, script_path=subtitle_cursor_save_path,
                     speech_save_dir=speech_save_dir, ref_audio=args.ref_audio,
-                    ref_text=args.ref_text, language=lang["tts_language"], resume_audio=True)
+                    ref_text=args.ref_text, language=lang["tts_language"], resume_audio=True,
+                    model_snapshot=model_snapshot)
         step3_1_time =  time.time()
         time_second["tts"] = [step3_1_time-step2_time]
         print("Speech Generation", step3_1_time-step2_time)
@@ -418,7 +419,7 @@ if __name__ == '__main__':
         cursor_token = cursor_gen_per_sentence(script_path=subtitle_cursor_save_path, slide_img_dir=slide_image_dir, 
                                 slide_audio_dir=speech_save_dir, cursor_save_path=cursor_save_path, gpu_list=args.gpu_list,
                                 language=lang["align_language"], slide_pdf_path=slide_pdf_path,
-                                resume_cache=True)
+                                resume_cache=True, timing_source=model_snapshot['model_config']['timing']['source'] if model_snapshot else 'local_forced_aligner')
         if course_plan:
             course.export_chapters(course_plan, args.result_dir)
         token_usage["cursor"] = cursor_token

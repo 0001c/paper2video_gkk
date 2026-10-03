@@ -71,6 +71,11 @@ class LocalVoice(StrictModel):
     ref_text: str | None = Field(default=None, max_length=20000)
 
 
+class CloudVoiceReference(StrictModel):
+    kind: Literal['cloud']
+    resource_id: ConnectionID
+
+
 class Avatar(Stage):
     provider: Literal['bailian', 'musetalk']
     enabled: bool
@@ -156,7 +161,7 @@ def required_roles(config, pipeline_config):
             roles.add("vision")
         if not pipeline_config.get("review_before_render"):
             roles.update(("tts", "grounding"))
-            if pipeline_config.get("ref_audio") and not pipeline_config.get("ref_text"):
+            if config.stages.tts.mode == 'local' and pipeline_config.get("ref_audio") and not pipeline_config.get("ref_text"):
                 roles.add("asr")
     if "3" in selected and config.avatar.enabled:
         roles.add("avatar")
@@ -167,21 +172,25 @@ def ensure_implemented(config, roles):
     for role in roles:
         stage = config.roles()[role]
         field = "config.model_config.avatar" if role == "avatar" else f"config.model_config.stages.{role}"
-        if role not in ("text", "vision") and (stage.mode != "local" or stage.model != LOCAL_MODELS[role]):
+        cloud_tts = role == 'tts' and stage.mode == 'api' and stage.model in (
+            'cosyvoice-v3.5-plus', 'cosyvoice-v3.5-flash', 'cosyvoice-v3-plus', 'cosyvoice-v3-flash', 'cosyvoice-v2')
+        if role not in ("text", "vision") and not cloud_tts and (stage.mode != "local" or stage.model != LOCAL_MODELS[role]):
             raise ConfigurationError(field, "该模型适配器尚未实现，不允许回退本地", "adapter_not_implemented")
-        if role == "tts" and stage.parameters.speech_rate != 1.0:
+        if role == "tts" and stage.mode == 'local' and stage.parameters.speech_rate != 1.0:
             raise ConfigurationError(field + ".parameters.speech_rate", "当前本地TTS仅支持默认语速", "adapter_not_implemented")
         if role == "avatar":
             raise ConfigurationError(field, "数字人严格分段将在P6实现；旧任务路线保持兼容", "adapter_not_implemented")
-    if "tts" in roles and config.timing.source != "local_forced_aligner":
-        raise ConfigurationError("config.model_config.timing.source", "API合成时间戳将在P4/P5接入", "adapter_not_implemented")
+        if cloud_tts and stage.parameters.speech_rate < 0.5:
+            raise ConfigurationError(field + '.parameters.speech_rate', '百炼语速范围为0.5至2')
+    if 'tts' in roles and config.stages.tts.mode == 'api' and config.timing.source != 'tts_timestamp':
+        raise ConfigurationError('config.model_config.timing.source', 'P4云配音必须使用合成时间戳，不隐式启用本地对齐')
 
 
 def capabilities():
     return {"schema_version": 2, "schema": PipelineModelConfig.model_json_schema(),
             "implemented": {"compatible_text_vision": True, "local_tts_asr_grounding": True,
                             "independent_text_vision_connections": True, "role_model_parameters": True,
-                            "cloud_voices": False, "tts_timestamps": False, "bailian_speech": False,
+                            "cloud_voices": True, "tts_timestamps": True, "bailian_speech": True,
                             "bailian_grounding": False, "bailian_avatar": False, "avatar_segmentation": False}}
 
 

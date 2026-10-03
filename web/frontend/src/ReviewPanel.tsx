@@ -9,10 +9,10 @@ type Review = { version: string; pages: string[]; editable: boolean;
   timing: { estimated_minutes: number; actual_minutes: number | null; target_minutes: number | null;
     pages: { planned_minutes: number; estimated_minutes: number; actual_seconds: number | null; section: string }[] } | null };
 
-export function ReviewPanel({ jobId, apiKey, apiBase, modelConfig, modelOrigin, concurrency, cursors, cursorStyle, cursorScale, onJob, onSaved }: {
+export function ReviewPanel({ jobId, apiKey, apiBase, modelConfig, modelOrigin, voice, concurrency, cursors, cursorStyle, cursorScale, onJob, onSaved }: {
   jobId: string; apiKey: string; apiBase: string; concurrency: number; onJob: (id: string) => void; onSaved: () => void;
   cursors: CursorOption[]; cursorStyle: string; cursorScale: number;
-  modelConfig?: ModelConfig; modelOrigin?: string;
+  modelConfig?: ModelConfig; modelOrigin?: string; voice?: unknown;
 }) {
   const [review, setReview] = useState<Review | null>(null);
   const [pages, setPages] = useState<string[]>([]);
@@ -40,7 +40,7 @@ export function ReviewPanel({ jobId, apiKey, apiBase, modelConfig, modelOrigin, 
     const body = { version: review.version, pages };
     const { data } = action === "save" ? await api.put(`/api/jobs/${jobId}/review`, body)
       : await api.post(`/api/jobs/${jobId}/review/run`, { ...body, action, page_ids: action === "regenerate" ? [selected] : [],
-        ...taskModelPayload({ model_config: modelConfig, model_config_origin: modelOrigin }, apiKey, apiBase),
+        ...taskModelPayload({ model_config: modelConfig, model_config_origin: modelOrigin, voice }, apiKey, apiBase),
         refresh_prompt: refreshPrompt, script_concurrency: concurrency, cursor_style: style, cursor_scale: scale });
     if (action === "save") { setReview(data); setPages(data.pages); setAccepted(false); setSuccess("讲稿已保存，历史版本可回溯。修改页的旧音频将在下次生成时更新。"); onSaved(); }
     else onJob(data.job_id);

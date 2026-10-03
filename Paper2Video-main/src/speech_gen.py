@@ -291,7 +291,7 @@ def parse_script(script_text):
 
 
 def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=None,
-                  language=None, resume_audio=False):
+                  language=None, resume_audio=False, model_snapshot=None):
     """逐页合成语音。
 
     与原版的差异
@@ -300,6 +300,12 @@ def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=
     - 参考文本缺失时只转写一次，不在逐页循环中重复识别。
     - 音色 prompt 通过 :func:`get_clone_prompt` 跨页复用。
     """
+    if model_snapshot and model_snapshot.get('model_config_origin') == 'v2' and model_snapshot['model_config']['stages']['tts']['mode'] == 'api':
+        from bailian_speech import tts_pages
+        with open(script_path, encoding='utf-8') as handle:
+            parsed = parse_script(handle.read())
+        tts_pages(parsed, speech_save_dir, model_snapshot, resume_audio)
+        return
     if model_type != "qwen3tts":
         raise ValueError("不支持的配音模型: {}（当前仅支持 qwen3tts）".format(model_type))
 

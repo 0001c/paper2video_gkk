@@ -12,6 +12,17 @@ async function sourceModule(name) {
 const { api, runExclusive, applyTemplate } = await sourceModule("flow");
 const storage = await sourceModule("storage");
 
+test("P4显式云动作传递防重键，普通请求仍保留JSON头", async () => {
+  const original = globalThis.fetch;
+  let saved;
+  globalThis.fetch = async (path, init) => { saved = init; return new Response(JSON.stringify({ ok: true }), { status: 200 }); };
+  try {
+    await api.post('/api/cloud-voices/generate', { kind: 'design' }, { 'Idempotency-Key': 'offline-token-123' });
+    assert.equal(saved.headers['Idempotency-Key'], 'offline-token-123');
+    assert.equal(saved.headers['Content-Type'], 'application/json');
+  } finally { globalThis.fetch = original; }
+});
+
 test("连续点击只执行一次，失败后释放加载状态并允许重试", async () => {
   const lock = { current: false }, busy = [], errors = [];
   let release, calls = 0;

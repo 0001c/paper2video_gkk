@@ -58,12 +58,14 @@ sys.path.insert(0, REPO_ROOT)
 from web import model_config as model_settings
 from web.model_connections import ConnectionCreate, ConnectionUpdate, ConnectionStore
 from web import model_catalog
+from web.cloud_voices import VoiceStore, VoiceReference, VoiceRegister, VoiceGenerate, VoicePreview
 
 # 结构化进度的读写约定与流水线共用同一个模块（progress_report），
 # 避免两边对字段名/取值的理解跑偏。放 import 在这里是因为它依赖上面的 sys.path。
 import progress_report                                    # noqa: E402
 import pv_env                                             # noqa: E402
 import mimo_voice                                         # noqa: E402
+_CLOUD_VOICES = VoiceStore(Path(JOBS_ROOT, '_cloud_voices'), mimo_voice.CACHE_DIR)
 import artifact_cache                                     # noqa: E402
 import paper_figures                                      # noqa: E402
 import course                                             # noqa: E402
@@ -130,10 +132,10 @@ async def trusted_lan_access(request, call_next):
 async def review_body_limit(request, call_next):
     path = request.url.path
     connection_request = path.startswith('/api/model-connections')
-    model_request = connection_request or path == '/api/model-config/validate' or path == '/api/jobs' or path.endswith(('/rerun', '/prepare-retry', '/model-connections/rebind'))
+    model_request = connection_request or path.startswith('/api/cloud-voices') or path == '/api/model-config/validate' or path == '/api/jobs' or path.endswith(('/rerun', '/prepare-retry', '/model-connections/rebind', '/cancel'))
     review_request = path.endswith(('/review', '/review/run')) or path == '/api/course/plan'
     if request.method in ('PUT', 'POST', 'PATCH', 'DELETE') and (model_request or review_request):
-        limit = 16384 if connection_request else 512000 if review_request else 262144
+        limit = 16384 if connection_request or path.startswith('/api/cloud-voices') else 512000 if review_request else 262144
         try:
             _local_write(request)
             length = int(request.headers.get('content-length') or 0)
@@ -191,6 +193,7 @@ class ReviewRequest(BaseModel):
 
 
 class ReviewRunRequest(ReviewRequest):
+    voice: model_settings.LocalVoice | model_settings.CloudVoiceReference | None = None
     action: str = Field(pattern="^(render|regenerate)$")
     page_ids: list[int] = Field(default_factory=list, max_length=40)
     api_key: str | None = Field(default=None, max_length=2000)
@@ -205,6 +208,7 @@ class ReviewRunRequest(ReviewRequest):
 
 
 class PrepareRetryRequest(BaseModel):
+    voice: model_settings.LocalVoice | model_settings.CloudVoiceReference | None = None
     model_config = ConfigDict(extra='forbid')
     api_key: str | None = Field(default=None, max_length=2000)
     api_base: str | None = Field(default=None, max_length=2000)
@@ -374,6 +378,7 @@ async def api_run_review(job_id: str, payload: ReviewRunRequest, request: Reques
             "text_model": payload.text_model, "vision_model": payload.vision_model,
             "script_concurrency": payload.script_concurrency,
             "cursor_style": payload.cursor_style, "cursor_scale": payload.cursor_scale,
+            "voice": payload.voice.model_dump(exclude_none=True) if payload.voice else None,
             "model_config": payload.model_options.public_dict() if payload.model_options else None})
         return response
 
@@ -535,6 +540,8 @@ def _parse_model_config(value, schema=model_settings.PipelineModelConfig, prefix
 
 
 def _configure_job_models(config, payload=None, source=None, portrait=None):
+    if (payload or {}).get('voice') is not None:
+        config['voice'] = payload['voice']
     payload = payload or {}
     supplied = payload.get('config') if isinstance(payload.get('config'), dict) else payload
     incoming = supplied.get('model_config')
@@ -551,15 +558,17 @@ def _configure_job_models(config, payload=None, source=None, portrait=None):
         if normalized.avatar.enabled and not Path(portrait).resolve().is_relative_to(Path(JOBS_ROOT).resolve()):
             raise model_settings.ConfigurationError('portrait_path', '请使用本服务上传的肖像')
         voice = config.get('voice') or {'kind': 'default'}
-        if not isinstance(voice, dict) or voice.get('kind', 'default') not in ('default', 'upload'):
-            raise model_settings.ConfigurationError('config.voice', 'v2暂只支持本地默认/上传音色；云音色在P4接入', 'adapter_not_implemented')
-        voice = _parse_model_config(voice, model_settings.LocalVoice, 'config.voice').model_dump(exclude_none=True)
+        voice_type = VoiceReference if normalized.stages.tts.mode == 'api' else model_settings.LocalVoice
+        voice = _parse_model_config(voice, voice_type, 'config.voice').model_dump(exclude_none=True)
         config['voice'] = voice
         if voice.get('kind') == 'upload':
             voice_path = Path(voice.get('path') or '').resolve()
             if not voice_path.is_file() or not voice_path.is_relative_to(Path(mimo_voice.CACHE_DIR).resolve()):
                 raise model_settings.ConfigurationError('config.voice.path', '请使用本服务上传的参考音频，不允许回退默认音色')
             config['ref_audio'], config['ref_text'] = str(voice_path), voice.get('ref_text') or config.get('ref_text') or None
+        elif voice.get('kind') == 'default':
+            config.pop('ref_audio', None)
+            config.pop('ref_text', None)
         roles = model_settings.required_roles(normalized, config)
         if (source or {}).get('needs_struct'):
             roles = sorted(set(roles) | {'text'})
@@ -567,6 +576,25 @@ def _configure_job_models(config, payload=None, source=None, portrait=None):
         previous = (source or {}).get('config', {}).get('model_connections') or {}
         frozen = (_JOB_KEYS.get((source or {}).get('id')) or {}).get('connections') or {}
         snapshots, keys = _MODEL_CONNECTIONS.freeze(normalized, roles, previous, frozen)
+        if normalized.stages.tts.mode == 'api':
+            stage = normalized.stages.tts
+            connection = snapshots.get(stage.connection_id)
+            if connection is None:
+                raise model_settings.ConfigurationError('config.voice', '请先配置配音连接')
+            from bailian_speech import native_base
+            native_base(connection)
+            previous_voice = (source or {}).get('config', {}).get('voice_resource') or {}
+            if not incoming and not supplied.get('voice') and previous_voice.get('resource_id') == voice['resource_id'] and previous_voice.get('target_model') == stage.model and previous_voice.get('scope_id') == connection['scope_id'] and previous_voice.get('native_http_base_url') == connection.get('native_http_base_url'):
+                resource = copy.deepcopy(previous_voice)
+            else:
+                resource = _CLOUD_VOICES.get(voice['resource_id'], connection, stage.model)
+            if resource['timestamp_status'] != 'supported' or resource['status'] != 'OK':
+                raise model_settings.ConfigurationError('config.voice', '音色需可用且支持时间戳；注册音色需先查询并显式试音，设计音色暂仅供试听')
+            config['voice_resource'] = {**resource, 'language': 'zh' if config.get('script_lang', 'en') == 'zh' else 'en'}
+            config.pop('ref_audio', None)
+            config.pop('ref_text', None)
+        else:
+            config.pop('voice_resource', None)
         _MODEL_CATALOG.validate(normalized, roles, snapshots)
         _MODEL_CATALOG.annotate(snapshots)
         _MODEL_CATALOG.annotate_limits(snapshots, normalized, roles)
@@ -591,7 +619,7 @@ def _job_model_environment(config, keys):
     env['PAPER2VIDEO_MODEL_CONFIG_ORIGIN'] = origin
     if origin == 'v2':
         for name in list(env):
-            if name.startswith(('OPENAI_', 'DEEPSEEK_')):
+            if name.startswith(('OPENAI_', 'DEEPSEEK_', 'PAPER2VIDEO_VOICE_OSS_')) or name == 'BAILIAN_API_KEY':
                 env.pop(name)
         selected = _parse_model_config(config['model_config'])
         roles = config.get('required_model_roles') or model_settings.required_roles(selected, config)
@@ -867,6 +895,8 @@ def _save_job(job):
         target = Path(_job_dir(job['id']), 'model_config.json')
         temporary = target.with_suffix('.json.tmp')
         snapshot = {name: config.get(name) for name in ('model_config', 'model_config_origin', 'model_connections', 'derived_policy')}
+        if config.get('voice_resource'):
+            snapshot['voice_resource'] = config['voice_resource']
         temporary.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding='utf-8')
         temporary.replace(target)
     job["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -2151,7 +2181,7 @@ class ModelListRequest(BaseModel):
 
 class ModelConfigurationRequest(model_settings.StrictModel):
     model_options: model_settings.PipelineModelConfig = Field(alias='model_config')
-    voice: model_settings.LocalVoice = Field(default_factory=model_settings.LocalVoice)
+    voice: model_settings.LocalVoice | VoiceReference = Field(default_factory=model_settings.LocalVoice)
     portrait_path: str | None = Field(default=None, max_length=2000)
     reference_text: str | None = Field(default=None, max_length=20000)
     requested_stages: list[str] = Field(default_factory=lambda: ['1', '2', '3'], min_length=1, max_length=4)
@@ -2167,6 +2197,51 @@ class ConnectionRebindRequest(model_settings.StrictModel):
 @app.get('/api/model-connections')
 async def api_model_connections():
     return {'items': _MODEL_CONNECTIONS.list()}
+
+
+@app.get('/api/cloud-voices')
+def api_cloud_voices(connection_id: str, target_model: str):
+    entry = _CLOUD_VOICES.connection(_MODEL_CONNECTIONS, connection_id, target_model)
+    return {'items': _CLOUD_VOICES.listing(entry, target_model), 'validation_level': 'configuration_only'}
+
+
+@app.post('/api/cloud-voices/register')
+def api_cloud_voice_register(payload: VoiceRegister, request: Request):
+    _local_write(request)
+    entry = _CLOUD_VOICES.connection(_MODEL_CONNECTIONS, payload.connection_id, payload.target_model)
+    return _CLOUD_VOICES.register(payload, entry)
+
+
+@app.post('/api/cloud-voices/generate')
+def api_cloud_voice_generate(payload: VoiceGenerate, request: Request):
+    _local_write(request)
+    entry = _CLOUD_VOICES.connection(_MODEL_CONNECTIONS, payload.connection_id, payload.target_model)
+    return _CLOUD_VOICES.generate(payload, entry, request.headers.get('Idempotency-Key'))
+
+
+@app.post('/api/cloud-voices/{resource_id}/refresh')
+def api_cloud_voice_refresh(resource_id: str, payload: VoicePreview, request: Request):
+    _local_write(request)
+    entry = _CLOUD_VOICES.connection(_MODEL_CONNECTIONS, payload.connection_id, payload.target_model)
+    _CLOUD_VOICES.get(resource_id, entry, payload.target_model)
+    return _CLOUD_VOICES.refresh(resource_id, entry)
+
+
+@app.post('/api/cloud-voices/{resource_id}/preview')
+def api_cloud_voice_preview(resource_id: str, payload: VoicePreview, request: Request):
+    _local_write(request)
+    entry = _CLOUD_VOICES.connection(_MODEL_CONNECTIONS, payload.connection_id, payload.target_model)
+    return _CLOUD_VOICES.preview(resource_id, payload, entry, request.headers.get('Idempotency-Key'))
+
+
+@app.get('/api/cloud-voices/{resource_id}/sample')
+def api_cloud_voice_sample(resource_id: str):
+    if not re.fullmatch(r'voice_[a-f0-9]{24}', resource_id):
+        raise HTTPException(404, detail='试听不存在')
+    filename = _CLOUD_VOICES.directory / (resource_id + '.wav')
+    if not filename.is_file():
+        raise HTTPException(404, detail='没有已归档的试听；此接口不会生成语音')
+    return FileResponse(filename, media_type='audio/wav')
 
 
 @app.post('/api/model-connections', status_code=201)
@@ -2740,8 +2815,10 @@ async def api_create_job(payload: dict):
     # 而 MiMo 是"限时免费"的第三方服务，网络/配额/key 都可能出问题。
     # 回落原因会同时进 config、响应体与任务日志（回落必须可见，见 _run_job）。
     voice_spec = config.get("voice") or {"kind": "default"}
-    ref_audio, ref_text, voice_note = mimo_voice.resolve(
-        voice_spec, config.get("script_lang", "en"))
+    if config.get('model_config_origin') == 'v2' and config['model_config']['stages']['tts']['mode'] == 'api':
+        ref_audio, ref_text, voice_note = None, None, '百炼云音色：' + config['voice_resource']['label']
+    else:
+        ref_audio, ref_text, voice_note = mimo_voice.resolve(voice_spec, config.get("script_lang", "en"))
     config["voice"] = voice_spec
     config["voice_note"] = voice_note
     if ref_audio:
@@ -2792,7 +2869,7 @@ async def api_create_job(payload: dict):
             # 把这个任务的音色结论回给界面：用了哪个音色、还是回落到了内置默认。
             # 不返回的话，使用者只能从成片里"听"出来自己选的音色没生效。
             "voice_note": voice_note,
-            "voice_active": bool(ref_audio),
+            "voice_active": bool(ref_audio) or bool(config.get('voice_resource')),
             "generate_talking": generate_talking,
             "talking_note": talking_note}
 
@@ -3090,8 +3167,11 @@ async def api_cancel_job(job_id: str):
     # 只改这两个字段。**不要**拿刚 load 的整份 job 去 save ——
     # 那份快照是在 kill 之前读的，而 _run_job 的收尾逻辑会在进程退出后
     # 写入 exit_code / elapsed_min；整份覆盖会把它们抹掉（实测踩过）。
-    await _update_job(job_id, status="canceled", phase="已取消")
-    return {"ok": True}
+    cloud_tts = job.get('config', {}).get('model_config_origin') == 'v2' and job.get('config', {}).get('model_config', {}).get('stages', {}).get('tts', {}).get('mode') == 'api'
+    warning = '本地已取消；云端请求可能继续处理或计费，未确认远程取消' if cloud_tts and job.get('status') == 'running' else None
+    await _update_job(job_id, status="canceled", phase=warning or "已取消",
+                      remote_cancel_state='unconfirmed' if warning else 'not_requested')
+    return {"ok": True, 'remote_cancel_state': 'unconfirmed' if warning else 'not_requested', 'warning': warning}
 
 
 @app.get("/api/jobs/{job_id}/artifacts")

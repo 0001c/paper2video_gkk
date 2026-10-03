@@ -7,6 +7,7 @@ import { CoursePanel, defaultCourse, type CourseSettings, type CoursePlan } from
 import { ReviewPanel } from "./ReviewPanel";
 import { ThemeToggle } from "./ThemeToggle";
 import { ModelSettings } from "./ModelSettings";
+import { CloudVoicePanel, type CloudVoice } from "./CloudVoicePanel";
 import { TaskModelSettings } from "./TaskModelSettings";
 import { migratedConfig, presetConfig, roles, roleStage, taskModelPayload, type Connection, type ModelConfig, type ModelOptions } from "./modelConfig";
 import { CursorPicker, type CursorOption } from "./CursorPicker";
@@ -75,7 +76,8 @@ type Options = {
    为什么这样切：预置 / 描述设计 / 上传三种来源的字段不同，若让前端也拼一遍，
    就成了"同一件事两处各拼一次"—— 这个项目已经在"产物路径"上踩过那个坑。 */
 type VoiceSpec = {
-  kind: "default" | "preset" | "design" | "upload";
+  kind: "default" | "preset" | "design" | "upload" | "cloud";
+  resource_id?: string;
   voice?: string;
   prompt?: string;
   path?: string;
@@ -190,6 +192,7 @@ type Job = {
     script_lang?: string; slide_count?: number; voice_note?: string; talking_note?: string;
     review_before_render?: boolean; target_minutes?: number | null; text_model?: string; vision_model?: string; script_concurrency?: number;
     cursor_style?: string; cursor_scale?: number; model_config?: ModelConfig; model_config_origin?: string;
+    voice?: VoiceSpec; voice_resource?: CloudVoice;
     model_connections?: Record<string, { label?: string; scope_id: string; provider: string; compatible_base_url: string; catalog_time?: string; catalog_source?: string }>; portrait_path?: string };
 };
 
@@ -456,7 +459,8 @@ export default function App() {
   // ④ 音色。四种来源最终都归结为"一份参考音频 + 它的参考文本"：
   //    default 用内置（零依赖）、preset 用 MiMo 预置音色、design 用描述生成、
   //    upload 用使用者自己的音频。生成与缓存都在后端（同一个音色只生成一次）。
-  const [voiceMode, setVoiceMode] = useState<VoiceSpec["kind"]>(initialDraft.voiceMode ?? "default");
+  const [voiceMode, setVoiceMode] = useState<"default" | "preset" | "design" | "upload">(initialDraft.voiceMode ?? "default");
+  const [cloudVoice, setCloudVoice] = useState<CloudVoice>();
   // 直接存整条候选（而不是只存音色名）：候选里已经带了后端组装好的 spec，
   // "上传的音频"这类候选根本没有音色名，只存名字就没法还原成 spec。
   const [presetPick, setPresetPick] = useState<VoiceItem | null>(null);
@@ -473,6 +477,9 @@ export default function App() {
 
   const { job, streamState, streamError } = useJobStream(jobId);
   const taskModels = taskOverride && taskOverride.jobId === job?.id ? taskOverride.value : job?.config?.model_config;
+  const [taskVoiceOverride, setTaskVoiceOverride] = useState<{ jobId: string; voice: VoiceSpec; resource?: CloudVoice }>();
+  const taskVoice = taskVoiceOverride && taskVoiceOverride.jobId === job?.id ? taskVoiceOverride.voice : job?.config?.voice;
+  const taskVoiceResource = taskVoiceOverride && taskVoiceOverride.jobId === job?.id ? taskVoiceOverride.resource : job?.config?.voice_resource;
   const [filesJobId, setFilesJobId] = useState<string | null>(null);
   const [filesVersion, setFilesVersion] = useState(0);
   const visibleArtifacts = filesJobId === jobId ? artifacts : [];
@@ -515,6 +522,7 @@ export default function App() {
   }, [voiceList, presetPick]);
 
   const voiceSpecNow = useCallback((): VoiceSpec => {
+    if (modelConfig.stages.tts.mode === "api") return { kind: "cloud", resource_id: cloudVoice?.resource_id ?? "" };
     if (voiceMode === "preset") return presetPick?.spec ?? { kind: "default" };
     if (voiceMode === "design") return { kind: "design", prompt: designPrompt };
     if (voiceMode === "upload") {
@@ -523,7 +531,7 @@ export default function App() {
       return uploadSpec ? { ...uploadSpec, ref_text: uploadText.trim() || null } : { kind: "default" };
     }
     return { kind: "default" };
-  }, [voiceMode, presetPick, designPrompt, uploadSpec, uploadText]);
+  }, [voiceMode, presetPick, designPrompt, uploadSpec, uploadText, modelConfig.stages.tts.mode, cloudVoice]);
 
   const genVoice = useCallback(
     async (force: boolean) => runExclusive(voiceLock, setVoiceBusy, async () => {
@@ -677,7 +685,7 @@ export default function App() {
     if (courseEnabled && !coursePlan) return MessagePlugin.warning("请预览并确认教案和时间分配");
     if (generateTalking && !portraitFile) return MessagePlugin.warning("开启数字人必须上传肖像，不会自动跳过");
     if (generateTalking) return MessagePlugin.warning("v2数字人需等待P6严格分段适配，请关闭后准备课件");
-    if (voiceMode === "preset" || voiceMode === "design") return MessagePlugin.warning("v2当前只支持默认/上传参考音色；云音色请等待P4");
+    if (modelConfig.stages.tts.mode === "local" && (voiceMode === "preset" || voiceMode === "design")) return MessagePlugin.warning("本地配音请选择默认或上传参考录音");
     if (!scriptPrompt.trim()) return MessagePlugin.warning("讲稿提示词不能为空");
     if (!slidePrompt.trim() || slidePrompt.length > (opts?.slide_prompt_max_chars ?? 30000)) {
       return MessagePlugin.warning("请填写有效的幻灯片提示词，并检查字符上限");
@@ -691,7 +699,7 @@ export default function App() {
     }
     // 音色没选全就提交，会静默回落到内置音色 —— 使用者只会觉得"我选的音色没生效"。
     // 在这里拦住，比在成片里听出来划算得多。
-    if (voiceMode === "upload" && !uploadSpec) {
+    if (modelConfig.stages.tts.mode === 'local' && voiceMode === "upload" && !uploadSpec) {
       return MessagePlugin.warning("请先上传参考音频（或改回「内置默认音色」）");
     }
 
@@ -828,14 +836,14 @@ export default function App() {
 
   const prepareRerun = useCallback(async (id: string) => runExclusive(rerunLock, setRerunning, async () => {
     const [plan, source] = await Promise.all([api.get(`/api/jobs/${id}/rerun-plan`), api.get(`/api/jobs/${id}`)]);
-    plan.model_source = { ...source.config, ...(taskOverride?.jobId === id ? { model_config: taskOverride.value } : {}) };
+    plan.model_source = { ...source.config, ...(taskOverride?.jobId === id ? { model_config: taskOverride.value } : {}), ...(taskVoiceOverride?.jobId === id ? { voice: taskVoiceOverride.voice } : {}) };
     setRegenerateScript(false);
     setRerunPlan(plan);
-  }, reportError), [taskOverride]);
+  }, reportError), [taskOverride, taskVoiceOverride]);
 
   const retryPreparation = () => runExclusive(rerunLock, setRerunning, async () => {
     if (!job || !window.confirm("继续准备课件与讲稿可能调用生成接口。已完成的课程讲稿页会复用，是否继续？")) return;
-    const { data } = await api.post(`/api/jobs/${job.id}/prepare-retry`, taskModelPayload({ ...job.config, model_config: taskModels }, apiKey, apiBase));
+    const { data } = await api.post(`/api/jobs/${job.id}/prepare-retry`, taskModelPayload({ ...job.config, model_config: taskModels, voice: taskVoice }, apiKey, apiBase));
     selectJob(data.job_id);
   }, reportError);
 
@@ -934,16 +942,17 @@ export default function App() {
   if (!opts?.model_configuration?.implemented.independent_text_vision_connections
     && modelConfig.stages.text.connection_id !== modelConfig.stages.vision.connection_id) missing.push("P3前文字/视觉需共用连接");
   if (generateTalking) missing.push(!portraitFile ? "数字人需肖像；当前严格分段待P6" : "关闭尚待P6适配的数字人");
-  if (voiceMode === "preset" || voiceMode === "design") missing.push("选择默认或上传音色，云音色待P4");
+  if (modelConfig.stages.tts.mode === "api" && (!cloudVoice || cloudVoice.target_model !== modelConfig.stages.tts.model || cloudVoice.status !== "OK" || cloudVoice.timestamp_status !== "supported")) missing.push("选择可用且支持时间戳的云音色");
+  if (modelConfig.stages.tts.mode === "local" && (voiceMode === "preset" || voiceMode === "design")) missing.push("本地请选择默认或上传录音");
   if (!textModel.trim() || !visionModel.trim()) missing.push("选择文字和视觉模型");
   if (!Number.isInteger(scriptConcurrency) || scriptConcurrency < 1 || scriptConcurrency > 8) missing.push("填写 1～8 的整数并发数");
   if (!slidePrompt.trim() || slidePrompt.length > (opts?.slide_prompt_max_chars ?? 30000)) missing.push("检查幻灯片提示词");
   if (!scriptPrompt.trim() || scriptPrompt.length > (opts?.script_prompt_max_chars ?? 20000)) missing.push("检查讲稿提示词");
   if (!Number.isInteger(slideCount) || Number(slideCount) < (opts?.slide_count?.min ?? 4)
       || Number(slideCount) > (opts?.slide_count?.max ?? 40)) missing.push("填写有效的整数页数");
-  if (voiceMode === "preset" && !presetPick) missing.push("选择音色");
-  if (voiceMode === "design" && !designPrompt.trim()) missing.push("填写音色描述");
-  if (voiceMode === "upload" && !uploadSpec) missing.push("上传参考音频");
+  if (modelConfig.stages.tts.mode === 'local' && voiceMode === "preset" && !presetPick) missing.push("选择音色");
+  if (modelConfig.stages.tts.mode === 'local' && voiceMode === "design" && !designPrompt.trim()) missing.push("填写音色描述");
+  if (modelConfig.stages.tts.mode === 'local' && voiceMode === "upload" && !uploadSpec) missing.push("上传参考音频");
   const ready = missing.length === 0 && !ingesting && !voiceBusy;
   const queuedCount = jobs.filter((item) => item.status === "queued").length;
   const activeCount = jobs.filter((item) => item.status === "running").length;
@@ -1343,10 +1352,12 @@ export default function App() {
         <p>描述音色时填写性别年龄、质感、语速与角色；混响和 EQ 等属于后期效果，不适合作为音色描述。</p>
       </>}>
 
+        {modelConfig.stages.tts.mode === 'api' && <CloudVoicePanel stage={modelConfig.stages.tts} value={cloudVoice} onChange={setCloudVoice} />}
+        <div hidden={modelConfig.stages.tts.mode === 'api'}>
         <div className="field">
           <label>讲稿由谁来讲</label>
-          <p className="notice info">P2只开放默认 / 上传参考音色。百炼系统音色、复刻与设计待P4；选择API配音不等于已有云音色资源。</p>
-          <RadioGroup value={voiceMode} onChange={(v) => { setVoiceMode(v as VoiceSpec["kind"]); setPreview(null); }}>
+          <p className="notice info">本地配音使用默认 / 上传参考录音；API配音使用独立云音色资源。</p>
+          <RadioGroup value={voiceMode} onChange={(v) => { setVoiceMode(v as typeof voiceMode); setPreview(null); }}>
             <Radio value="default">内置默认音色（无需联网）</Radio>
             <Radio value="preset" disabled>
               预置 / 已保存音色
@@ -1482,6 +1493,7 @@ export default function App() {
         {voiceMode === "upload" && !uploadSpec && initialDraft.voiceMode === "upload" && (
           <p className="hint">已恢复参考文本，请重新上传参考音频。</p>
         )}
+        </div>
       </Section>
 
       <Section anchor="cursor" number="06" title="视频光标" summary={opts?.cursors?.find((item) => item.value === cursorStyle)?.label ?? '红色光点'} help="选择随讲解指向目标的视觉标记，可在审核界面再次调整。不同样式只改变最终画面，未变化的讲稿与配音可复用。">
@@ -1550,6 +1562,7 @@ export default function App() {
         {filesError && <div className="notice err" role="alert"><span>产物读取失败：{filesError}</span><Button variant="outline" onClick={() => setFilesVersion((value) => value + 1)}>重试读取</Button></div>}
         {job?.config?.model_config_origin === "v2" && job.config.model_config && taskModels && <TaskModelSettings key={job.id}
           jobId={job.id} snapshot={job.config.model_config} value={taskModels} connections={job.config.model_connections} options={opts?.model_configuration}
+          voice={taskVoice} voiceResource={taskVoiceResource} onVoice={(resource) => setTaskVoiceOverride({ jobId: job.id, voice: resource ? { kind: 'cloud', resource_id: resource.resource_id } : { kind: 'default' }, resource })}
           concurrency={job.config.script_concurrency ?? 3} disabled={!!running} onChange={(value) => setTaskOverride({ jobId: job.id, value })} />}
         {job && job.config?.model_config_origin !== "v2" && <details><summary>旧任务凭据恢复（仅当前页面内存）</summary>
           <p className="hint">只用于旧任务继续/重跑，不影响v2草稿；刷新即清空，不做连接推理自检。</p>
@@ -1558,7 +1571,7 @@ export default function App() {
           <Button variant="text" onClick={() => { setApiKey(""); setApiBase(""); }}>清空本次凭据</Button>
         </details>}
         {job && !running && visiblePages?.pages?.length > 0 && <ReviewPanel key={job.id} jobId={job.id} apiKey={apiKey} apiBase={apiBase}
-          modelConfig={taskModels} modelOrigin={job.config?.model_config_origin} concurrency={job.config?.script_concurrency ?? 3} cursors={opts?.cursors ?? []} cursorStyle={job.config?.cursor_style ?? 'classic-red'} cursorScale={job.config?.cursor_scale ?? 1} onJob={selectJob} onSaved={() => setFilesVersion((v) => v + 1)} />}
+          modelConfig={taskModels} modelOrigin={job.config?.model_config_origin} voice={taskVoice} concurrency={job.config?.script_concurrency ?? 3} cursors={opts?.cursors ?? []} cursorStyle={job.config?.cursor_style ?? 'classic-red'} cursorScale={job.config?.cursor_scale ?? 1} onJob={selectJob} onSaved={() => setFilesVersion((v) => v + 1)} />}
 
         {job && (
           <div style={{ marginTop: 18 }}>

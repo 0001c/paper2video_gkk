@@ -65,7 +65,7 @@ export function ModelConnections({ visible, connections, onClose, onReload }: {
           <option value="bailian">阿里云百炼</option><option value="openai_compatible">OpenAI 兼容 / 本地服务</option></select></div>
         <div className="field"><label htmlFor={`${prefix}-base`}>兼容 Base URL</label><input id={`${prefix}-base`} readOnly={!!editing} value={base} onChange={(event) => setBase(event.target.value)} /></div>
         {provider === "bailian" && <>
-          <div className="field"><label htmlFor={`${prefix}-native`}>原生 HTTP Base URL（可选）</label><input id={`${prefix}-native`} readOnly={!!editing} value={nativeBase} placeholder="https://…/api/v1" onChange={(event) => setNativeBase(event.target.value)} /></div>
+          <div className="field"><label htmlFor={`${prefix}-native`}>原生 HTTP Base URL（云配音 / 音色必填）</label><input id={`${prefix}-native`} readOnly={!!editing} value={nativeBase} placeholder="https://…/api/v1" onChange={(event) => setNativeBase(event.target.value)} /></div>
           <div className="field"><label htmlFor={`${prefix}-ws`}>WebSocket URL（可选）</label><input id={`${prefix}-ws`} readOnly={!!editing} value={ws} placeholder="wss://…" onChange={(event) => setWs(event.target.value)} /></div>
         </>}
         <div className="field"><label htmlFor={`${prefix}-scope`}>资源范围标识（可选）</label><input id={`${prefix}-scope`} readOnly={!!editing} value={scope} placeholder="新连接默认生成；同账号恢复时填原范围" onChange={(event) => setScope(event.target.value)} /></div>

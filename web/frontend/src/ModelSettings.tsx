@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Button, Select } from "tdesign-react";
 import { api, errorMessage, runExclusive } from "./flow";
 import { ModelConnections } from "./ModelConnections";
-import { presetConfig, replaceStage, setTextParameter, roleLabels, roles, roleStage, type Connection, type ModelConfig, type ModelOptions, type Role, type Stage } from "./modelConfig";
+import { presetConfig, replaceStage, setTextParameter, roleLabels, roles, roleStage, bailianSpeechModels, type Connection, type ModelConfig, type ModelOptions, type Role, type Stage } from "./modelConfig";
 
 type Candidate = { id: string; selectable: boolean; adapter_implemented: boolean; status: string; verification: string; offline_time: string | null; model_info?: { max_output_tokens?: number } };
 type Catalog = { items: Candidate[]; next_cursor: string | null; source: string; catalog_time: string | null; total: number; warnings: string[] };
@@ -77,7 +77,7 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
         <Button key={preset} variant={value.preset === preset ? "base" : "outline"} theme={value.preset === preset ? "primary" : "default"}
           aria-pressed={value.preset === preset} onClick={() => applyPreset(preset)}>{label}</Button>)}
     </div>
-    <p className="hint">切换预设只修改模型，保留材料、语言与课程。全 API 预设可保存规划；配音、定位、时间轴和数字人适配尚待后续阶段，不能宣称已可运行。</p>
+    <p className="hint">切换预设只修改模型，保留材料、语言与课程。百炼配音已接入，需选择兼容云音色；API光标定位及数字人仍待P5/P6，全API预设尚不能运行完整视频。</p>
     {options && !options.recommended_models && <p className="notice warn">后端尚未加载P2版本，请自行重载服务。页面不会改用旧目录接口或推理自检绕过。</p>}
     <div className="actions"><Button variant="outline" onClick={() => setDrawer(true)}>管理连接</Button>
       <Button variant="outline" loading={checking} disabled={!options?.recommended_models || busy || checking} onClick={() => check()}>检查准备阶段配置</Button>
@@ -88,12 +88,16 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
         const selected = roleStage(value, item);
         const needsConnection = selected.mode === "api" || item === "text" || item === "vision";
         const implemented = item === "text" || item === "vision" ? options?.implemented.compatible_text_vision
+          : item === 'tts' && selected.mode === 'api' ? options?.implemented.bailian_speech
           : selected.mode === "local" && item !== "avatar" && options?.implemented.local_tts_asr_grounding;
         const candidates = catalogs[`${selected.connection_id}|${item}|${includeRetiring}`]?.items ?? [];
         const currentCandidate = candidates.find((candidate) => candidate.id === selected.model);
         const choices = candidates.map((candidate) => ({ value: candidate.id,
           label: `${candidate.id}${!candidate.adapter_implemented ? " · 待接入" : candidate.verification === "capability_unknown" ? " · 能力未验证" : ""}${candidate.offline_time ? ` · 下线 ${candidate.offline_time}` : ""}`,
           disabled: !candidate.selectable }));
+        if (item === 'tts' && selected.mode === 'api' && options?.implemented.bailian_speech) {
+          for (const model of bailianSpeechModels) if (!choices.some((choice) => choice.value === model)) choices.push({ value: model, label: `${model} · 已接入 / 权限未验证`, disabled: false });
+        }
         if (!choices.some((choice) => choice.value === selected.model)) choices.unshift({ value: selected.model, label: `${selected.model} · ${needsConnection ? "未验证 / 预设" : "本地"}`, disabled: !implemented });
         return <div className="model-role-row" key={item}>
           <div><strong>{roleLabels[item]}</strong><span className="hint">{item === "asr" ? "缺参考文本时按需使用" : item === "text" || item === "vision" ? "准备阶段使用" : "审核后使用"}</span></div>
@@ -107,7 +111,8 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
             popupProps={{ overlayStyle: { maxWidth: "calc(100vw - 32px)" } }}
             onChange={(model) => onChange(replaceStage(value, item, { ...selected, model: String(model) }))}
             onCreate={(model) => onChange(replaceStage(value, item, { ...selected, model: String(model).trim() }))} />
-            <span className="hint">{!implemented ? "适配器待接入，不会回退本地" : currentCandidate?.status === "retired" ? "已下线，禁止新执行" : needsConnection ? "兼容协议已接入，服务/权限未验证" : "已有本地路线"}</span></div>
+            <span className="hint">{!implemented ? "适配器待接入，不会回退本地" : currentCandidate?.status === "retired" ? "已下线，禁止新执行" : needsConnection ? item === 'tts' ? "原生HTTP流式配音，需云音色及原生端点" : "兼容协议已接入，服务/权限未验证" : "已有本地路线"}</span></div>
+          {item === 'tts' && selected.mode === 'api' && <div className="field"><label htmlFor={`${prefix}-rate`}>配音语速（0.5～2）</label><input id={`${prefix}-rate`} type="number" min={0.5} max={2} step={0.1} value={selected.parameters.speech_rate ?? 1} onChange={(event) => onChange(replaceStage(value, item, { ...selected, parameters: { speech_rate: event.target.valueAsNumber } }))} /></div>}
           {(item === "text" || item === "vision") && <details className="model-role-parameters"><summary>请求参数 · {selected.parameters.max_output_tokens == null && selected.parameters.temperature == null ? "未覆盖" : "已自定义"}</summary>
             <div className="model-parameter-fields">
               <div className="field"><label htmlFor={`${prefix}-tokens-${item}`}>最大输出 tokens</label><input id={`${prefix}-tokens-${item}`} type="number" min={1} max={Math.min(131072, currentCandidate?.model_info?.max_output_tokens ?? 131072)} step={1} placeholder="不覆盖服务默认值" disabled={!options?.implemented.role_model_parameters} value={selected.parameters.max_output_tokens ?? ""}
@@ -120,7 +125,7 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
         </div>;
       })}
     </div>
-    <p className="hint">时间轴：{value.timing.source === "tts_timestamp" ? "随 API 配音返回（待P4/P5接入）" : "本地 ForcedAligner"}。文字 / 视觉的本地模式需要自行部署兼容服务，不自动加载权重。{options?.implemented.independent_text_vision_connections ? "文字和视觉可分别选择本地/API连接，任务按角色独立调用。" : "当前后端仍要求文字和视觉共用连接，请重载至P3版本。"}</p>
+    <p className="hint">时间轴：{value.timing.source === "tts_timestamp" ? "随 API 配音返回，不加载本地对齐器" : "本地 ForcedAligner"}。文字 / 视觉的本地模式需要自行部署兼容服务，不自动加载权重。{options?.implemented.independent_text_vision_connections ? "文字和视觉可分别选择本地/API连接，任务按角色独立调用。" : "当前后端仍要求文字和视觉共用连接，请重载至P3版本。"}</p>
     <p className={value.avatar.enabled ? "notice warn" : "hint"}>{value.avatar.enabled
       ? "数字人单段音频必须小于20秒。计划长讲解自动分段拼接，不限制整页/成片；分段适配尚待P6，当前v2数字人执行禁用。"
       : "未启用数字人，不施加20秒分段限制。"}</p>

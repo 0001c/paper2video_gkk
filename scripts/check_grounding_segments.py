@@ -170,10 +170,20 @@ class Checks(unittest.TestCase):
             segments.stitch([], manifest, audio, self.root / 'bad.mp4')
 
     def test_price_tiers_unknown_and_local_no_bill(self):
-        for prompt, expected in [(32768, 0.033768), (32769, 0.0506535), (131073, 0.396219)]:
+        for prompt, expected in [(32000, 0.033), (32001, 0.0495015), (128000, 0.1935), (128001, 0.387003), (256000, 0.771)]:
             ticket = model_costs.begin('vision', 'qwen3-vl-plus', 'https://dashscope.aliyuncs.com/v1')
             model_costs.finish(ticket, {'prompt_tokens': prompt, 'completion_tokens': 100})
             self.assertAlmostEqual(ticket[1]['estimated_cny'], expected)
+        ticket = model_costs.begin('vision', 'qwen3-vl-plus', 'https://dashscope.aliyuncs.com/v1')
+        model_costs.finish(ticket, {'prompt_tokens': 256001, 'completion_tokens': 100})
+        self.assertIsNone(ticket[1]['estimated_cny'])
+        for model in ('qwen3.8-flash', 'qwen3.8-max'):
+            ticket = model_costs.begin('text', model, 'https://dashscope.aliyuncs.com/v1')
+            model_costs.finish(ticket, {'prompt_tokens': 1000000, 'completion_tokens': 100})
+            self.assertIsNotNone(ticket[1]['estimated_cny'])
+            ticket = model_costs.begin('text', model, 'https://dashscope.aliyuncs.com/v1')
+            model_costs.finish(ticket, {'prompt_tokens': 1000001, 'completion_tokens': 100})
+            self.assertIsNone(ticket[1]['estimated_cny'])
         ticket = model_costs.begin('text', 'unknown-model', 'https://dashscope.aliyuncs.com/v1')
         model_costs.finish(ticket, {'prompt_tokens': 10, 'completion_tokens': 10})
         self.assertIsNone(ticket[1]['estimated_cny'])

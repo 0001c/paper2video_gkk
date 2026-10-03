@@ -10,11 +10,11 @@ from urllib.parse import urlsplit
 
 
 PRICE_SOURCE = 'https://help.aliyun.com/zh/model-studio/model-pricing'
-PRICE_VERSION = '2026-10-03-beijing-standard'
+PRICE_VERSION = '2026-10-03-beijing-standard-v2'
 TOKEN_PRICES = {
-    'qwen3.8-flash': [(1048576, '0.8', '2.7')],
-    'qwen3.8-max': [(1048576, '12', '36')],
-    'qwen3-vl-plus': [(32768, '1', '10'), (131072, '1.5', '15'), (262144, '3', '30')],
+    'qwen3.8-flash': [(1000000, '0.8', '2.7')],
+    'qwen3.8-max': [(1000000, '12', '36')],
+    'qwen3-vl-plus': [(32000, '1', '10'), (128000, '1.5', '15'), (256000, '3', '30')],
 }
 CHAR_PRICES = {'cosyvoice-v3.5-plus': '1.5', 'cosyvoice-v3.5-flash': '0.8',
                'cosyvoice-v3-plus': '2', 'cosyvoice-v3-flash': '1', 'cosyvoice-v2': '2'}

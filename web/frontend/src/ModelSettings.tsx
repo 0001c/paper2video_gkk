@@ -77,7 +77,7 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
         <Button key={preset} variant={value.preset === preset ? "base" : "outline"} theme={value.preset === preset ? "primary" : "default"}
           aria-pressed={value.preset === preset} onClick={() => applyPreset(preset)}>{label}</Button>)}
     </div>
-    <p className="hint">切换预设只修改模型，保留材料、语言与课程。百炼配音已接入，需选择兼容云音色；API光标定位及数字人仍待P5/P6，全API预设尚不能运行完整视频。</p>
+    <p className="hint">切换预设只修改模型，保留材料、语言与课程。不启用数字人时可使用全API模型链路（仍需有效连接、原生配音端点及兼容云音色）。API光标定位已接入；数字人支持本地严格分段，百炼Wan执行待P7。</p>
     {options && !options.recommended_models && <p className="notice warn">后端尚未加载P2版本，请自行重载服务。页面不会改用旧目录接口或推理自检绕过。</p>}
     <div className="actions"><Button variant="outline" onClick={() => setDrawer(true)}>管理连接</Button>
       <Button variant="outline" loading={checking} disabled={!options?.recommended_models || busy || checking} onClick={() => check()}>检查准备阶段配置</Button>
@@ -89,7 +89,9 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
         const needsConnection = selected.mode === "api" || item === "text" || item === "vision";
         const implemented = item === "text" || item === "vision" ? options?.implemented.compatible_text_vision
           : item === 'tts' && selected.mode === 'api' ? options?.implemented.bailian_speech
-          : selected.mode === "local" && item !== "avatar" && options?.implemented.local_tts_asr_grounding;
+          : item === 'grounding' && selected.mode === 'api' ? options?.implemented.bailian_grounding
+          : item === 'avatar' && selected.mode === 'local' ? options?.implemented.avatar_segmentation
+          : selected.mode === "local" && options?.implemented.local_tts_asr_grounding;
         const candidates = catalogs[`${selected.connection_id}|${item}|${includeRetiring}`]?.items ?? [];
         const currentCandidate = candidates.find((candidate) => candidate.id === selected.model);
         const choices = candidates.map((candidate) => ({ value: candidate.id,
@@ -127,7 +129,7 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
     </div>
     <p className="hint">时间轴：{value.timing.source === "tts_timestamp" ? "随 API 配音返回，不加载本地对齐器" : "本地 ForcedAligner"}。文字 / 视觉的本地模式需要自行部署兼容服务，不自动加载权重。{options?.implemented.independent_text_vision_connections ? "文字和视觉可分别选择本地/API连接，任务按角色独立调用。" : "当前后端仍要求文字和视觉共用连接，请重载至P3版本。"}</p>
     <p className={value.avatar.enabled ? "notice warn" : "hint"}>{value.avatar.enabled
-      ? "数字人单段音频必须小于20秒。计划长讲解自动分段拼接，不限制整页/成片；分段适配尚待P6，当前v2数字人执行禁用。"
+      ? "数字人单段音频严格小于20秒，默认约18秒自动分段并用完整页音轨拼接，不限制整页/成片。本地MuseTalk已接入分段；百炼Wan执行仍待P7。"
       : "未启用数字人，不施加20秒分段限制。"}</p>
     <details><summary>按环节查询目录</summary><div className="actions">
       <label htmlFor={`${prefix}-catalog-role`}>环节</label><select id={`${prefix}-catalog-role`} value={role} onChange={(event) => setRole(event.target.value as Role)}>{roles.map((item) => <option key={item} value={item}>{roleLabels[item]}</option>)}</select>

@@ -144,8 +144,8 @@ def legacy_config(config, connection_id="legacy"):
 
 def derived_policy(config):
     return {"avatar_enabled": config.avatar.enabled, "max_segment_seconds_exclusive": 20 if config.avatar.enabled else None,
-            "target_segment_seconds": 18 if config.avatar.enabled else None, "policy_version": 1,
-            "implemented": False}
+            "target_segment_seconds": 18 if config.avatar.enabled else None, "policy_version": 2,
+            "implemented": True}
 
 
 def required_roles(config, pipeline_config):
@@ -174,12 +174,11 @@ def ensure_implemented(config, roles):
         field = "config.model_config.avatar" if role == "avatar" else f"config.model_config.stages.{role}"
         cloud_tts = role == 'tts' and stage.mode == 'api' and stage.model in (
             'cosyvoice-v3.5-plus', 'cosyvoice-v3.5-flash', 'cosyvoice-v3-plus', 'cosyvoice-v3-flash', 'cosyvoice-v2')
-        if role not in ("text", "vision") and not cloud_tts and (stage.mode != "local" or stage.model != LOCAL_MODELS[role]):
+        cloud_grounding = role == 'grounding' and stage.mode == 'api' and stage.model == 'qwen3-vl-plus'
+        if role not in ("text", "vision") and not cloud_tts and not cloud_grounding and (stage.mode != "local" or stage.model != LOCAL_MODELS[role]):
             raise ConfigurationError(field, "该模型适配器尚未实现，不允许回退本地", "adapter_not_implemented")
         if role == "tts" and stage.mode == 'local' and stage.parameters.speech_rate != 1.0:
             raise ConfigurationError(field + ".parameters.speech_rate", "当前本地TTS仅支持默认语速", "adapter_not_implemented")
-        if role == "avatar":
-            raise ConfigurationError(field, "数字人严格分段将在P6实现；旧任务路线保持兼容", "adapter_not_implemented")
         if cloud_tts and stage.parameters.speech_rate < 0.5:
             raise ConfigurationError(field + '.parameters.speech_rate', '百炼语速范围为0.5至2')
     if 'tts' in roles and config.stages.tts.mode == 'api' and config.timing.source != 'tts_timestamp':
@@ -191,7 +190,7 @@ def capabilities():
             "implemented": {"compatible_text_vision": True, "local_tts_asr_grounding": True,
                             "independent_text_vision_connections": True, "role_model_parameters": True,
                             "cloud_voices": True, "tts_timestamps": True, "bailian_speech": True,
-                            "bailian_grounding": False, "bailian_avatar": False, "avatar_segmentation": False}}
+                            "bailian_grounding": True, "bailian_avatar": False, "avatar_segmentation": True}}
 
 
 def effective_mode(config, roles):

@@ -1876,6 +1876,7 @@ async def _run_job(job):
     _save_job(job)
 
     env = _job_model_environment(job['config'], keys)
+    env['PAPER2VIDEO_USAGE_DIR'] = _result_dir(job)
     # P1：告诉流水线把结构化进度写到哪里。未设置该环境变量时，
     # 流水线**不生成任何额外文件**（命令行直接跑 pipeline.py 行为完全不变）。
     env["PAPER2VIDEO_PROGRESS_FILE"] = os.path.join(job_dir, "progress.jsonl")
@@ -3060,6 +3061,18 @@ async def api_get_job(job_id: str):
     job = _load_job(job_id)
     job["progress"] = read_progress(job)
     return job
+
+
+@app.get('/api/jobs/{job_id}/model-costs')
+async def api_model_costs(job_id: str):
+    from web.model_costs import summary
+    return summary(_result_dir(_load_job(job_id)))
+
+
+@app.get('/api/model-costs/voices')
+async def api_voice_costs():
+    from web.model_costs import summary
+    return summary(_CLOUD_VOICES.directory)
 
 
 def _sse_frames(job_id, is_disconnected, keepalive):

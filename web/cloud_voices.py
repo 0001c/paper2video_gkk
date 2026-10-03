@@ -133,6 +133,8 @@ class VoiceStore:
             return state['voices'][resource['resource_id']]
 
     def enrollment(self, entry, inputs, parameters=None, client=None):
+        from web import model_costs
+        ticket = model_costs.begin('voice', 'voice-enrollment', native_base(entry), str(self.directory)) if inputs.get('action') == 'create_voice' else None
         owned = client is None
         client = client or httpx.Client(timeout=90, follow_redirects=False)
         try:
@@ -140,13 +142,16 @@ class VoiceStore:
                                    headers={'Authorization': 'Bearer ' + entry['api_key']},
                                    json={'model': 'voice-enrollment', 'input': inputs, 'parameters': parameters or {}}) as response:
                 if response.status_code != 200:
+                    model_costs.finish(ticket, state='rejected')
                     raise ConfigurationError('voice', f'百炼音色接口拒绝请求（HTTP {response.status_code}）', 'voice_request_failed')
                 body = bytearray()
                 for chunk in response.iter_bytes():
                     if len(body) + len(chunk) > 16 * 1024 * 1024:
                         raise ConfigurationError('voice', '音色响应超过大小限制')
                     body.extend(chunk)
-                result = json.loads(body).get('output')
+                response_data = json.loads(body)
+                model_costs.finish(ticket, response_data.get('usage'))
+                result = response_data.get('output')
             if not isinstance(result, dict):
                 raise ConfigurationError('voice', '音色接口响应不完整')
             return result
@@ -253,7 +258,7 @@ class VoiceStore:
         if resource['status'] != 'OK':
             raise ConfigurationError('voice', '请先显式查询音色状态')
         def submit():
-            speech = SpeechClient(entry, entry['api_key'], client)
+            speech = SpeechClient(entry, entry['api_key'], client, str(self.directory), 'voice')
             pcm, timing = speech.synthesize(resource['target_model'], resource['voice_id'], payload.text,
                                            timestamps=resource['kind'] != 'design')
             self.directory.mkdir(parents=True, exist_ok=True)

@@ -886,3 +886,7 @@ video { width: 100%; border-radius: var(--td-radius-default); background: #000; 
 .cloud-voice-panel select { width: 100%; min-height: 38px; padding: 8px; color: var(--paper-ink); background: var(--paper-surface); border: 1px solid var(--paper-rule-strong); border-radius: 4px; }
 .cloud-voice-panel details .field { margin-block: 14px; }
 .cloud-voice-panel audio { width: 100%; max-width: 480px; }
+ .model-costs { margin-block: var(--space-3, 12px); }
+ .model-cost-rows { display: grid; gap: var(--space-2, 8px); margin-block: var(--space-3, 12px); }
+ .model-cost-rows > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-2, 8px); }
+ .model-cost-rows small { flex-basis: 100%; color: var(--paper-ink-faint); overflow-wrap: anywhere; }

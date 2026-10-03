@@ -112,5 +112,16 @@ def create_agent(model_config):
     from camel.agents import ChatAgent
     from camel.models import ModelFactory
     model = ModelFactory.create(model_platform=model_config['model_platform'], model_type=model_config['model_type'],
-                                model_config_dict=model_config.get('model_config'), url=model_config.get('url'), api_key=api_key)
-    return ChatAgent(model=model, system_message='', token_limit=model_config.get('context_window'))
+                                model_config_dict=model_config.get('model_config'), url=model_config.get('url'), api_key=api_key,
+                                **({'max_retries': 0} if model_config.get('provider') == 'bailian' else {}))
+    agent = ChatAgent(model=model, system_message='', token_limit=model_config.get('context_window'))
+    if model_config.get('provider') == 'bailian':
+        from web import model_costs
+        original_step = agent.step
+        def measured_step(*args, **kwargs):
+            ticket = model_costs.begin(model_config['role'], model_config['model_type'], model_config['url'])
+            response = original_step(*args, **kwargs)
+            model_costs.finish(ticket, (getattr(response, 'info', None) or {}).get('usage'))
+            return response
+        agent.step = measured_step
+    return agent

@@ -118,6 +118,7 @@ if __name__ == "__main__":
     cursor_asset, cursor_hotspot = cursor_styles.resolve(args.cursor_style)
     cursor_img_path = str(cursor_asset) if cursor_asset else None
     os.makedirs(args.result_dir, exist_ok=True)
+    os.environ['PAPER2VIDEO_USAGE_DIR'] = os.path.abspath(args.result_dir)
     active_roles = args.required_model_roles if model_snapshot and model_snapshot['model_config_origin'] == 'v2' else ('text', 'vision')
     agent_config_t = get_agent_config(args.model_name_t, 'text', model_snapshot) if 'text' in active_roles else None
     agent_config_v = get_agent_config(args.model_name_v, 'vision', model_snapshot) if 'vision' in active_roles else None
@@ -236,6 +237,7 @@ if __name__ == "__main__":
             ref_audio=args.ref_audio,
             ref_text=args.ref_text,
             language=args.tts_language,
+            model_snapshot=model_snapshot,
         )
         after_tts = time.time()
         time_second["tts"] = [after_tts - after_subtitle]
@@ -258,6 +260,8 @@ if __name__ == "__main__":
             # 分开后将来「中文讲稿配英文参考音频」之类才不会串。
             language=lang["align_language"],
             slide_pdf_path=slide_pdf_path,
+            model_snapshot=model_snapshot,
+            timing_source=model_snapshot['model_config']['timing']['source'] if model_snapshot else 'local_forced_aligner',
         )
         token_usage["cursor"] = cursor_token
         after_cursor = time.time()

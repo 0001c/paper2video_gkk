@@ -581,7 +581,7 @@ def _cleanup_batch_dirs(repo_dir, profile, avatar_ids, env):
 
 
 def talking_gen_per_slide(model_type, input_list, save_dir, gpu_list, env_path,
-                          profile=None):
+                          profile=None, segment_audio=True):
     """使用 MuseTalk 单卡入口逐页生成，批量模式复用模型与人脸缓存。"""
     if model_type != "musetalk":
         raise ValueError("不支持的数字人后端: {}（当前仅支持 musetalk）".format(model_type))
@@ -589,6 +589,36 @@ def talking_gen_per_slide(model_type, input_list, save_dir, gpu_list, env_path,
     resolved = resolve_profile(profile, backend=model_type)
     gpu_ids = list(gpu_list) if gpu_list else [0]
     os.makedirs(save_dir, exist_ok=True)
+
+    from avatar_segments import prepare, stitch, verify_segment
+    if segment_audio:
+        from pathlib import Path
+        from bailian_speech import read_pair, atomic_json
+        results = []
+        for page_index, (reference, audio) in enumerate(input_list):
+            timing = read_pair(audio)[1] if Path(audio).with_suffix('.timing.json').exists() else None
+            manifest = prepare(audio, Path(save_dir) / '.segments' / str(page_index), timing=timing)
+            import hashlib
+            profile_key = hashlib.sha256(json.dumps(resolved, sort_keys=True).encode()).hexdigest()[:16]
+            segment_root = str(Path(manifest['segments'][0]['file']).parent / ('talking_' + profile_key))
+            requests = [(reference, segment['file']) for segment in manifest['segments']]
+            generated = talking_gen_per_slide(model_type, requests, segment_root, gpu_list, env_path, profile, segment_audio=False)
+            if any(not item[1] for item in generated):
+                raise ValueError('数字人片段生成失败，停止合片')
+            videos = [_target_paths(segment_root, index, reference)[1] for index in range(len(requests))]
+            target_dir, target = _target_paths(save_dir, page_index, reference)
+            stamp_path = Path(target_dir) / 'segments.json'
+            stamp = {'identity': manifest['identity'], 'reference': _inputs_fingerprint(reference, audio), 'profile': resolved}
+            saved = json.loads(stamp_path.read_text(encoding='utf-8')) if stamp_path.exists() else None
+            if not path.exists(target) or saved != stamp:
+                Path(target_dir).mkdir(parents=True, exist_ok=True)
+                stitch(videos, manifest, audio, target)
+                _write_inputs_stamp(target_dir, reference, audio)
+                atomic_json(stamp_path, stamp)
+            results.append((page_index, True, target))
+        return results
+    for reference, audio in input_list:
+        verify_segment(audio)
 
     tasks = []
     for idx, (ref_img_path, audio_path) in enumerate(input_list):

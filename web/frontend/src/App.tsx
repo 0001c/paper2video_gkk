@@ -9,6 +9,7 @@ import { ThemeToggle } from "./ThemeToggle";
 import { ModelSettings } from "./ModelSettings";
 import { CloudVoicePanel, type CloudVoice } from "./CloudVoicePanel";
 import { TaskModelSettings } from "./TaskModelSettings";
+import { ModelCosts } from './ModelCosts';
 import { migratedConfig, presetConfig, roles, roleStage, taskModelPayload, type Connection, type ModelConfig, type ModelOptions } from "./modelConfig";
 import { CursorPicker, type CursorOption } from "./CursorPicker";
 import { Help, Section } from './Section';
@@ -1547,6 +1548,7 @@ export default function App() {
           ) : null}
         </div>
         {jobId && !job && !streamError && <p role="status">正在读取任务详情…</p>}
+        {job && <ModelCosts url={`/api/jobs/${job.id}/model-costs`} />}
         {streamError && <div className="notice err" role="alert"><span>{streamError}，请到任务记录选择其他任务。</span></div>}
         {streamState === "retrying" && !job && <div className="notice warn">连接失败，正在重试。请检查服务是否运行。</div>}
         {job?.config && (

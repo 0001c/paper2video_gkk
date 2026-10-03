@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Button } from "tdesign-react";
 import { api, errorMessage, runExclusive } from "./flow";
 import type { Stage } from "./modelConfig";
+import { ModelCosts } from './ModelCosts';
 
 export type CloudVoice = { resource_id: string; voice_id: string; label: string; target_model: string; sample_url?: string;
   scope_id: string; kind: string; status: string; timestamp_status: string };
@@ -100,5 +101,6 @@ export function CloudVoicePanel({ stage, value, onChange }: {
       <Button variant="outline" disabled={busy || !prompt.trim() || !stage.connection_id || stage.model === "cosyvoice-v2"} onClick={() => generate("design")}>创建设计音色（可能计费，仅试听）</Button>
     </details>
     {message && <p className="notice warn" role="status">{message}</p>}
+    <ModelCosts url="/api/model-costs/voices" title="音色管理累计费用估算（非本任务独占）" />
   </div>;
 }

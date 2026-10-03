@@ -62,7 +62,7 @@ def candidate(record, role, provider, today=None):
         return None
     speech = role == 'tts' and 'native' in record['sources'] and record['id'] in (
         'cosyvoice-v3.5-plus', 'cosyvoice-v3.5-flash', 'cosyvoice-v3-plus', 'cosyvoice-v3-flash', 'cosyvoice-v2')
-    implemented = (role in ('text', 'vision') and compatible) or speech
+    implemented = (role in ('text', 'vision', 'grounding') and compatible) or speech
     offline = record['offline_time']
     status = 'active'
     if offline:
@@ -251,5 +251,5 @@ class CatalogStore:
 
 def options():
     return {'presets': ['bailian_api', 'local_existing', 'custom'], 'recommended_models': RECOMMENDED,
-            'local_models': {role: {'provider': values[0], 'model': values[1], 'implemented': role != 'avatar'} for role, values in LOCAL.items()},
+            'local_models': {role: {'provider': values[0], 'model': values[1], 'implemented': True} for role, values in LOCAL.items()},
             'roles': list(ROLES), 'catalog_verification': 'catalog_only'}

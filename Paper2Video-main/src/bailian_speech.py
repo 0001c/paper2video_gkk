@@ -49,6 +49,12 @@ def plain_text(text):
                    if character.isalnum())
 
 
+def word_identity(word):
+    if type(word.get('begin_index')) is int and type(word.get('end_index')) is int:
+        return word['begin_index'], word['end_index'], word['text']
+    return word['begin_time'], word['text']
+
+
 def validate_timing(timing, pcm, text):
     duration = len(pcm) / (2 * SAMPLE_RATE)
     words = [word for segment in timing.get('segments', []) for word in segment.get('words', [])]
@@ -65,12 +71,14 @@ def validate_timing(timing, pcm, text):
 
 
 class SpeechClient:
-    def __init__(self, connection, api_key, client=None):
+    def __init__(self, connection, api_key, client=None, usage_directory=None, usage_role='tts'):
         self.base = native_base(connection)
         if not api_key:
             raise ConfigurationError('connection_id', '百炼语音凭据失效', 'connection_expired', 409)
         self.api_key = api_key
         self.client = client
+        self.usage_directory = usage_directory
+        self.usage_role = usage_role
 
     def synthesize(self, model, voice_id, text, rate=1.0, language='zh', timestamps=True):
         if model not in MODELS or not 0.5 <= rate <= 2 or not text.strip() or len(text) > MAX_CHUNK_CHARACTERS:
@@ -80,10 +88,14 @@ class SpeechClient:
         if language in ('zh', 'en'):
             payload['input']['language_hints'] = [language]
         client = self.client or httpx.Client(timeout=httpx.Timeout(180, connect=20), follow_redirects=False)
+        from web import model_costs
+        ticket = model_costs.begin(self.usage_role, model, self.base, self.usage_directory)
+        usage = {}
         try:
             with client.stream('POST', self.base + '/services/audio/tts/SpeechSynthesizer',
                                headers={'Authorization': 'Bearer ' + self.api_key, 'X-DashScope-SSE': 'enable'}, json=payload) as response:
                 if response.status_code != 200:
+                    model_costs.finish(ticket, state='rejected')
                     raise ValueError('百炼配音请求被拒绝（HTTP {}）；未自动重试'.format(response.status_code))
                 pcm, sentences, finished = bytearray(), {}, False
                 pending = []
@@ -104,6 +116,7 @@ class SpeechClient:
                     if event.get('code'):
                         raise ValueError('百炼配音返回错误；未自动重试')
                     output = event.get('output') or {}
+                    usage.update(event.get('usage') or {})
                     encoded = (output.get('audio') or {}).get('data')
                     if encoded:
                         pcm.extend(base64.b64decode(encoded, validate=True))
@@ -113,13 +126,14 @@ class SpeechClient:
                     if sentence.get('words'):
                         words = sentences.setdefault(sentence['index'], {})
                         for word in sentence['words']:
-                            identity = (word.get('begin_index'), word.get('end_index'), word['begin_time'], word['end_time'], word['text'])
+                            identity = word_identity(word)
                             words[identity] = word
                     finished = finished or output.get('finish_reason') == 'stop'
                 if pending or not finished or not pcm or len(pcm) % 2:
                     raise ValueError('云配音流不完整；受理状态可能未知，禁止自动重试')
                 timing = {'segments': [{'words': [{'word': word['text'], 'start': word['begin_time'] / 1000,
                            'end': word['end_time'] / 1000} for word in sorted(sentences[index].values(), key=lambda value: (value['begin_time'], value['end_time']))]} for index in sorted(sentences)]}
+                model_costs.finish(ticket, usage if 'characters' in usage else {'characters': len(text)}, source='provider' if 'characters' in usage else 'submitted_text_estimate')
                 if timestamps:
                     validate_timing(timing, pcm, text)
                 return bytes(pcm), timing

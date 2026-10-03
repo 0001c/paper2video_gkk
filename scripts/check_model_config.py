@@ -45,7 +45,7 @@ def main():
         assert derived_policy(config)['max_segment_seconds_exclusive'] is None
         config.avatar.enabled = True
         assert derived_policy(config)['max_segment_seconds_exclusive'] == 20
-        expect_error(lambda: ensure_implemented(config, ['avatar']), ConfigurationError)
+        ensure_implemented(config, ['avatar'])
         config.avatar.enabled = False
         assert required_roles(config, {'stages': ['2'], 'reuse_script': True, 'require_reuse_script': True}) == ['grounding', 'tts']
         roles = ['text', 'vision']

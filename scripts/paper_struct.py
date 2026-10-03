@@ -186,7 +186,10 @@ def call_llm(system_prompt, user_prompt, model=None, max_tokens=None,
         max_tokens = int(os.environ.get('PAPER2VIDEO_MAX_TOKENS') or '65536')
 
     started = time.time()
-    with OpenAI(api_key=api_key, base_url=base_url or None, timeout=timeout) as client:
+    from web import model_costs
+    ticket = model_costs.begin('text', model, base_url) if settings and settings.get('provider') == 'bailian' else None
+    with OpenAI(api_key=api_key, base_url=base_url or None, timeout=timeout,
+                **({'max_retries': 0} if settings and settings.get('provider') == 'bailian' else {})) as client:
         resp = client.chat.completions.create(
             model=model,
             messages=[{"role": "system", "content": system_prompt},
@@ -205,6 +208,7 @@ def call_llm(system_prompt, user_prompt, model=None, max_tokens=None,
             "completion_tokens": resp.usage.completion_tokens,
             "total_tokens": resp.usage.total_tokens,
         }
+    model_costs.finish(ticket, usage)
 
     # 推理模型：思维链可能单独放在 reasoning_content 里，不能当成正文
     reasoning = getattr(choice.message, "reasoning_content", None)

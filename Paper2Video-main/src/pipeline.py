@@ -218,6 +218,7 @@ if __name__ == '__main__':
     cursor_asset, cursor_hotspot = cursor_styles.resolve(args.cursor_style)
     cursor_img_path = str(cursor_asset) if cursor_asset else None
     os.makedirs(args.result_dir, exist_ok=True) # result dir
+    os.environ['PAPER2VIDEO_USAGE_DIR'] = os.path.abspath(args.result_dir)
     import course
     course_plan = course.read_json(args.course_plan) if args.course_plan else None
     if args.course_plan and not course_plan:
@@ -419,7 +420,7 @@ if __name__ == '__main__':
         cursor_token = cursor_gen_per_sentence(script_path=subtitle_cursor_save_path, slide_img_dir=slide_image_dir, 
                                 slide_audio_dir=speech_save_dir, cursor_save_path=cursor_save_path, gpu_list=args.gpu_list,
                                 language=lang["align_language"], slide_pdf_path=slide_pdf_path,
-                                resume_cache=True, timing_source=model_snapshot['model_config']['timing']['source'] if model_snapshot else 'local_forced_aligner')
+                                resume_cache=True, timing_source=model_snapshot['model_config']['timing']['source'] if model_snapshot else 'local_forced_aligner', model_snapshot=model_snapshot)
         if course_plan:
             course.export_chapters(course_plan, args.result_dir)
         token_usage["cursor"] = cursor_token

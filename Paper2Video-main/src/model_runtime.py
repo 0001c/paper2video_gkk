@@ -84,5 +84,6 @@ def role_settings(snapshot, role):
     if stage.provider == 'bailian' and stage.model in ('qwen3.8-flash', 'qwen3.8-max', 'qwen3-vl-plus'):
         parameters['extra_body'] = {'enable_thinking': False}
     return {'model_type': stage.model, 'url': connection['compatible_base_url'], 'api_key_env': key_env,
+            'role': role, 'provider': stage.provider,
             'model_config': parameters, 'connection_id': stage.connection_id, 'scope_id': connection.get('scope_id'),
             'context_window': limits.get('context_window')}

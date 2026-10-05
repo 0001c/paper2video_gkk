@@ -22,8 +22,12 @@
 import os
 import json
 import subprocess
+import shutil
+import tempfile
+import unicodedata
 
 import pv_env
+import subtitle_style
 
 # libass 通过字体名向系统要字体，这里给跨平台候选
 DEFAULT_FONT = "Microsoft YaHei" if os.name == "nt" else "DejaVu Sans"
@@ -75,39 +79,79 @@ def _load_segments(cursor_json_path):
     return segments
 
 
-def _write_ass(segments, ass_path, width, height, font_size, font_name):
+def _wrap_text(text, width, font_size):
+    capacity = max(1, width / font_size * 0.85)
+    lines = []
+    for paragraph in str(text).replace('\r\n', '\n').replace('\r', '\n').split('\n'):
+        line, used = '', 0.0
+        for char in paragraph:
+            units = 0 if unicodedata.combining(char) else 1
+            if line and used + units > capacity:
+                split = line.rfind(' ')
+                if split > len(line) // 2:
+                    lines.append(line[:split])
+                    line = line[split + 1:]
+                    used = sum(not unicodedata.combining(item) for item in line)
+                else:
+                    lines.append(line)
+                    line, used = '', 0.0
+            line += char
+            used += units
+        lines.append(line)
+    return '\n'.join(lines)
+
+
+def _ass_color(color, opacity=1):
+    return '&H{:02X}{}{}{}'.format(round((1 - opacity) * 255), color[5:7], color[3:5], color[1:3])
+
+
+def _write_ass(segments, ass_path, width, height, font_size, font_name, style=None):
     """生成 ASS 字幕文件。"""
-    margin_v = max(10, int(font_size))          # 距底部留白
+    style = subtitle_style.normalize(style)
+    margin_v = max(10, round(height * style['margin_bottom'] / 100))
+    margin_h = max(10, round(width * style['margin_horizontal'] / 100))
     outline = max(1, int(font_size // 16))      # 描边宽度
+    background = _ass_color(style['background_color'], style['background_opacity'])
+    border_style = 3 if style['background_opacity'] > 0 else 1
+    outline_color = background if border_style == 3 else '&H00000000'
 
     header = """[Script Info]
 ScriptType: v4.00+
 PlayResX: {w}
 PlayResY: {h}
-WrapStyle: 2
+WrapStyle: 0
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{font},{size},&H00FFFFFF,&H000000FF,&H00000000,&H78000000,0,0,0,0,100,100,0,0,3,{outline},0,2,20,20,{mv},1
+Style: Default,{font},{size},{primary},&H000000FF,{outline_color},{background},0,0,0,0,100,100,0,0,{border_style},{outline},0,2,{mh},{mh},{mv},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """.format(w=width, h=height, font=font_name, size=int(font_size),
-           outline=outline, mv=margin_v)
+           outline=outline, mv=margin_v, mh=margin_h, primary=_ass_color(style['text_color']),
+           outline_color=outline_color, background=background, border_style=border_style)
 
     lines = [header]
     for seg in segments:
+        event_size = int(font_size)
+        wrapped = _wrap_text(seg['text'], width - 2 * margin_h, event_size)
+        while (wrapped.count('\n') + 1) * event_size * 1.4 > height - 2 * margin_v and event_size > 8:
+            event_size -= 1
+            wrapped = _wrap_text(seg['text'], width - 2 * margin_h, event_size)
+        if (wrapped.count('\n') + 1) * event_size * 1.4 > height - 2 * margin_v:
+            raise ValueError('字幕段落过长，无法在画面内完整显示，请先拆分讲稿段落')
+        override = r'{\fs' + str(event_size) + '}' if event_size != int(font_size) else ''
         lines.append("Dialogue: 0,{},{},Default,,0,0,0,,{}".format(
             _ass_timestamp(seg["start"]), _ass_timestamp(seg["end"]),
-            _escape_ass_text(seg["text"])))
+            override + _escape_ass_text(wrapped)))
 
     with open(ass_path, "w", encoding="utf-8-sig") as handle:
         handle.write("\n".join(lines) + "\n")
 
 
-def add_subtitles(video_path, output_path, font_size,
-                  cursor_json_path=None, font_name=None):
+def add_subtitles(video_path, output_path, font_size=None,
+                  cursor_json_path=None, font_name=None, style=None):
     """把字幕烧录进视频。
 
     参数
@@ -116,6 +160,11 @@ def add_subtitles(video_path, output_path, font_size,
         不传时会尝试与视频同目录的 ``cursor.json``。
     font_name : libass 字体名，默认 Windows 用微软雅黑。
     """
+    configured = style is not None
+    style = subtitle_style.normalize(style)
+    if not style['enabled']:
+        shutil.copyfile(video_path, output_path)
+        return output_path
     if cursor_json_path is None:
         candidate = os.path.join(os.path.dirname(os.path.abspath(video_path)), "cursor.json")
         if os.path.isfile(candidate):
@@ -128,16 +177,19 @@ def add_subtitles(video_path, output_path, font_size,
     segments = _load_segments(cursor_json_path)
     if not segments:
         print("[subtitle_render] cursor.json 中没有可用的字幕段落，跳过")
-        return video_path
+        shutil.copyfile(video_path, output_path)
+        return output_path
 
     width, height = _probe_resolution(video_path)
+    font_size = max(1, round(style['font_size'] * height / 1080)) if configured or font_size is None else font_size
+    font_name = style['font_name'] or font_name or DEFAULT_FONT
     print("[subtitle_render] 视频 {}x{}，字幕 {} 条，字号 {}".format(
         width, height, len(segments), font_size))
 
     # ASS 必须落在纯英文目录：ffmpeg 的 ass 滤镜在 Windows 上无法解析中文路径
     os.makedirs(pv_env.TMP_DIR, exist_ok=True)
-    ass_path = os.path.join(pv_env.TMP_DIR, "paper2video_subtitle.ass")
-    _write_ass(segments, ass_path, width, height, font_size, font_name or DEFAULT_FONT)
+    descriptor, ass_path = tempfile.mkstemp(prefix='p2v_subtitle_', suffix='.ass', dir=pv_env.TMP_DIR)
+    os.close(descriptor)
 
     # 以 cwd + 纯文件名引用，彻底绕开路径转义问题（冒号、反斜杠在滤镜串里都要转义）
     cmd = [
@@ -148,7 +200,11 @@ def add_subtitles(video_path, output_path, font_size,
         "-c:a", "copy",
         str(os.path.abspath(output_path)),
     ]
-    result = subprocess.run(cmd, cwd=pv_env.TMP_DIR, capture_output=True, text=True)
+    try:
+        _write_ass(segments, ass_path, width, height, font_size, font_name, style)
+        result = subprocess.run(cmd, cwd=pv_env.TMP_DIR, capture_output=True, text=True)
+    finally:
+        os.remove(ass_path)
     if result.returncode != 0:
         raise RuntimeError("字幕烧录失败:\n{}".format(result.stderr[-1500:]))
 

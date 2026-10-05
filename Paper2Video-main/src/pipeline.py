@@ -37,6 +37,7 @@ from pdf_render import render_pdf_to_images
 
 from speech_gen import tts_per_slide
 from subtitle_render import add_subtitles
+import subtitle_style
 from talking_gen import talking_gen_per_slide
 from merge_talking import merge_slides_and_talking
 from merge_video import merge_slides_and_audio
@@ -177,6 +178,7 @@ if __name__ == '__main__':
     parser.add_argument('--script_generation_id', type=str, default=None, help='同一次讲稿重写/恢复的缓存标识')
     parser.add_argument('--cursor_style', choices=tuple(cursor_styles.STYLES), default=cursor_styles.DEFAULT)
     parser.add_argument('--cursor_scale', type=float, choices=(0.75, 1, 1.5), default=1)
+    parser.add_argument('--subtitle-style', default=None, help='字幕样式JSON；字号按1080p缩放，默认自动换行')
     parser.add_argument('--review_before_render', type=str2bool, default=False)
     parser.add_argument('--regenerate_pages', type=str, default=None, help='课程局部重写的零基页索引 JSON')
     parser.add_argument('--require_reuse_script', type=str2bool, default=False,
@@ -191,6 +193,7 @@ if __name__ == '__main__':
     # talking-head: 3: 
     # all: 0
     args = parser.parse_args()
+    args.subtitle_style = subtitle_style.normalize(json.loads(args.subtitle_style) if args.subtitle_style else None)
     model_snapshot = apply_model_snapshot(args)
     stage = json.loads(args.stage)
     print("start", "stage:", stage, args.gpu_list)
@@ -491,10 +494,9 @@ if __name__ == '__main__':
                                         json_path=cursor_save_path, cursor_img_path=cursor_img_path, 
                                         transition_duration=0.1, cursor_size=cursor_size, cursor_hotspot=cursor_hotspot)
         # render subtitle
-        front_size = size//10
         tmp_merage_3 = path.join(args.result_dir, "3_merage.mp4")
         add_subtitles(tmp_merage_2, tmp_merage_3, size//10,
-                      font_name=lang["subtitle_font"])
+                      font_name=lang["subtitle_font"], style=args.subtitle_style)
         if course_plan:
             course.embed_chapters(course_plan, args.result_dir)
         step5_time =  time.time()

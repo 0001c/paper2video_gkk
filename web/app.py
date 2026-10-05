@@ -70,6 +70,7 @@ import artifact_cache                                     # noqa: E402
 import paper_figures                                      # noqa: E402
 import course                                             # noqa: E402
 import cursor_styles                                      # noqa: E402
+import subtitle_style
 from script_validation import validate_script_output      # noqa: E402
 
 os.makedirs(JOBS_ROOT, exist_ok=True)
@@ -204,6 +205,7 @@ class ReviewRunRequest(ReviewRequest):
     script_concurrency: int | None = Field(default=None, ge=1, le=8)
     cursor_style: str | None = Field(default=None, max_length=50)
     cursor_scale: float | None = None
+    subtitle_style: dict | None = None
     model_options: model_settings.PipelineModelConfig | None = Field(default=None, alias="model_config")
 
 
@@ -353,7 +355,7 @@ async def api_run_review(job_id: str, payload: ReviewRunRequest, request: Reques
         for field in ('text_model', 'vision_model'):
             if getattr(payload, field) is not None:
                 checked[field] = getattr(payload, field)
-        for field in ('cursor_style', 'cursor_scale'):
+        for field in ('cursor_style', 'cursor_scale', 'subtitle_style'):
             if getattr(payload, field) is not None:
                 checked[field] = getattr(payload, field)
         _normalize_models(checked)
@@ -378,6 +380,7 @@ async def api_run_review(job_id: str, payload: ReviewRunRequest, request: Reques
             "text_model": payload.text_model, "vision_model": payload.vision_model,
             "script_concurrency": payload.script_concurrency,
             "cursor_style": payload.cursor_style, "cursor_scale": payload.cursor_scale,
+            "subtitle_style": payload.subtitle_style,
             "voice": payload.voice.model_dump(exclude_none=True) if payload.voice else None,
             "model_config": payload.model_options.public_dict() if payload.model_options else None})
         return response
@@ -510,6 +513,7 @@ def _normalize_models(config):
                       generate_talking=normalized.avatar.enabled)
     try:
         cursor_styles.normalize(config)
+        config['subtitle_style'] = subtitle_style.normalize(config.get('subtitle_style'))
     except ValueError as exc:
         raise HTTPException(422, detail=str(exc))
     for field, env in (('text_model', 'PAPER2VIDEO_LLM_MODEL'), ('vision_model', 'PAPER2VIDEO_VLM_MODEL')):
@@ -1614,6 +1618,7 @@ def _build_argv(job):
         "--script_concurrency", str(cfg.get('script_concurrency', 3)),
         "--cursor_style", cfg.get('cursor_style', cursor_styles.DEFAULT),
         "--cursor_scale", str(cfg.get('cursor_scale', 1)),
+        "--subtitle-style", json.dumps(subtitle_style.normalize(cfg.get('subtitle_style')), ensure_ascii=False),
         "--talking_profile", cfg.get("talking_profile", "musetalk-local"),
         "--gpu_list", "0",
         # 必须显式传：上游 argparse 的默认值是 True，不传就等于每篇都开。
@@ -2958,7 +2963,7 @@ async def api_rerun_job(job_id: str, payload: dict):
     config = copy.deepcopy(src_job.get("config") or {})
     if payload.get('model_config') is not None:
         config['model_config'] = payload['model_config']
-    for field in ('text_model', 'vision_model', 'script_concurrency', 'cursor_style', 'cursor_scale'):
+    for field in ('text_model', 'vision_model', 'script_concurrency', 'cursor_style', 'cursor_scale', 'subtitle_style'):
         if payload.get(field) is not None:
             config[field] = payload[field]
     _normalize_models(config)
@@ -3124,7 +3129,7 @@ def _sse_frames(job_id, is_disconnected, keepalive):
                 "resumed_from": job.get("resumed_from"),
                 "config": {key: (job.get("config") or {}).get(key) for key in (
                     "generate_talking", "content_profile", "slide_lang", "script_lang",
-                    "slide_count", "voice_note", "talking_note", "review_before_render", "target_minutes")},
+                    "slide_count", "voice_note", "talking_note", "review_before_render", "target_minutes", "subtitle_style")},
             }
             body = json.dumps(payload, ensure_ascii=False)
             if body != last:                       # 只在变化时推，减少噪音

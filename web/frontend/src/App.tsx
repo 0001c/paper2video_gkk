@@ -12,6 +12,8 @@ import { TaskModelSettings } from "./TaskModelSettings";
 import { ModelCosts } from './ModelCosts';
 import { migratedConfig, presetConfig, roles, roleStage, taskModelPayload, type Connection, type ModelConfig, type ModelOptions } from "./modelConfig";
 import { CursorPicker, type CursorOption } from "./CursorPicker";
+import { SubtitleSettings } from "./SubtitleSettings";
+import { defaultSubtitleStyle, readSubtitleStyle, type SubtitleStyle } from "./subtitleStyle";
 import { Help, Section } from './Section';
 
 /* ─────────────────────────────────────────────────────────────
@@ -192,7 +194,7 @@ type Job = {
   config?: { generate_talking?: boolean; content_profile?: string; slide_lang?: string;
     script_lang?: string; slide_count?: number; voice_note?: string; talking_note?: string;
     review_before_render?: boolean; target_minutes?: number | null; text_model?: string; vision_model?: string; script_concurrency?: number;
-    cursor_style?: string; cursor_scale?: number; model_config?: ModelConfig; model_config_origin?: string;
+    cursor_style?: string; cursor_scale?: number; subtitle_style?: SubtitleStyle; model_config?: ModelConfig; model_config_origin?: string;
     voice?: VoiceSpec; voice_resource?: CloudVoice;
     model_connections?: Record<string, { label?: string; scope_id: string; provider: string; compatible_base_url: string; catalog_time?: string; catalog_source?: string }>; portrait_path?: string };
 };
@@ -442,6 +444,8 @@ export default function App() {
   const [scriptConcurrency, setScriptConcurrency] = useState(initialDraft.scriptConcurrency ?? 3);
   const [cursorStyle, setCursorStyle] = useState(initialDraft.cursorStyle ?? 'laser-red');
   const [cursorScale, setCursorScale] = useState(initialDraft.cursorScale ?? 1);
+  const [subtitleStyle, setSubtitleStyle] = useState<SubtitleStyle>(initialDraft.subtitleStyle ?? { ...defaultSubtitleStyle });
+  const [taskSubtitleOverride, setTaskSubtitleOverride] = useState<{ jobId: string; value: SubtitleStyle } | null>(null);
   useEffect(() => {
     if (opts?.cursors?.length && !opts.cursors.some((item) => item.value === cursorStyle)) setCursorStyle('laser-red');
   }, [opts?.cursors, cursorStyle]);
@@ -659,10 +663,10 @@ export default function App() {
       presetSpec: presetPick ? JSON.stringify(presetPick.spec) : initialDraft.presetSpec || "",
       designPrompt, uploadText, paperName: paperFile?.name || initialDraft.paperName || "",
       portraitName: portraitFile?.name || initialDraft.portraitName || "",
-      courseEnabled, courseSettings: JSON.stringify(courseSettings), textModel, visionModel, scriptConcurrency, cursorStyle, cursorScale });
+      courseEnabled, courseSettings: JSON.stringify(courseSettings), textModel, visionModel, scriptConcurrency, cursorStyle, cursorScale, subtitleStyle });
   }, [preset, slideLang, scriptLang, contentProfile, scriptPrompt, slidePrompt,
     promptTemplate, slidePromptTemplate, slideCount, generateTalking, ifTreeSearch, voiceMode,
-    presetPick, designPrompt, uploadText, paperFile, portraitFile, initialDraft, courseEnabled, courseSettings, textModel, visionModel, scriptConcurrency, cursorStyle, cursorScale, modelConfig]);
+    presetPick, designPrompt, uploadText, paperFile, portraitFile, initialDraft, courseEnabled, courseSettings, textModel, visionModel, scriptConcurrency, cursorStyle, cursorScale, subtitleStyle, modelConfig]);
 
   const doIngest = useCallback(async () => runExclusive(ingestLock, setIngesting, async () => {
     if (!paperFile) return MessagePlugin.warning("请先选择内容文件");
@@ -740,6 +744,7 @@ export default function App() {
         script_concurrency: scriptConcurrency,
         cursor_style: cursorStyle,
         cursor_scale: cursorScale,
+        subtitle_style: subtitleStyle,
         stages: ["1", "2", "3"],
         slide_lang: slideLang,
         script_lang: scriptLang,
@@ -770,7 +775,7 @@ export default function App() {
   }, reportError), [ingest, portraitFile, generateTalking, apiKey, apiBase, slideLang, scriptLang,
       contentProfile, scriptPrompt, slidePrompt, slideCount, opts, ifTreeSearch,
       voiceMode, presetPick, designPrompt, uploadSpec, uploadText, voiceSpecNow, selectJob,
-      courseEnabled, coursePlan, courseSettings, textModel, visionModel, scriptConcurrency, cursorStyle, cursorScale, modelConfig]);
+      courseEnabled, coursePlan, courseSettings, textModel, visionModel, scriptConcurrency, cursorStyle, cursorScale, subtitleStyle, modelConfig]);
 
   // 任务列表：每 5 秒刷新。本地工具，这点开销可以忽略，
   // 换来的是"后端重启前留下的任务也能看到最新状态"。
@@ -837,10 +842,10 @@ export default function App() {
 
   const prepareRerun = useCallback(async (id: string) => runExclusive(rerunLock, setRerunning, async () => {
     const [plan, source] = await Promise.all([api.get(`/api/jobs/${id}/rerun-plan`), api.get(`/api/jobs/${id}`)]);
-    plan.model_source = { ...source.config, ...(taskOverride?.jobId === id ? { model_config: taskOverride.value } : {}), ...(taskVoiceOverride?.jobId === id ? { voice: taskVoiceOverride.voice } : {}) };
+    plan.model_source = { ...source.config, ...(taskOverride?.jobId === id ? { model_config: taskOverride.value } : {}), ...(taskVoiceOverride?.jobId === id ? { voice: taskVoiceOverride.voice } : {}), ...(taskSubtitleOverride?.jobId === id ? { subtitle_style: taskSubtitleOverride.value } : {}) };
     setRegenerateScript(false);
     setRerunPlan(plan);
-  }, reportError), [taskOverride, taskVoiceOverride]);
+  }, reportError), [taskOverride, taskVoiceOverride, taskSubtitleOverride]);
 
   const retryPreparation = () => runExclusive(rerunLock, setRerunning, async () => {
     if (!job || !window.confirm("继续准备课件与讲稿可能调用生成接口。已完成的课程讲稿页会复用，是否继续？")) return;
@@ -852,6 +857,7 @@ export default function App() {
     if (!rerunPlan) return;
     const { status, data } = await api.post(`/api/jobs/${rerunPlan.job_id}/rerun`, {
       ...taskModelPayload(rerunPlan.model_source, apiKey, apiBase),
+      subtitle_style: rerunPlan.model_source?.subtitle_style,
       plan_token: rerunPlan.token,
       reuse_script: !regenerateScript,
       require_reuse_script: !regenerateScript,
@@ -895,6 +901,7 @@ export default function App() {
   const p = job?.progress;
   const pct = job?.status === "done" ? 100 : p?.overall_pct ?? legacyPct(p);
   const showTalkingPhase = job?.config?.generate_talking ?? (generateTalking && !!portraitFile);
+  const taskSubtitleStyle = (taskSubtitleOverride?.jobId === job?.id ? taskSubtitleOverride?.value : readSubtitleStyle(job?.config?.subtitle_style)) ?? defaultSubtitleStyle;
   const phases: Phase[] = (opts?.phases ?? []).filter(
     (phase) => showTalkingPhase || phase.key !== "talking",
   );
@@ -1053,7 +1060,7 @@ export default function App() {
           {[
             ['material', '01', '素材'], ['language', '02', '语言与内容'],
             ...(courseEnabled ? [['teaching', '03', '教学范围']] : []),
-            ['voice', '04', '音色'], ['cursor', '05', '视频光标'], ['credentials', '06', '接口与模型'], ['prepare', '07', '生成与审核'],
+            ['voice', '04', '音色'], ['cursor', '05', '光标与字幕'], ['credentials', '06', '接口与模型'], ['prepare', '07', '生成与审核'],
           ].map(([anchor, number, title]) => <a key={anchor} href={'#' + anchor} onClick={(event) => {
             if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
             const section = document.getElementById(anchor);
@@ -1497,8 +1504,9 @@ export default function App() {
         </div>
       </Section>
 
-      <Section anchor="cursor" number="06" title="视频光标" summary={opts?.cursors?.find((item) => item.value === cursorStyle)?.label ?? '红色光点'} help="选择随讲解指向目标的视觉标记，可在审核界面再次调整。不同样式只改变最终画面，未变化的讲稿与配音可复用。">
+      <Section anchor="cursor" number="06" title="光标与字幕" summary={opts?.cursors?.find((item) => item.value === cursorStyle)?.label ?? '红色光点'} help="选择视频光标与字幕样式，可在任务详情和审核合片前调整。只改变最终画面，不改变讲稿或音频。">
         <CursorPicker options={opts?.cursors ?? []} style={cursorStyle} scale={cursorScale} onStyle={setCursorStyle} onScale={setCursorScale} />
+        <SubtitleSettings value={subtitleStyle} onChange={setSubtitleStyle} />
       </Section>
 
       </fieldset>
@@ -1562,6 +1570,8 @@ export default function App() {
           </p>
         )}
         {filesError && <div className="notice err" role="alert"><span>产物读取失败：{filesError}</span><Button variant="outline" onClick={() => setFilesVersion((value) => value + 1)}>重试读取</Button></div>}
+        {job && <SubtitleSettings value={taskSubtitleStyle} disabled={!!running} onChange={(value) => setTaskSubtitleOverride({ jobId: job.id, value })} />}
+        {job && !running && <p className="hint">字幕样式修改将用于下一次审核合片或续跑，不会立即改变已有视频。</p>}
         {job?.config?.model_config_origin === "v2" && job.config.model_config && taskModels && <TaskModelSettings key={job.id}
           jobId={job.id} snapshot={job.config.model_config} value={taskModels} connections={job.config.model_connections} options={opts?.model_configuration}
           voice={taskVoice} voiceResource={taskVoiceResource} onVoice={(resource) => setTaskVoiceOverride({ jobId: job.id, voice: resource ? { kind: 'cloud', resource_id: resource.resource_id } : { kind: 'default' }, resource })}
@@ -1573,7 +1583,7 @@ export default function App() {
           <Button variant="text" onClick={() => { setApiKey(""); setApiBase(""); }}>清空本次凭据</Button>
         </details>}
         {job && !running && visiblePages?.pages?.length > 0 && <ReviewPanel key={job.id} jobId={job.id} apiKey={apiKey} apiBase={apiBase}
-          modelConfig={taskModels} modelOrigin={job.config?.model_config_origin} voice={taskVoice} concurrency={job.config?.script_concurrency ?? 3} cursors={opts?.cursors ?? []} cursorStyle={job.config?.cursor_style ?? 'classic-red'} cursorScale={job.config?.cursor_scale ?? 1} onJob={selectJob} onSaved={() => setFilesVersion((v) => v + 1)} />}
+          modelConfig={taskModels} modelOrigin={job.config?.model_config_origin} voice={taskVoice} subtitleStyle={taskSubtitleStyle} concurrency={job.config?.script_concurrency ?? 3} cursors={opts?.cursors ?? []} cursorStyle={job.config?.cursor_style ?? 'classic-red'} cursorScale={job.config?.cursor_scale ?? 1} onJob={selectJob} onSaved={() => setFilesVersion((v) => v + 1)} />}
 
         {job && (
           <div style={{ marginTop: 18 }}>

@@ -1,4 +1,5 @@
 import { readModelConfig, type ModelConfig } from "./modelConfig";
+import { readSubtitleStyle, type SubtitleStyle } from "./subtitleStyle";
 
 const NS = "p2v";
 
@@ -103,6 +104,7 @@ export type Draft = {
   scriptConcurrency?: number;
   cursorStyle?: string;
   cursorScale?: number;
+  subtitleStyle?: SubtitleStyle;
 };
 
 export function loadDraft(): Partial<Draft> {
@@ -111,6 +113,8 @@ export function loadDraft(): Partial<Draft> {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
     const draft: Record<string, unknown> = {};
     const modelConfig = readModelConfig(raw.model_config);
+    const subtitleStyle = readSubtitleStyle(raw.subtitleStyle);
+    if (subtitleStyle) draft.subtitleStyle = subtitleStyle;
     if (modelConfig) { draft.schema_version = 2; draft.model_config = modelConfig; }
     for (const key of ["preset", "scriptPrompt", "slidePrompt", "scriptTemplate", "slideTemplate",
       "presetSpec", "designPrompt", "uploadText", "paperName", "portraitName", "courseSettings", "textModel", "visionModel", "cursorStyle"]) {
@@ -141,6 +145,7 @@ export function saveDraft(draft: Draft) {
     "courseEnabled", "courseSettings", "textModel", "visionModel", "scriptConcurrency", "cursorStyle", "cursorScale"] as const;
   const clean = Object.fromEntries(allowed.filter((key) => draft[key] !== undefined).map((key) => [key, draft[key]]));
   const modelConfig = readModelConfig(draft.model_config);
+  const subtitleStyle = readSubtitleStyle(draft.subtitleStyle);
   safeSet(KEYS.apiKey, null);
-  safeSet(KEYS.draft, JSON.stringify({ ...clean, schema_version: 2, ...(modelConfig ? { model_config: modelConfig } : {}) }));
+  safeSet(KEYS.draft, JSON.stringify({ ...clean, schema_version: 2, ...(modelConfig ? { model_config: modelConfig } : {}), ...(subtitleStyle ? { subtitleStyle } : {}) }));
 }

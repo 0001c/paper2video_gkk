@@ -256,6 +256,16 @@ class Checks(unittest.TestCase):
         with patch.object(subprocess, 'run', return_value=probe), self.assertRaises(ValueError):
             segments.stitch(['too-short.mp4'], manifest, audio, self.root / 'out.mp4')
 
+    def test_grounding_allows_only_unused_coordinate_fields_to_be_omitted(self):
+        self.assertEqual(grounding.parse_location('{"found":true,"coordinate_scale":1000,"bbox":[58,692,524,907]}', 2520, 1418), [733, 1133])
+        self.assertEqual(grounding.parse_location('{"found":true,"coordinate_scale":1000,"point":[500,500]}', 1001, 501), [500, 250])
+        for content in ('{"found":true,"coordinate_scale":1000}',
+                        '{"found":true,"bbox":[58,692,524,907]}',
+                        '{"found":true,"coordinate_scale":"1000","point":[500,500]}',
+                        '{"found":true,"coordinate_scale":1000,"point":[500,500],"command":"bad"}'):
+            with self.assertRaises(ValueError):
+                grounding.parse_location(content, 2520, 1418)
+
     def test_live_sse_punctuation_updates_preserve_spoken_words_and_audio(self):
         import base64
         events = []

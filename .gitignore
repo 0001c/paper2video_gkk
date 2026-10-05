@@ -223,6 +223,8 @@ web/static/
 # Web 服务的运行时任务目录
 jobs/
 
+.local/public-access/
+
 # TypeScript 增量构建缓存（vite build 顺带产生的）
 web/frontend/*.tsbuildinfo
 

@@ -9,6 +9,9 @@ async function request(path: string, init: RequestInit = {}) {
     const response = await fetch(path, { cache: "no-store", ...init, signal: controller.signal });
     const data = await response.json().catch(() => null);
     if (!response.ok) {
+      if (response.status === 401 && !path.startsWith('/api/auth/') && typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('paper2video:auth-expired'));
+      }
       const detail = data?.detail || data?.error;
       const problems = detail?.problems ?? (Array.isArray(detail) ? detail.map((item: any) => ({ field: item.loc?.join("."), message: item.msg })) : []);
       throw new Error(typeof detail === "string" ? detail : problems.length

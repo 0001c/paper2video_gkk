@@ -58,6 +58,7 @@ sys.path.insert(0, REPO_ROOT)
 from web import model_config as model_settings
 from web.model_connections import ConnectionCreate, ConnectionUpdate, ConnectionStore
 from web import model_catalog
+from web import public_access
 from web.cloud_voices import VoiceStore, VoiceReference, VoiceRegister, VoiceGenerate, VoicePreview
 
 # 结构化进度的读写约定与流水线共用同一个模块（progress_report），
@@ -115,6 +116,8 @@ def _trusted_address(host):
 
 @app.middleware("http")
 async def trusted_lan_access(request, call_next):
+    if app.state.public_access:
+        return await call_next(request)
     if app.state.lan_networks:
         if not request.client or not _trusted_address(request.client.host):
             return JSONResponse(status_code=403, content={"detail": "访问设备不在允许的局域网子网内"})
@@ -158,6 +161,13 @@ async def review_body_limit(request, call_next):
 
 
 def _local_write(request):
+    if app.state.public_access:
+        if not getattr(request.state, 'public_authenticated', False):
+            raise HTTPException(401, detail="请先登录")
+        origin = app.state.public_access.origin(request, _trusted_address)
+        if not origin or request.headers.get('origin') != origin or request.url.scheme != 'https':
+            raise HTTPException(403, detail="拒绝非HTTPS、缺少Origin或跨站写入")
+        return
     # 默认本机；局域网模式仅信任启动时明确允许的子网，同源校验仍保留。
     if not request.client or not _trusted_address(request.client.host):
         raise HTTPException(503, detail="写入仅支持本机或明确允许的局域网子网")
@@ -3335,6 +3345,7 @@ async def api_system_info():
 
 # 前端构建产物（vite build 输出）。没有就退化成纯 API —— 开发时用 vite dev。
 _STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+public_access.install(app, _STATIC, _trusted_address)
 if os.path.isdir(_STATIC):
     app.mount("/", StaticFiles(directory=_STATIC, html=True), name="static")
 
@@ -3448,12 +3459,25 @@ def main():
     parser.add_argument("--lan-subnet", action="append",
                         default=[value.strip() for value in os.environ.get("P2V_WEB_LAN_SUBNETS", "").split(",") if value.strip()],
                         help="允许访问和操作任务的可信 IPv4 私有子网，可重复指定")
+    parser.add_argument('--public-config', help='管理员账号摘要、确切公网HTTPS来源和TLS证书的私有JSON配置文件')
+    parser.add_argument('--https-port', type=int, default=8849, help='公网模式的本地HTTPS端口，默认8849；原HTTP端口仅跳转')
     args = parser.parse_args()
     try:
         app.state.lan_networks = tuple(_lan_network(value) for value in args.lan_subnet)
     except ValueError as exc:
         parser.error(str(exc))
-    if args.host != "localhost" and not _trusted_address(args.host) and not (args.host == "0.0.0.0" and app.state.lan_networks):
+    if args.public_config:
+        if args.auto_port or not 1 <= args.port <= 65535:
+            parser.error('公网模式需要固定的有效HTTP端口，不支持--auto-port')
+        try:
+            app.state.public_access = public_access.PublicAccess.from_file(args.public_config)
+        except ValueError as exc:
+            parser.error(str(exc))
+        if not 1 <= args.https_port <= 65535 or args.https_port == args.port:
+            parser.error('HTTPS端口必须在1至65535之间，且不同于HTTP端口')
+        if _port_in_use(args.host, args.https_port):
+            parser.error('HTTPS端口已被占用，请检查占用服务或修改--https-port')
+    if args.host != "localhost" and not _trusted_address(args.host) and not (args.host == "0.0.0.0" and (app.state.lan_networks or app.state.public_access)):
         parser.error("非本机监听必须显式指定 --lan-subnet 可信子网")
 
     # ── 启动前先探端口。理由：uvicorn 抛出的原生错误是
@@ -3479,14 +3503,21 @@ def main():
             raise SystemExit(2)
 
     print("Paper2Video Web → http://{}:{}".format(args.host, args.port))
-    if app.state.lan_networks:
+    if app.state.public_access:
+        print('本机、局域网与公网业务访问均需HTTPS登录；HTTP端口只提供跳转。')
+    elif app.state.lan_networks:
         print("可信局域网共享：{}（子网内设备可操作任务和读取产物）".format(", ".join(map(str, app.state.lan_networks))))
     else:
         print("（只监听本机）")
     if not os.path.isdir(_STATIC):
         print("提示：{} 不存在，当前只有 API。执行 `npm run build` 后重启即可看到界面。".format(
             os.path.relpath(_STATIC, os.path.dirname(os.path.abspath(__file__)))))
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info", proxy_headers=False)
+    if app.state.public_access:
+        print('公网登录模式：本地HTTPS端口{}；HTTP入口仅跳转。'.format(args.https_port))
+        print('穿透TCP隧道必须指向本地HTTPS端口；允许来源：{}'.format(', '.join(app.state.public_access.origins)))
+        asyncio.run(public_access.serve(app, app.state.public_access, args.host, args.port, args.https_port, _trusted_address))
+    else:
+        uvicorn.run(app, host=args.host, port=args.port, log_level="info", proxy_headers=False)
 
 
 if __name__ == "__main__":

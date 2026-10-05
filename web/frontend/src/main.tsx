@@ -18,6 +18,7 @@ import zhConfig from "tdesign-react/es/locale/zh_CN";
  */
 import "tdesign-react/es/style/index.css";
 import App from "./App";
+import { AccessGate } from './AccessGate';
 import "./styles.css";
 
 /* 关于 ConfigProvider 的两个坑（都是靠"跑一次完整类型检查"才发现的）：
@@ -37,7 +38,7 @@ import "./styles.css";
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ConfigProvider globalConfig={{ ...zhConfig, classPrefix: "t" }}>
-      <App />
+      <AccessGate><App /></AccessGate>
     </ConfigProvider>
   </React.StrictMode>
 );

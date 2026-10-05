@@ -12,6 +12,23 @@ async function sourceModule(name) {
 const { api, runExclusive, applyTemplate } = await sourceModule("flow");
 const storage = await sourceModule("storage");
 
+test('业务接口401通知登录过期，登录接口401不循环退出', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWindow = globalThis.window;
+  const events = [];
+  globalThis.window = { dispatchEvent: (event) => { events.push(event.type); return true; } };
+  globalThis.fetch = async () => new Response(JSON.stringify({ detail: '请先登录' }), { status: 401 });
+  try {
+    await assert.rejects(api.get('/api/jobs'), /请先登录/);
+    await assert.rejects(api.post('/api/auth/login', { username: 'admin', password: 'test' }), /请先登录/);
+    assert.deepEqual(events, ['paper2video:auth-expired']);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+});
+
 test("P4显式云动作传递防重键，普通请求仍保留JSON头", async () => {
   const original = globalThis.fetch;
   let saved;

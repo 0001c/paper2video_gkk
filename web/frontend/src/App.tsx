@@ -6,6 +6,7 @@ import { api, applyTemplate, errorMessage, runExclusive } from "./flow";
 import { CoursePanel, defaultCourse, type CourseSettings, type CoursePlan } from "./CoursePanel";
 import { ReviewPanel } from "./ReviewPanel";
 import { ThemeToggle } from "./ThemeToggle";
+import { AccessControls } from './AccessGate';
 import { ModelSettings } from "./ModelSettings";
 import { CloudVoicePanel, type CloudVoice } from "./CloudVoicePanel";
 import { TaskModelSettings } from "./TaskModelSettings";
@@ -979,7 +980,7 @@ export default function App() {
       <header className="masthead">
         <div className="masthead-top">
           <div className="brand"><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><rect x="2" y="2" width="28" height="28" rx="4" stroke="currentColor" strokeWidth="1.5" /><path d="M10 10h7M10 14h4M10 18h4M19 15l7 4-7 4z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /></svg><span>讲解工坊</span><span className="brand-caption">内容制作</span></div>
-          <ThemeToggle />
+          <div className="masthead-actions"><AccessControls /><ThemeToggle /></div>
         </div>
         <div className="masthead-intro">
           <div><p className="eyebrow">CONTENT / VOICE / VIDEO</p><h1>内容讲解工作台</h1><p className="sub">选好素材与声音，让内容成为讲解视频。</p></div>

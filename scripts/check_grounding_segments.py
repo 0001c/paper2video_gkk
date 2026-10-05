@@ -256,7 +256,7 @@ class Checks(unittest.TestCase):
         with patch.object(subprocess, 'run', return_value=probe), self.assertRaises(ValueError):
             segments.stitch(['too-short.mp4'], manifest, audio, self.root / 'out.mp4')
 
-    def test_live_sse_punctuation_end_updates_replace_previous_event(self):
+    def test_live_sse_punctuation_updates_preserve_spoken_words_and_audio(self):
         import base64
         events = []
         pcm = bytes(24000 * 2)
@@ -270,9 +270,9 @@ class Checks(unittest.TestCase):
         with httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, text=body))) as client:
             result, timing = speech.SpeechClient(connection, 'fake-key', client).synthesize('cosyvoice-v3-flash', 'longanyang', '你，好。')
         words = timing['segments'][0]['words']
-        self.assertEqual(len(words), 4)
-        self.assertEqual(words[1]['end'], 0.4)
-        self.assertEqual(words[-1]['end'], 1.0)
+        self.assertEqual(words, [{'word': '你', 'start': 0, 'end': 0.2},
+                                 {'word': '好', 'start': 0.4, 'end': 0.6}])
+        self.assertEqual(result, pcm)
 
     def test_structured_input_model_usage_is_counted(self):
         sys.path.insert(0, str(ROOT / 'scripts'))

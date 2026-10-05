@@ -89,6 +89,23 @@ class SpeechTests(unittest.TestCase):
             self.assertEqual(len(result), 2)
             self.assertEqual(result[-1]['end'], 1)
 
+    def test_indexed_word_update_replaces_provisional_text(self):
+        outputs = [
+            {'audio': {'data': base64.b64encode(PCM).decode()},
+             'sentence': {'index': 0, 'words': [
+                 {'text': '是MT', 'begin_index': 320, 'end_index': 321, 'begin_time': 0, 'end_time': 600}]}},
+            {'sentence': {'index': 0, 'words': [
+                {'text': '是', 'begin_index': 320, 'end_index': 321, 'begin_time': 0, 'end_time': 100},
+                {'text': 'MT', 'begin_index': 321, 'end_index': 322, 'begin_time': 100, 'end_time': 600}]},
+             'finish_reason': 'stop'}]
+        events = ''.join('data: ' + json.dumps({'output': output}) + '\n\n' for output in outputs)
+        with mock_client(lambda request: httpx.Response(200, text=events)) as client:
+            pcm, timing = speech.SpeechClient(CONNECTION, 'fake', client).synthesize('cosyvoice-v3-flash', 'longanyang', '是MT')
+        self.assertEqual(timing['segments'][0]['words'], [
+            {'word': '是', 'start': 0, 'end': 0.1},
+            {'word': 'MT', 'start': 0.1, 'end': 0.6}])
+        self.assertEqual(pcm, PCM)
+
     def test_overlapping_punctuation_does_not_corrupt_word_timing(self):
         words = [{'text': 'hello', 'begin_time': 0, 'end_time': 400},
                  {'text': '。', 'begin_time': 400, 'end_time': 510},

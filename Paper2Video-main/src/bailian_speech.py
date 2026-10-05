@@ -51,7 +51,7 @@ def plain_text(text):
 
 def word_identity(word):
     if type(word.get('begin_index')) is int and type(word.get('end_index')) is int:
-        return word['begin_index'], word['end_index'], word['text']
+        return word['begin_index'], word['end_index']
     return word['begin_time'], word['text']
 
 

@@ -89,6 +89,33 @@ class SpeechTests(unittest.TestCase):
             self.assertEqual(len(result), 2)
             self.assertEqual(result[-1]['end'], 1)
 
+    def test_overlapping_punctuation_does_not_corrupt_word_timing(self):
+        words = [{'text': 'hello', 'begin_time': 0, 'end_time': 400},
+                 {'text': '。', 'begin_time': 400, 'end_time': 510},
+                 {'text': '。。', 'begin_time': 400, 'end_time': 680},
+                 {'text': '。', 'begin_time': 510, 'end_time': 620},
+                 {'text': 'world', 'begin_time': 700, 'end_time': 1000}]
+        output = {'audio': {'data': base64.b64encode(PCM).decode()},
+                  'sentence': {'index': 0, 'words': words}, 'finish_reason': 'stop'}
+        event = 'data: ' + json.dumps({'output': output}) + '\n\n'
+        with mock_client(lambda request: httpx.Response(200, text=event)) as client:
+            pcm, timing = speech.SpeechClient(CONNECTION, 'fake', client).synthesize('cosyvoice-v3-flash', 'longanyang', 'hello。\n\n\nworld')
+        self.assertEqual(timing['segments'][0]['words'], [
+            {'word': 'hello', 'start': 0, 'end': 0.4},
+            {'word': 'world', 'start': 0.7, 'end': 1.0}])
+        self.assertEqual(pcm, PCM)
+
+    def test_overlapping_spoken_words_still_fail(self):
+        output = {'audio': {'data': base64.b64encode(PCM).decode()},
+                  'sentence': {'index': 0, 'words': [
+                      {'text': 'hello', 'begin_time': 0, 'end_time': 600},
+                      {'text': 'world', 'begin_time': 500, 'end_time': 1000}]},
+                  'finish_reason': 'stop'}
+        event = 'data: ' + json.dumps({'output': output}) + '\n\n'
+        with mock_client(lambda request: httpx.Response(200, text=event)) as client:
+            with self.assertRaisesRegex(ValueError, '时间戳越界或不单调'):
+                speech.SpeechClient(CONNECTION, 'fake', client).synthesize('cosyvoice-v3-flash', 'longanyang', 'hello world')
+
     def test_timing_bounds_and_mapping(self):
         for start, end, text in ((-1, 1, 'hello'), (0, 2, 'hello'), (0, float('nan'), 'hello'), (0, 1, 'different')):
             with self.assertRaises(ValueError):

@@ -132,7 +132,7 @@ class SpeechClient:
                 if pending or not finished or not pcm or len(pcm) % 2:
                     raise ValueError('云配音流不完整；受理状态可能未知，禁止自动重试')
                 timing = {'segments': [{'words': [{'word': word['text'], 'start': word['begin_time'] / 1000,
-                           'end': word['end_time'] / 1000} for word in sorted(sentences[index].values(), key=lambda value: (value['begin_time'], value['end_time']))]} for index in sorted(sentences)]}
+                           'end': word['end_time'] / 1000} for word in sorted(sentences[index].values(), key=lambda value: (value['begin_time'], value['end_time'])) if plain_text(word['text'])]} for index in sorted(sentences)]}
                 model_costs.finish(ticket, usage if 'characters' in usage else {'characters': len(text)}, source='provider' if 'characters' in usage else 'submitted_text_estimate')
                 if timestamps:
                     validate_timing(timing, pcm, text)

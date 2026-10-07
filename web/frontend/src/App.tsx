@@ -11,7 +11,8 @@ import { ModelSettings } from "./ModelSettings";
 import { CloudVoicePanel, type CloudVoice } from "./CloudVoicePanel";
 import { TaskModelSettings } from "./TaskModelSettings";
 import { ModelCosts } from './ModelCosts';
-import { migratedConfig, presetConfig, roles, roleStage, taskModelPayload, type Connection, type ModelConfig, type ModelOptions } from "./modelConfig";
+import { RemoteTasks, type RemoteTaskDetails } from './RemoteTasks';
+import { avatarConfigurationProblem, migratedConfig, presetConfig, roles, roleStage, taskModelPayload, type Connection, type ModelConfig, type ModelOptions } from "./modelConfig";
 import { CursorPicker, type CursorOption } from "./CursorPicker";
 import { SubtitleSettings } from "./SubtitleSettings";
 import { defaultSubtitleStyle, readSubtitleStyle, type SubtitleStyle } from "./subtitleStyle";
@@ -185,6 +186,9 @@ type Job = {
   status: string;
   phase: string;
   phase_key?: string;
+  remote_tasks?: RemoteTaskDetails;
+  remote_cancel_state?: string;
+  cancellation_requested?: boolean;
   exit_code?: number;
   elapsed_min?: number;
   progress?: Progress;
@@ -689,8 +693,8 @@ export default function App() {
     if (ingestLock.current || voiceLock.current) throw new Error("请等待文件提取或音色准备完成");
     if (!ingest || ingest.error) return MessagePlugin.warning("请先上传内容文件并完成提取预览");
     if (courseEnabled && !coursePlan) return MessagePlugin.warning("请预览并确认教案和时间分配");
-    if (generateTalking && !portraitFile) return MessagePlugin.warning("开启数字人必须上传肖像，不会自动跳过");
-    if (generateTalking) return MessagePlugin.warning("v2数字人需等待P6严格分段适配，请关闭后准备课件");
+    const avatarProblem = avatarConfigurationProblem(modelConfig, !!portraitFile, opts?.model_configuration);
+    if (avatarProblem) return MessagePlugin.warning(avatarProblem);
     if (modelConfig.stages.tts.mode === "local" && (voiceMode === "preset" || voiceMode === "design")) return MessagePlugin.warning("本地配音请选择默认或上传参考录音");
     if (!scriptPrompt.trim()) return MessagePlugin.warning("讲稿提示词不能为空");
     if (!slidePrompt.trim() || slidePrompt.length > (opts?.slide_prompt_max_chars ?? 30000)) {
@@ -892,8 +896,8 @@ export default function App() {
   const cancel = useCallback(async () => runExclusive(cancelLock, setCanceling, async () => {
     if (!jobId) return;
     if (!window.confirm(`取消任务 ${jobId}？已生成的产物会保留。`)) return;
-    await api.post(`/api/jobs/${jobId}/cancel`);
-    MessagePlugin.info("已请求取消");
+    const { data } = await api.post(`/api/jobs/${jobId}/cancel`);
+    MessagePlugin.info([data.warning, data.remote_error].filter(Boolean).join("；") || "已请求取消");
   }, reportError), [jobId]);
 
   // ── 进度：**全部由后端算**（overall_pct），前端不再自己拼 done/total ──
@@ -950,7 +954,8 @@ export default function App() {
   }
   if (!opts?.model_configuration?.implemented.independent_text_vision_connections
     && modelConfig.stages.text.connection_id !== modelConfig.stages.vision.connection_id) missing.push("P3前文字/视觉需共用连接");
-  if (generateTalking) missing.push(!portraitFile ? "数字人需肖像；当前严格分段待P6" : "关闭尚待P6适配的数字人");
+  const avatarProblem = avatarConfigurationProblem(modelConfig, !!portraitFile, opts?.model_configuration);
+  if (avatarProblem) missing.push(avatarProblem);
   if (modelConfig.stages.tts.mode === "api" && (!cloudVoice || cloudVoice.target_model !== modelConfig.stages.tts.model || cloudVoice.status !== "OK" || cloudVoice.timestamp_status !== "supported")) missing.push("选择可用且支持时间戳的云音色");
   if (modelConfig.stages.tts.mode === "local" && (voiceMode === "preset" || voiceMode === "design")) missing.push("本地请选择默认或上传录音");
   if (!textModel.trim() || !visionModel.trim()) missing.push("选择文字和视觉模型");
@@ -1122,7 +1127,7 @@ export default function App() {
             </div>
             {generateTalking ? (
               <Dropzone
-                hint="上传正面人像图；开启时必填，严格分段待P6"
+                hint="上传正面人像图；开启时必填，音频自动严格分段"
                 accept="image/*"
                 picked={portraitFile?.name ?? null}
                 disabled={submitting}
@@ -1350,7 +1355,7 @@ export default function App() {
       {/* ③ 音色 —— 四种来源最终都归结为"一份参考音频 + 它的参考文本"。
           逐页合成始终是**本地** Qwen3-TTS：云端只用来造这一小段音色样本，
           所以免费额度、断网、没配 key 都不会影响出片（会回落到内置音色）。 */}
-      <Section anchor="credentials" number="04" title="模型配置" summary={modelConfig.preset === 'bailian_api' ? '百炼全 API · 后续适配待接入' : modelConfig.preset === 'local_existing' ? '保留现有本地推理' : '自定义组合'} important>
+      <Section anchor="credentials" number="04" title="模型配置" summary={modelConfig.preset === 'bailian_api' ? '百炼全 API · 权限与效果待验证' : modelConfig.preset === 'local_existing' ? '保留现有本地推理' : '自定义组合'} important>
         {!initialDraft.model_config && (initialDraft.textModel || initialDraft.visionModel) && <p className="notice warn">已保留旧草稿的型号与本地路线，未沿用浏览器密钥。请添加兼容连接并重新选择；不会自动改成百炼默认。</p>}
         <ModelSettings value={modelConfig} options={opts?.model_configuration} concurrency={scriptConcurrency} onChange={setModelConfig} onConcurrency={setScriptConcurrency} voice={voiceSpecNow()} portraitPath={portraitInfo?.portrait_path} onConnectionsChange={setModelConnections} />
       </Section>
@@ -1521,7 +1526,7 @@ export default function App() {
           {` · ${slideCount || "待填写"} 页 · 数字人${generateTalking && portraitFile ? "启用" : "关闭"}`}
           {` · 音色：${voiceMode === "default" ? "内置默认" : voiceMode === "preset" ? presetPick?.label || "未选择" : voiceMode === "design" ? "描述生成" : "上传参考音频"}`}
         </p>
-        {generateTalking && !portraitFile && <p className="notice warn">开启数字人时肖像必填，不会自动关闭。当前v2分段适配待P6。</p>}
+        {generateTalking && !portraitFile && <p className="notice warn">开启数字人时肖像必填；上传肖像或关闭数字人后再创建任务。</p>}
         <p className="hint">
           {!courseEnabled && est ? `本地配音与合片参考 ${est.lo}～${est.hi} 分钟（${est.slides} 页） · ` : ''}
           {`${activeCount} 个任务执行中 · ${queuedCount} 个排队中`}
@@ -1558,6 +1563,7 @@ export default function App() {
         </div>
         {jobId && !job && !streamError && <p role="status">正在读取任务详情…</p>}
         {job && <ModelCosts url={`/api/jobs/${job.id}/model-costs`} />}
+        {job && (job.config?.model_config?.avatar.mode === "api" || !!job.remote_tasks?.items.length) && <RemoteTasks jobId={job.id} status={job.status} details={job.remote_tasks} />}
         {streamError && <div className="notice err" role="alert"><span>{streamError}，请到任务记录选择其他任务。</span></div>}
         {streamState === "retrying" && !job && <div className="notice warn">连接失败，正在重试。请检查服务是否运行。</div>}
         {job?.config && (

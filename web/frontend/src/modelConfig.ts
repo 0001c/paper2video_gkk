@@ -3,7 +3,7 @@ export type Role = typeof roles[number];
 export const bailianSpeechModels = ['cosyvoice-v3.5-plus', 'cosyvoice-v3.5-flash', 'cosyvoice-v3-plus', 'cosyvoice-v3-flash', 'cosyvoice-v2'] as const;
 export const roleLabels: Record<Role, string> = { text: "文字 / 课件", vision: "视觉 / 讲稿", tts: "配音", asr: "参考录音识别", grounding: "光标定位", avatar: "数字人" };
 export type Stage = { mode: "api" | "local"; provider: "bailian" | "openai_compatible" | "qwen3" | "gui_owl" | "musetalk";
-  connection_id?: string; model: string; parameters: { speech_rate?: number; temperature?: number; max_output_tokens?: number } };
+  connection_id?: string; model: string; parameters: { resolution?: "480P" | "720P"; speech_rate?: number; temperature?: number; max_output_tokens?: number } };
 export type ModelConfig = { schema_version: 2; preset: "bailian_api" | "local_existing" | "custom";
   stages: Record<Exclude<Role, "avatar">, Stage>; timing: { source: "tts_timestamp" | "local_forced_aligner" }; avatar: Stage & { enabled: boolean } };
 export type Connection = { id: string; label: string; provider: "bailian" | "openai_compatible"; key_present: boolean;
@@ -47,6 +47,16 @@ export function presetConfig(preset: "bailian_api" | "local_existing", connectio
   return { schema_version: 2, preset, stages: rest, timing: { source: preset === "bailian_api" ? "tts_timestamp" : "local_forced_aligner" }, avatar: { ...avatar, enabled } };
 }
 
+export function avatarConfigurationProblem(config: ModelConfig, hasPortrait: boolean, options?: ModelOptions): string | undefined {
+  const avatar = config.avatar;
+  if (!avatar.enabled) return;
+  if (!hasPortrait) return "开启数字人必须上传肖像，不会自动跳过";
+  if (avatar.mode === "api") {
+    if (!options?.implemented.bailian_avatar || avatar.model !== "wan2.2-s2v") return "此数字人API适配器尚未实现，请选择已接入的Wan型号";
+    if (!avatar.connection_id) return "请选择数字人的百炼连接";
+  } else if (!options?.implemented.avatar_segmentation || avatar.model !== "musetalk") return "此本地数字人适配器尚未实现";
+}
+
 export function migratedConfig(text: string, vision: string, enabled: boolean): ModelConfig {
   const config = presetConfig("local_existing", "", enabled);
   config.stages.text = { mode: "api", provider: "openai_compatible", model: text, parameters: {} };
@@ -76,6 +86,7 @@ export function readModelConfig(value: unknown): ModelConfig | undefined {
       const item = stage.parameters?.[key];
       if (typeof item === "number" && Number.isFinite(item)) parameters[key] = item;
     }
+    if (role === "avatar" && stage.mode === "api" && ["480P", "720P"].includes(stage.parameters?.resolution)) parameters.resolution = stage.parameters.resolution;
     stages[role] = { mode: stage.mode, provider: stage.provider, model: stage.model, parameters,
       ...(stage.connection_id ? { connection_id: stage.connection_id } : {}) };
   }

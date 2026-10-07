@@ -136,10 +136,11 @@ async def trusted_lan_access(request, call_next):
 async def review_body_limit(request, call_next):
     path = request.url.path
     connection_request = path.startswith('/api/model-connections')
-    model_request = connection_request or path.startswith('/api/cloud-voices') or path == '/api/model-config/validate' or path == '/api/jobs' or path.endswith(('/rerun', '/prepare-retry', '/model-connections/rebind', '/cancel'))
+    remote_request = path.endswith('/remote-tasks/reconcile')
+    model_request = remote_request or connection_request or path.startswith('/api/cloud-voices') or path == '/api/model-config/validate' or path == '/api/jobs' or path.endswith(('/rerun', '/prepare-retry', '/model-connections/rebind', '/cancel'))
     review_request = path.endswith(('/review', '/review/run')) or path == '/api/course/plan'
     if request.method in ('PUT', 'POST', 'PATCH', 'DELETE') and (model_request or review_request):
-        limit = 16384 if connection_request or path.startswith('/api/cloud-voices') else 512000 if review_request else 262144
+        limit = 16384 if remote_request or connection_request or path.startswith('/api/cloud-voices') else 512000 if review_request else 262144
         try:
             _local_write(request)
             length = int(request.headers.get('content-length') or 0)
@@ -1892,6 +1893,7 @@ async def _run_job(job):
 
     env = _job_model_environment(job['config'], keys)
     env['PAPER2VIDEO_USAGE_DIR'] = _result_dir(job)
+    env['PAPER2VIDEO_AVATAR_CANCEL_FILE'] = str(_avatar_cancel_file(job_id))
     # P1：告诉流水线把结构化进度写到哪里。未设置该环境变量时，
     # 流水线**不生成任何额外文件**（命令行直接跑 pipeline.py 行为完全不变）。
     env["PAPER2VIDEO_PROGRESS_FILE"] = os.path.join(job_dir, "progress.jsonl")
@@ -2017,6 +2019,9 @@ async def _run_job(job):
             # 前置步骤失败：不跑流水线，但仍走下面的收尾写入，
             # 让任务落到 failed 且带上 exit_code（否则状态会一直停在 running）。
             code = 1
+        elif _load_job(job_id).get("cancellation_requested"):
+            code = 1
+            _log_line(log, "[cancel] 已请求取消，不启动新的流水线进程")
         elif cache_only:
             code = 0
             _log_line(log, "[cache] 本次无需运行流水线：要的产物已全部从缓存复用")
@@ -2071,7 +2076,7 @@ async def _run_job(job):
         if final.get("status") == "canceled":
             # 取消是使用者的明确意图，不该被退出码改写；
             # 但退出码与耗时仍要记下来 —— 排查时有用，且能证明收尾确实执行过。
-            final["phase"] = "已取消"
+            final["phase"] = "本地已取消；云端任务可能继续处理或计费" if final.get("remote_cancel_state") == "cancel_unconfirmed" else "已取消"
         else:
             awaiting = code == 0 and final["config"].get("review_before_render")
             final["status"] = "awaiting_review" if awaiting else "done" if code == 0 else "failed"
@@ -2093,8 +2098,10 @@ async def _worker_loop():
             await _run_job(job)
         except Exception as exc:                      # 崩溃不能带走整个 worker
             try:
-                await _update_job(job_id, status="failed",
-                                  error="{}: {}".format(type(exc).__name__, exc))
+                current = _load_job(job_id)
+                if current.get("status") != "canceled":
+                    await _update_job(job_id, status="failed",
+                                      error="{}: {}".format(type(exc).__name__, exc))
             except Exception:
                 pass
         finally:
@@ -3075,6 +3082,7 @@ async def api_cache():
 async def api_get_job(job_id: str):
     job = _load_job(job_id)
     job["progress"] = read_progress(job)
+    job["remote_tasks"] = _remote_task_details(job)
     return job
 
 
@@ -3133,6 +3141,9 @@ def _sse_frames(job_id, is_disconnected, keepalive):
                 "progress": read_progress(job),
                 "exit_code": job.get("exit_code"),
                 "elapsed_min": job.get("elapsed_min"),
+                "remote_cancel_state": job.get("remote_cancel_state"),
+                "cancellation_requested": job.get("cancellation_requested", False),
+                "remote_tasks": _remote_task_details(job),
                 "queue_ahead": job.get("queue_ahead") if job.get("status") == "queued" else 0,
                 # 续跑关系要推给前端：续跑任务的产物与原任务**共享**，
                 # 界面上得说清楚，否则用户不知道产物在哪、也想不到"重跑会覆盖原任务的那份"。
@@ -3181,25 +3192,167 @@ async def api_job_events(job_id: str, request: Request):
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+def _avatar_cancel_file(job_id):
+    return Path(_job_dir(job_id), 'avatar_cancel.json')
+
+
+def _remote_record_paths(job):
+    # Wan记录只来自当前任务产物目录的固定布局；不搜索素材/用户目录。
+    result = Path(_result_dir(job)).resolve()
+    if not result.is_relative_to(Path(JOBS_ROOT).resolve()):
+        return []
+    root = (result / 'talking_wan2.2-s2v').resolve()
+    if not root.is_relative_to(result):
+        return []
+    return [path for path in sorted(root.glob('.segments/*/*/wan_*/wan-task-*.json'))
+            if path.is_file() and path.resolve().is_relative_to(root.resolve())]
+
+
+def _public_remote_record(job, path):
+    try:
+        record = json.loads(path.read_text(encoding='utf-8'))
+        if not isinstance(record, dict):
+            record = {}
+    except (OSError, ValueError):
+        record = {}
+    # 白名单投影，永不返回云端响应、签名URL、本地绝对路径或凭据。
+    valid_id = lambda value: isinstance(value, str) and bool(re.fullmatch(r'[A-Za-z0-9_-]{1,200}', value))
+    task_id = record.get('task_id') if valid_id(record.get('task_id')) else None
+    states = {'prepared', 'uploading', 'submitting', 'submitted', 'pending', 'running', 'succeeded',
+              'failed', 'canceled', 'cancel_unconfirmed', 'submission_unknown', 'needs_manual_review',
+              'cancelled_before_submission', 'query_failed', 'download_failed', 'poll_timeout', 'remote_unknown'}
+    state = record.get('state') if isinstance(record.get('state'), str) and record.get('state') in states else 'needs_manual_review'
+    canceled_before_submission = state == 'cancelled_before_submission' and record.get('cancellation_confirmed') is True and record.get('possible_billing') is False
+    if not task_id and not canceled_before_submission:
+        state = 'needs_manual_review'
+    remote_status = record.get('remote_status')
+    return {'record': path.relative_to(Path(_result_dir(job)).resolve()).as_posix(), 'model': 'wan2.2-s2v',
+            'task_id': task_id, 'request_id': record.get('request_id') if valid_id(record.get('request_id')) else None,
+            'state': state, 'remote_status': remote_status if remote_status in ('PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELED', 'UNKNOWN') else None,
+            'resolution': (record.get('parameters') or {}).get('resolution') if isinstance(record.get('parameters'), dict) and record['parameters'].get('resolution') in ('480P', '720P') else None,
+            'cancellation_confirmed': canceled_before_submission or (record.get('cancellation_confirmed') is True and state == 'canceled' and remote_status == 'CANCELED'),
+            'archived': isinstance(record.get('output_sha256'), str) and bool(re.fullmatch(r'[a-f0-9]{64}', record['output_sha256'])),
+            'possible_billing': record.get('possible_billing') is not False,
+            'needs_manual_review': (not task_id and not canceled_before_submission) or state in ('submission_unknown', 'needs_manual_review', 'remote_unknown')}
+
+
+def _remote_task_details(job):
+    items = [_public_remote_record(job, path) for path in _remote_record_paths(job)]
+    return {'items': items, 'known_ids': [item['task_id'] for item in items if item['task_id']],
+            'needs_manual_review': any(item['needs_manual_review'] for item in items),
+            'cancel_state': job.get('remote_cancel_state', 'not_requested'),
+            'warning': '云端任务可能继续处理或计费；本地停止不代表云端取消成功' if job.get('remote_cancel_state') == 'cancel_unconfirmed' else None}
+
+
+def _avatar_client(job):
+    config = job.get('config') or {}
+    if config.get('model_config_origin') != 'v2':
+        raise HTTPException(409, detail='此任务没有Wan模型连接快照')
+    normalized = _parse_model_config(config.get('model_config'))
+    stage = normalized.avatar
+    if stage.mode != 'api' or stage.provider != 'bailian' or stage.model != 'wan2.2-s2v':
+        raise HTTPException(409, detail='此任务未使用Wan数字人')
+    credentials = (_JOB_KEYS.get(job['id']) or {}).get('connections') or {}
+    snapshots, keys = _MODEL_CONNECTIONS.freeze(normalized, ['avatar'], config.get('model_connections'), credentials)
+    from bailian_avatar import AvatarClient
+    return AvatarClient(snapshots[stage.connection_id], keys[stage.connection_id], usage_directory=_result_dir(job))
+
+
+def _ensure_remote_idle(job):
+    if job.get('status') in ('queued', 'running'):
+        raise HTTPException(409, detail='请先停止本地任务，再对账已知云端ID')
+    result = os.path.normcase(os.path.realpath(_result_dir(job)))
+    current_id = _CURRENT.get('job_id')
+    if current_id and _CURRENT.get('proc') is not None:
+        current = _load_job(current_id)
+        if os.path.normcase(os.path.realpath(_result_dir(current))) == result:
+            raise HTTPException(409, detail='本地进程尚未确认停止，请稍后再对账')
+    if any(other.get('status') in ('queued', 'running') and os.path.normcase(os.path.realpath(_result_dir(other))) == result
+           for other in _list_jobs()):
+        raise HTTPException(409, detail='共享此产物目录的任务仍在运行或排队，请先停止它')
+
+
+# ponytail: 现有队列单worker，远程记录操作串行；增加worker时再改为按产物目录锁。
+_REMOTE_TASK_LOCK = asyncio.Lock()
+
+
+async def _operate_remote_records(job, action):
+    paths = _remote_record_paths(job)
+    known = [path for path in paths if _public_remote_record(job, path)['task_id']]
+    errors = []
+    if known:
+        client = _avatar_client(job)
+        for path in known:
+            try:
+                await asyncio.to_thread(getattr(client, action), path)
+            except Exception:
+                # 客户端可能含签名URL的错误不透传。ID与状态保留，用户可再次只查/取消。
+                errors.append({'record': path.relative_to(Path(_result_dir(job)).resolve()).as_posix(),
+                               'code': 'remote_operation_failed', 'message': '查询或取消未完成，请核对原连接并稍后再次对账'})
+    return {**_remote_task_details(job), 'errors': errors}
+
+
+@app.post('/api/jobs/{job_id}/remote-tasks/reconcile')
+async def api_reconcile_remote_tasks(job_id: str, request: Request):
+    """仅查询已有ID并归档结果，不上传、不提交、不启动pipeline。"""
+    _local_write(request)
+    async with _REMOTE_TASK_LOCK:
+        job = _load_job(job_id)
+        _ensure_remote_idle(job)
+        details = await _operate_remote_records(job, 'reconcile')
+        state = job.get('remote_cancel_state', 'not_requested')
+        if job.get('cancellation_requested'):
+            state = 'cancel_confirmed' if details['items'] and all(item['cancellation_confirmed'] for item in details['items']) and not job.get('other_cloud_cancel_unconfirmed') else 'cancel_unconfirmed'
+        await _update_job(job_id, remote_cancel_state=state,
+                          remote_reconciled_at=time.strftime('%Y-%m-%d %H:%M:%S'))
+        details = {**_remote_task_details(_load_job(job_id)), 'errors': details.get('errors', [])}
+        return {'ok': not details['errors'], 'job_id': job_id, 'resumed': False, 'submitted': False, **details}
+
+
 @app.post("/api/jobs/{job_id}/cancel")
-async def api_cancel_job(job_id: str):
-    """取消：杀子进程 —— 这也是"用子进程"的一个直接好处。"""
+async def api_cancel_job(job_id: str, request: Request):
+    """先持久化停止新请求的意图，再停止本地进程并尝试远程取消。"""
+    _local_write(request)
     job = _load_job(job_id)
-    proc = _CURRENT.get("proc")
-    if job.get("status") == "running" and proc is not None:
+    cloud = job.get('config', {}).get('model_config_origin') == 'v2'
+    avatar = job.get('config', {}).get('model_config', {}).get('avatar', {})
+    wan = cloud and avatar.get('enabled') and avatar.get('mode') == 'api'
+    cloud_tts = cloud and job.get('config', {}).get('model_config', {}).get('stages', {}).get('tts', {}).get('mode') == 'api'
+    cloud_tts_inflight = bool(job.get('other_cloud_cancel_unconfirmed')) or bool(cloud_tts and job.get('status') == 'running')
+    unconfirmed = bool(_remote_record_paths(job)) or wan or cloud_tts_inflight
+    marker = _avatar_cancel_file(job_id)
+    temporary = marker.with_suffix('.json.tmp')
+    temporary.write_text(json.dumps({'cancellation_requested': True}), encoding='utf-8')
+    temporary.replace(marker)
+    await _update_job(job_id, status='canceled', cancellation_requested=True,
+                      other_cloud_cancel_unconfirmed=cloud_tts_inflight,
+                      phase='本地已取消；云端任务可能继续处理或计费' if unconfirmed else '已取消',
+                      remote_cancel_state='cancel_unconfirmed' if unconfirmed else 'not_requested')
+    proc = _CURRENT.get('proc') if _CURRENT.get('job_id') == job_id else None
+    stopped = True
+    if proc is not None:
         try:
             proc.kill()
             await proc.wait()
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
-    # 只改这两个字段。**不要**拿刚 load 的整份 job 去 save ——
-    # 那份快照是在 kill 之前读的，而 _run_job 的收尾逻辑会在进程退出后
-    # 写入 exit_code / elapsed_min；整份覆盖会把它们抹掉（实测踩过）。
-    cloud_tts = job.get('config', {}).get('model_config_origin') == 'v2' and job.get('config', {}).get('model_config', {}).get('stages', {}).get('tts', {}).get('mode') == 'api'
-    warning = '本地已取消；云端请求可能继续处理或计费，未确认远程取消' if cloud_tts and job.get('status') == 'running' else None
-    await _update_job(job_id, status="canceled", phase=warning or "已取消",
-                      remote_cancel_state='unconfirmed' if warning else 'not_requested')
-    return {"ok": True, 'remote_cancel_state': 'unconfirmed' if warning else 'not_requested', 'warning': warning}
+            if _CURRENT.get('proc') is proc:
+                _CURRENT.update(proc=None, job_id=None)
+        except Exception:
+            stopped = False
+    async with _REMOTE_TASK_LOCK:
+        job = _load_job(job_id)
+        remote_error = None
+        try:
+            _ensure_remote_idle(job)
+            details = await _operate_remote_records(job, 'cancel') if stopped else _remote_task_details(job)
+        except (model_settings.ConfigurationError, HTTPException):
+            details = _remote_task_details(job)
+            remote_error = '连接已失效或共享任务仍在运行；请停止共享任务并重新绑定原范围连接后再对账'
+        confirmed = bool(details['items']) and all(item['cancellation_confirmed'] for item in details['items'])
+        state = 'cancel_confirmed' if confirmed and not cloud_tts_inflight else 'cancel_unconfirmed' if unconfirmed else 'not_requested'
+        warning = ('本地已停止；云端任务可能继续处理或计费，未确认远程取消' if stopped else '已保存取消意图；本地进程尚未确认停止，云端任务可能继续处理或计费') if state == 'cancel_unconfirmed' else None
+        await _update_job(job_id, remote_cancel_state=state, phase=warning or '已取消')
+        return {'ok': stopped, 'remote_cancel_state': state, 'warning': warning,
+                'remote_error': remote_error, 'remote_tasks': {**_remote_task_details(_load_job(job_id)), 'errors': details.get('errors', [])}}
 
 
 @app.get("/api/jobs/{job_id}/artifacts")

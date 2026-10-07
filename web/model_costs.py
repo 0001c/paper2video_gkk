@@ -2,6 +2,8 @@
 
 import json
 import os
+import re
+import sys
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -10,7 +12,7 @@ from urllib.parse import urlsplit
 
 
 PRICE_SOURCE = 'https://help.aliyun.com/zh/model-studio/model-pricing'
-PRICE_VERSION = '2026-10-03-beijing-standard-v2'
+PRICE_VERSION = '2026-10-07-beijing-standard-v3'
 TOKEN_PRICES = {
     'qwen3.8-flash': [(1000000, '0.8', '2.7')],
     'qwen3.8-max': [(1000000, '12', '36')],
@@ -18,6 +20,8 @@ TOKEN_PRICES = {
 }
 CHAR_PRICES = {'cosyvoice-v3.5-plus': '1.5', 'cosyvoice-v3.5-flash': '0.8',
                'cosyvoice-v3-plus': '2', 'cosyvoice-v3-flash': '1', 'cosyvoice-v2': '2'}
+AVATAR_VIDEO_PRICES = {480: '0.5', 720: '0.9'}
+INTEGER_USAGE = ('prompt_tokens', 'completion_tokens', 'total_tokens', 'characters', 'cached_tokens')
 ROLES = ('text', 'vision', 'tts', 'asr', 'grounding', 'avatar', 'voice')
 
 
@@ -44,6 +48,35 @@ def begin(role, model, endpoint, directory=None):
     return directory, record
 
 
+def restore(directory, record_id):
+    """恢复已持久化的请求账本；续查远程任务不会新建收费请求。"""
+    if not isinstance(record_id, str) or not re.fullmatch(r'[0-9a-f]{32}', record_id):
+        raise ValueError('费用记录ID无效')
+    try:
+        record = json.loads((Path(directory) / 'model_usage' / (record_id + '.json')).read_text(encoding='utf-8'))
+        if (record.get('id') != record_id or record.get('role') not in ROLES
+                or any(not isinstance(record.get(name), str) for name in ('model', 'region', 'price_version', 'price_source', 'state', 'started_at'))
+                or not isinstance(record.get('usage'), dict)):
+            raise ValueError('费用记录内容无效')
+    except (OSError, ValueError, AttributeError) as exc:
+        raise ValueError('费用记录不存在或无效，禁止新建重复账单') from exc
+    return directory, record
+
+
+def clean_usage(usage):
+    usage = usage if isinstance(usage, dict) else {}
+    clean = {name: usage[name] for name in INTEGER_USAGE
+             if type(usage.get(name)) is int and usage[name] >= 0}
+    if type(usage.get('images')) is int and usage['images'] > 0:
+        clean['images'] = usage['images']
+    duration = usage.get('duration_seconds')
+    if type(duration) in (int, float) and 0 < duration <= sys.float_info.max:
+        clean['duration_seconds'] = duration
+    if type(usage.get('resolution')) is int and usage['resolution'] in AVATAR_VIDEO_PRICES:
+        clean['resolution'] = usage['resolution']
+    return clean
+
+
 def estimate(record):
     if record['region'] != 'cn-beijing' or record['state'] != 'succeeded':
         return None
@@ -55,6 +88,12 @@ def estimate(record):
                 return float((Decimal(usage['prompt_tokens']) * Decimal(input_price) + Decimal(usage['completion_tokens']) * Decimal(output_price)) / 1000000)
     if model in CHAR_PRICES and type(usage.get('characters')) is int and usage['characters'] >= 0:
         return float(Decimal(usage['characters']) * Decimal(CHAR_PRICES[model]) / 10000)
+    if model == 'wan2.2-s2v-detect' and type(usage.get('images')) is int and usage['images'] > 0:
+        return float(Decimal(usage['images']) * Decimal('0.004'))
+    if model == 'wan2.2-s2v' and type(usage.get('resolution')) is int and usage['resolution'] in AVATAR_VIDEO_PRICES:
+        duration = usage.get('duration_seconds')
+        if type(duration) in (int, float) and 0 < duration <= sys.float_info.max:
+            return float(Decimal(str(duration)) * Decimal(AVATAR_VIDEO_PRICES[usage['resolution']]))
     return None
 
 
@@ -62,8 +101,7 @@ def finish(ticket, usage=None, state='succeeded', source='provider'):
     if ticket is None:
         return
     directory, record = ticket
-    clean = {name: usage[name] for name in ('prompt_tokens', 'completion_tokens', 'total_tokens', 'characters', 'cached_tokens')
-             if type((usage or {}).get(name)) is int and usage[name] >= 0}
+    clean = clean_usage(usage)
     record.update(state=state, usage=clean, usage_source=source if clean else 'unknown',
                   finished_at=datetime.now(timezone.utc).isoformat())
     record['estimated_cny'] = estimate(record)
@@ -82,7 +120,9 @@ def summary(directory):
         group['requests'] += 1
         if record.get('usage_source') == 'submitted_text_estimate':
             group['estimated_usage_requests'] += 1
-        for name, count in record.get('usage', {}).items():
+        for name, count in clean_usage(record.get('usage')).items():
+            if name == 'resolution':
+                continue
             group['usage'][name] = group['usage'].get(name, 0) + count
         if record['model'] not in group['models']:
             group['models'].append(record['model'])

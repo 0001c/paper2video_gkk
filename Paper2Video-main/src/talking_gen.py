@@ -581,8 +581,16 @@ def _cleanup_batch_dirs(repo_dir, profile, avatar_ids, env):
 
 
 def talking_gen_per_slide(model_type, input_list, save_dir, gpu_list, env_path,
-                          profile=None, segment_audio=True):
+                          profile=None, segment_audio=True, model_snapshot=None):
     """使用 MuseTalk 单卡入口逐页生成，批量模式复用模型与人脸缓存。"""
+    if model_snapshot and model_snapshot.get('model_config_origin') == 'v2':
+        avatar = model_snapshot['model_config']['avatar']
+        if not avatar['enabled']:
+            return []
+        if avatar['mode'] == 'api':
+            if avatar['provider'] != 'bailian' or model_type != avatar['model']:
+                raise ValueError('数字人调用与有效云端配置不一致')
+            return _wan_per_slide(input_list, save_dir, model_snapshot)
     if model_type != "musetalk":
         raise ValueError("不支持的数字人后端: {}（当前仅支持 musetalk）".format(model_type))
 
@@ -660,4 +668,101 @@ def talking_gen_per_slide(model_type, input_list, save_dir, gpu_list, env_path,
         print("[talking_gen] 有 {} 页失败：".format(len(failures)))
         for idx, _, info in failures:
             print("  第 {} 页：{}".format(idx, info))
+    return results
+
+
+def _wan_per_slide(input_list, save_dir, snapshot):
+    """串行提交 P6 派生片段，远程状态与分段文件分别保存以便恢复。"""
+    from pathlib import Path
+    from avatar_segments import prepare, stitch
+    from bailian_speech import atomic_json, digest, read_pair
+    from bailian_avatar import AvatarClient
+    from web.model_config import ConfigurationError
+
+    stage = snapshot['model_config']['avatar']
+    if stage['model'] != 'wan2.2-s2v':
+        raise ValueError('云端数字人仅支持 wan2.2-s2v')
+    connection = (snapshot.get('model_connections') or {}).get(stage.get('connection_id'))
+    key = os.environ.get('PAPER2VIDEO_ROLE_AVATAR_API_KEY')
+    if not connection or connection.get('provider') != 'bailian' or not connection.get('scope_id') or not key:
+        raise ConfigurationError('config.model_config.avatar.connection_id', '数字人任务连接凭据缺失，请重新绑定', 'connection_expired', 409)
+    resolution = stage.get('parameters', {}).get('resolution', '480P')
+    identity = {'model': stage['model'], 'resolution': resolution, 'scope_id': connection['scope_id'],
+                'endpoint': connection.get('native_http_base_url'), 'policy_version': 2}
+    client = AvatarClient(connection, key)
+    root = Path(save_dir)
+    root.mkdir(parents=True, exist_ok=True)
+
+    def cancelled():
+        marker = os.environ.get('PAPER2VIDEO_AVATAR_CANCEL_FILE')
+        return bool(marker and Path(marker).exists())
+
+    results = []
+    for page_index, (reference, audio) in enumerate(input_list):
+        if cancelled():
+            raise ValueError('数字人任务已请求取消；云端任务可能继续处理/计费')
+        timing = read_pair(audio)[1] if Path(audio).with_suffix('.timing.json').exists() else None
+        manifest = prepare(audio, root / '.segments' / str(page_index), timing=timing)
+        portrait_sha = digest(Path(reference).read_bytes())
+        cache_key = digest({**identity, 'portrait_sha256': portrait_sha})
+        part_root = Path(manifest['segments'][0]['file']).parent / ('wan_' + cache_key)
+        part_root.mkdir(parents=True, exist_ok=True)
+        target_dir, target = _target_paths(save_dir, page_index, reference)
+        Path(target_dir).mkdir(parents=True, exist_ok=True)
+        stamp_path = Path(target_dir) / 'segments.json'
+        stamp = {**identity, 'identity': manifest['identity'], 'portrait_sha256': portrait_sha}
+        detection_path = root / '.wan-detections' / (digest({'portrait_sha256': portrait_sha,
+            'scope_id': identity['scope_id'], 'endpoint': identity['endpoint']}) + '.json')
+        videos = []
+
+        def save_page_manifest():
+            records = []
+            for part in manifest['segments']:
+                filename = part_root / ('wan-task-{:04d}.json'.format(part['index']))
+                try:
+                    remote = json.loads(filename.read_text(encoding='utf-8'))
+                    if not isinstance(remote, dict):
+                        raise ValueError('远程记录格式无效')
+                except FileNotFoundError:
+                    remote = {'state': 'preparing_media'}
+                except (OSError, ValueError):
+                    remote = {'state': 'record_invalid'}
+                records.append({**part, 'model': stage['model'], 'portrait_sha256': portrait_sha,
+                    **{name: remote.get(name) for name in ('task_id', 'request_id', 'state', 'remote_status')}})
+            atomic_json(Path(target_dir) / 'avatar_segments.json', {**manifest, 'policy_version': 2,
+                'avatar_enabled': True, 'page_audio_sha256': manifest['source_sha256'], 'segments': records})
+
+        save_page_manifest()
+        for segment in manifest['segments']:
+            index = segment['index']
+            record_path = part_root / ('wan-task-{:04d}.json'.format(index))
+            output = part_root / ('{:04d}.mp4'.format(index))
+            if progress_report:
+                progress_report.report('talking', stage=3, page=page_index, segment_index=index,
+                    done=page_index, total=len(input_list), role='avatar', mode='api', model=stage['model'],
+                    completed_segments=len(videos), total_segments=len(manifest['segments']))
+            try:
+                client.run_segment(reference, segment['file'], record_path, output, model=stage['model'],
+                    resolution=resolution, scope_id=identity['scope_id'], cancelled=cancelled,
+                    detection_path=detection_path)
+                if not output.is_file():
+                    raise ValueError('云端数字人片段未归档，停止合片')
+                videos.append(output)
+            finally:
+                save_page_manifest()
+        if cancelled():
+            raise ValueError('数字人任务已请求取消；保留已完成片段供对账')
+        try:
+            saved = json.loads(stamp_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            saved = None
+        if not Path(target).is_file() or saved != stamp:
+            stitch(videos, manifest, audio, target)
+            _write_inputs_stamp(target_dir, reference, audio)
+            atomic_json(stamp_path, stamp)
+        results.append((page_index, True, target))
+        if progress_report:
+            progress_report.report('talking', stage=3, done=page_index + 1, total=len(input_list),
+                page=page_index, role='avatar', mode='api', model=stage['model'],
+                completed_segments=len(videos), total_segments=len(videos), remote_status='succeeded')
     return results

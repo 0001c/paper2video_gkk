@@ -62,7 +62,8 @@ def candidate(record, role, provider, today=None):
         return None
     speech = role == 'tts' and 'native' in record['sources'] and record['id'] in (
         'cosyvoice-v3.5-plus', 'cosyvoice-v3.5-flash', 'cosyvoice-v3-plus', 'cosyvoice-v3-flash', 'cosyvoice-v2')
-    implemented = (role in ('text', 'vision', 'grounding') and compatible) or speech
+    avatar = role == 'avatar' and 'native' in record['sources'] and record['id'] == 'wan2.2-s2v'
+    implemented = (role in ('text', 'vision', 'grounding') and compatible) or speech or avatar
     offline = record['offline_time']
     status = 'active'
     if offline:
@@ -73,7 +74,7 @@ def candidate(record, role, provider, today=None):
             status = 'lifecycle_unknown'
     return {**record, 'role': role, 'roles': [value for value in ROLES if value == role or
             (value == 'text' and 'TG' in caps) or (value == 'vision' and 'VU' in caps)],
-            'protocols': ['bailian_http_sse_tts'] if speech else ['openai_compatible_chat'] if implemented else ['bailian_native'],
+            'protocols': ['bailian_native_async_avatar'] if avatar else ['bailian_http_sse_tts'] if speech else ['openai_compatible_chat'] if implemented else ['bailian_native'],
             'adapter_implemented': implemented, 'selectable': implemented and status not in ('retired', 'lifecycle_unknown'),
             'status': status, 'verification': 'capability_unknown' if unknown else 'catalog_only',
             'recommended': record['id'] == RECOMMENDED[role] and status == 'active', 'provider': provider}

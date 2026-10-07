@@ -76,7 +76,12 @@ class CloudVoiceReference(StrictModel):
     resource_id: ConnectionID
 
 
+class AvatarParameters(StrictModel):
+    resolution: Literal["480P", "720P"] = "480P"
+
+
 class Avatar(Stage):
+    parameters: EmptyParameters | AvatarParameters = Field(default_factory=EmptyParameters)
     provider: Literal['bailian', 'musetalk']
     enabled: bool
 
@@ -106,6 +111,10 @@ class PipelineModelConfig(StrictModel):
                 raise ConfigurationError(field + '.connection_id', '本地权重不使用API连接')
             if role not in ("text", "vision") and stage.mode == "api" and stage.provider != "bailian":
                 raise ConfigurationError(field + '.provider', '仅百炼提供此API路径')
+        if self.avatar.mode == "local" and isinstance(self.avatar.parameters, AvatarParameters):
+            raise ConfigurationError("avatar.parameters.resolution", "分辨率仅适用于百炼Wan数字人")
+        if self.avatar.mode == "api" and isinstance(self.avatar.parameters, EmptyParameters):
+            self.avatar.parameters = AvatarParameters()
         if self.timing.source == "tts_timestamp" and self.stages.tts.mode != "api":
             raise ConfigurationError('timing.source', '本地TTS不能提供API合成时间戳')
         return self
@@ -174,8 +183,9 @@ def ensure_implemented(config, roles):
         field = "config.model_config.avatar" if role == "avatar" else f"config.model_config.stages.{role}"
         cloud_tts = role == 'tts' and stage.mode == 'api' and stage.model in (
             'cosyvoice-v3.5-plus', 'cosyvoice-v3.5-flash', 'cosyvoice-v3-plus', 'cosyvoice-v3-flash', 'cosyvoice-v2')
+        cloud_avatar = role == 'avatar' and stage.mode == 'api' and stage.model == 'wan2.2-s2v'
         cloud_grounding = role == 'grounding' and stage.mode == 'api' and stage.model == 'qwen3-vl-plus'
-        if role not in ("text", "vision") and not cloud_tts and not cloud_grounding and (stage.mode != "local" or stage.model != LOCAL_MODELS[role]):
+        if role not in ("text", "vision") and not cloud_tts and not cloud_grounding and not cloud_avatar and (stage.mode != "local" or stage.model != LOCAL_MODELS[role]):
             raise ConfigurationError(field, "该模型适配器尚未实现，不允许回退本地", "adapter_not_implemented")
         if role == "tts" and stage.mode == 'local' and stage.parameters.speech_rate != 1.0:
             raise ConfigurationError(field + ".parameters.speech_rate", "当前本地TTS仅支持默认语速", "adapter_not_implemented")
@@ -190,7 +200,7 @@ def capabilities():
             "implemented": {"compatible_text_vision": True, "local_tts_asr_grounding": True,
                             "independent_text_vision_connections": True, "role_model_parameters": True,
                             "cloud_voices": True, "tts_timestamps": True, "bailian_speech": True,
-                            "bailian_grounding": True, "bailian_avatar": False, "avatar_segmentation": True}}
+                            "bailian_grounding": True, "bailian_avatar": True, "avatar_segmentation": True}}
 
 
 def effective_mode(config, roles):

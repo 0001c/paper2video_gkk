@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildSync } from "esbuild";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 async function load(name) {
@@ -86,4 +87,25 @@ test("结构化422保留字段路径且不把服务端input当作错误文本", 
   globalThis.fetch = async () => ({ ok: false, status: 422, json: async () => ({ detail: {
     problems: [{ field: "config.model_config.stages.tts", message: "适配器未实现", input: "secret" }] } }) });
   await assert.rejects(api.post("/api/model-config/validate", {}), /config.model_config.stages.tts：适配器未实现/);
+});
+
+test("P7已接入数字人可准备课件，只有真实缺项拦截提交并保留输出分辨率", () => {
+  const options = { implemented: { bailian_avatar: true, avatar_segmentation: true } };
+  const api = models.presetConfig("bailian_api", "connection", true);
+  api.avatar.parameters.resolution = "720P";
+  assert.equal(models.avatarConfigurationProblem(api, true, options), undefined);
+  assert.match(models.avatarConfigurationProblem(api, false, options), /肖像/);
+  const missing = { ...api, avatar: { ...api.avatar, connection_id: "" } };
+  assert.match(models.avatarConfigurationProblem(missing, true, options), /连接/);
+  assert.match(models.avatarConfigurationProblem(api, true, { implemented: {} }), /尚未实现/);
+  assert.equal(models.readModelConfig(api).avatar.parameters.resolution, "720P");
+  const local = models.presetConfig("local_existing", "connection", true);
+  assert.equal(models.avatarConfigurationProblem(local, true, options), undefined);
+  assert.deepEqual(models.readModelConfig(local).avatar.parameters, {});
+  const disabled = { ...api, avatar: { ...api.avatar, enabled: false, connection_id: "" } };
+  assert.equal(models.avatarConfigurationProblem(disabled, false, options), undefined);
+  const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  assert.equal(app.includes('等待P6'), false);
+  assert.equal(app.includes('待P6适配'), false);
+  assert.equal((app.match(/avatarConfigurationProblem\(modelConfig, !!portraitFile, opts\?\.model_configuration\)/g) ?? []).length, 2);
 });

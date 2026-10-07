@@ -444,8 +444,11 @@ if __name__ == '__main__':
             if not args.ref_img or not path.isfile(args.ref_img):
                 raise FileNotFoundError("已要求生成数字人，但人像图不存在：{}".format(
                     args.ref_img or "<未提供>"))
-            print("[数字人] 档位：{}".format(describe_profile(
-                resolve_profile(args.talking_profile, backend=args.model_name_talking))))
+            if args.model_name_talking == 'musetalk':
+                print("[数字人] 档位：{}".format(describe_profile(
+                    resolve_profile(args.talking_profile, backend=args.model_name_talking))))
+            else:
+                print("[数字人] 云端模型：{}".format(args.model_name_talking))
             talking_save_dir = path.join(
                 args.result_dir, 'talking_{}'.format(args.model_name_talking))
             talking_inference_input = []
@@ -462,7 +465,7 @@ if __name__ == '__main__':
             talking_gen_per_slide(
                 args.model_name_talking, talking_inference_input, talking_save_dir,
                 args.gpu_list, env_path=args.talking_head_env,
-                profile=args.talking_profile)
+                profile=args.talking_profile, model_snapshot=model_snapshot)
             step4_time = time.time()
             time_second["talking_gen"] = [step4_time-start_time]
             print("Talking Generation", step4_time-start_time)

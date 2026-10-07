@@ -206,10 +206,12 @@ class Checks(unittest.TestCase):
         self.assertEqual(group['requests'], 2)
         self.assertEqual(group['usage']['prompt_tokens'], 200)
 
-    def test_unsupported_wan_remains_blocked(self):
+    def test_wan_implemented_and_other_avatar_models_blocked(self):
         config = legacy_config({'generate_talking': True}, 'test')
         ensure_implemented(config, ['avatar'])
         config.avatar.mode = 'api'; config.avatar.provider = 'bailian'; config.avatar.model = 'wan2.2-s2v'; config.avatar.connection_id = 'test'
+        ensure_implemented(config, ['avatar'])
+        config.avatar.model = 'unsupported-avatar'
         with self.assertRaises(ConfigurationError):
             ensure_implemented(config, ['avatar'])
 

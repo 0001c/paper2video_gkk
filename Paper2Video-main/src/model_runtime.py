@@ -56,6 +56,8 @@ def apply_model_snapshot(args):
     args.tts_model = config.stages.tts.model
     if hasattr(args, "generate_talking"):
         args.generate_talking = config.avatar.enabled
+        if hasattr(args, "model_name_talking"):
+            args.model_name_talking = config.avatar.model
     elif config.avatar.enabled:
         raise ValueError("light流水线不能启用数字人")
     return snapshot

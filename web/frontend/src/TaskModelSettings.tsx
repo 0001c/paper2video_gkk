@@ -38,7 +38,7 @@ export function TaskModelSettings({ jobId, snapshot, value, connections: initial
         {role === "avatar" && !saved.avatar.enabled ? "（关闭）" : ""}<span className="hint">{connection?.label ?? stage.connection_id ?? "无需云连接"} · {connection?.scope_id ?? "本地"}</span>
         {connection && <span className="hint">目录：{connection.catalog_time ?? "未记录"} · {connection.catalog_source ?? "未验证"}</span>}</dd></div>;
     })}</dl>
-    <p className="hint">时间轴：{saved.timing.source}。{saved.avatar.enabled ? "单段严格小于20秒，分段实现待P6" : "未启用数字人，无20秒分段限制"}。目录可见与配置合法均不是运行验收。</p>
+    <p className="hint">时间轴：{saved.timing.source}。{saved.avatar.enabled ? "单段严格小于20秒，自动分段并保留完整页音轨" : "未启用数字人，无20秒分段限制"}。目录可见与配置合法均不是运行验收。</p>
     {!disabled && <>
       <details><summary>重新绑定失效连接（同范围、同端点）</summary><p className="hint">先在管理连接中重建，填写原资源范围标识，再刷新可用连接。不会借用其他账号密钥或自动继续执行。</p>
         <Button variant="text" disabled={busy} onClick={reload}>刷新可用连接</Button>
@@ -50,7 +50,7 @@ export function TaskModelSettings({ jobId, snapshot, value, connections: initial
         <Button variant="outline" loading={busy} disabled={busy} onClick={rebind}>重新绑定（不执行）</Button>
       </details>
       <details><summary>修改此任务下一次执行的模型组合</summary>
-        <label className="checkline"><input type="checkbox" checked={value.avatar.enabled} onChange={(event) => onChange({ ...value, avatar: { ...value.avatar, enabled: event.target.checked } })} />启用数字人（严格分段待P6）</label>
+        <label className="checkline"><input type="checkbox" checked={value.avatar.enabled} onChange={(event) => onChange({ ...value, avatar: { ...value.avatar, enabled: event.target.checked } })} />启用数字人（单段严格小于20秒）</label>
         <ModelSettings value={value} options={options} concurrency={concurrency} concurrencyEditable={false} onChange={onChange} onConcurrency={() => {}} voice={voice} />
         {value.stages.tts.mode === 'api' ? <CloudVoicePanel stage={value.stages.tts} value={voiceResource} onChange={onVoice} />
           : <Button variant="outline" onClick={() => onVoice(undefined)}>此任务改用本地默认参考音色</Button>}

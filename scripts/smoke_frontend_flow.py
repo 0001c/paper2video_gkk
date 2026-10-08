@@ -40,7 +40,7 @@ def main():
         job = {"id": "source", "status": "done", "source_name": "测试论文.pdf",
                "config": {"generate_talking": False, "slide_lang": "zh", "script_lang": "zh"}}
         web._save_job(job)
-        client = TestClient(web.app)
+        client = TestClient(web.app, client=('127.0.0.1',50000))
         async def first_frame():
             frames = web._sse_frames("source", lambda: False, 15)
             try:
@@ -57,7 +57,7 @@ def main():
         check("合成视频" in plan["overwrite"], "预检说明原产物覆盖范围")
         script.write_text('截断 | "Title', encoding="utf-8")
         stale = client.post("/api/jobs/source/rerun", json={"plan_token": plan["token"], "reuse_script": True})
-        check(stale.status_code == 409 and web._QUEUE.empty(), "确认后产物变化被拦截，不创建任务")
+        check(stale.status_code == 409 and web._QUEUE.empty(), "确认后产物变化被拦截，不创建任务：{} {}".format(stale.status_code,stale.text))
         invalid = client.get("/api/jobs/source/rerun-plan").json()
         check(not invalid["can_reuse_script"] and invalid["can_rerun"], "损坏讲稿不能承诺免费复用")
         refused = client.post("/api/jobs/source/rerun", json={"plan_token": invalid["token"], "reuse_script": True})

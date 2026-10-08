@@ -305,10 +305,14 @@ def _review_snapshot(job):
     audio_plan = plan or {'sections': [{'id': 'all', 'title': '讲解内容', 'minutes': len(pages) * 0.5}],
                           'script_lang': language, 'speech_rate': 220 if language == 'zh' else 140}
     report = course.audio_report(audio_plan, result)
+    teaching_policy = course.read_json(result/'teaching_contract.json') or plan
+    teaching = course.teaching_review(pages,result,teaching_policy)
     version = course.digest({"script": script.read_bytes().hex(), "slides": [course.digest(p.read_bytes()) for p in slides],
-                             "plan": plan, "voice": (job.get("config") or {}).get("voice")})
+                             "plan": plan, 'teaching':teaching_policy,
+                             'slides_pdf':course.digest((result/'slides_rendered.pdf').read_bytes()) if (result/'slides_rendered.pdf').is_file() else None,
+                             "voice": (job.get("config") or {}).get("voice")})
     return {"version": version, "pages": pages, "plan": course.public_plan(plan) if plan else None,
-            "timing": report, "status": job.get("status"), "editable": _rerun_plan(job)["can_rerun"]}
+            "timing": report, 'teaching':teaching, "status": job.get("status"), "editable": _rerun_plan(job)["can_rerun"]}
 
 
 def _check_review(job, payload):
@@ -1746,7 +1750,7 @@ def _artifact_facts(job):
         "vlm_model": cfg.get('vision_model') or os.environ.get('PAPER2VIDEO_VLM_MODEL', 'deepseek-flash'),
         "model_api_base": None if backends else cfg.get('model_api_base') or os.environ.get('OPENAI_BASE_URL') or os.environ.get('OPENAI_API_BASE'),
         "text_backend": backends.get('text'), "vision_backend": backends.get('vision'),
-        "script_generation_version": 4 if backends else 3,
+        "script_generation_version": 5 if backends else 4,
         "talking_profile": cfg.get("talking_profile", "musetalk-local"),
         # 幻灯片布局微调（树搜索）：它真的改变 stage 1 的幻灯片产物
         # （溢出页多出 4 个宽度候选、由 VLM 选一张），所以**必须在指纹里**。

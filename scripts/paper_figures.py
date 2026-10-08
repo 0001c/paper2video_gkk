@@ -46,7 +46,7 @@ import zipfile
 
 # 改提取逻辑（阈值、命名、筛选）必须 +1 —— 它进 deck 指纹，
 # 不 +1 就会命中"用旧逻辑提的图"生成的那批幻灯片，且不报错。
-FIGURES_VERSION = "1"
+FIGURES_VERSION = "2"
 
 FIGURES_DIRNAME = "figures"
 INDEX_NAME = "index.json"
@@ -57,7 +57,7 @@ PROJECT_IMAGE_EXT = (".png", ".jpg", ".jpeg", ".pdf", ".eps", ".jbig2", ".jb2")
 
 DEFAULT_MIN_SIDE = 150        # 源图短边下限（像素）：再小的基本是 logo/图标
 DEFAULT_MIN_PAGE_RATIO = 0.03  # 显示区域占页面积下限：3%
-DEFAULT_MAX_FIGURES = 12
+DEFAULT_MAX_FIGURES = 40
 DEFAULT_MAX_DIM = 2400        # 最长边超过就等比缩小（避免超大图拖慢编译）
 DEFAULT_DPI = 200             # 矢量簇/裁剪区域按这个 dpi 渲染
 
@@ -80,6 +80,50 @@ def _clean_caption(text, limit=160):
     s = re.sub(r"\s+", " ", (text or "")).strip()
     s = s.strip("　 ")
     return s[:limit]
+
+
+def figure_id(text):
+    match = re.search(r'(?:图|Fig(?:ure)?\.?)\s*(\d+(?:\s*[-–－]\s*\d+)?)', text, re.I)
+    return 'F' + re.sub(r'\s+', '', match[1]).replace('–','-').replace('－','-') if match else None
+
+
+def _text_rows(page):
+    """图注碎成字符块时仍按字形坐标读完整行；不猜图题。"""
+    chars = [char for block in page.get_text('rawdict')['blocks'] if block['type'] == 0
+             for line in block['lines'] for span in line['spans'] for char in span['chars']]
+    rows = []
+    for char in sorted(chars, key=lambda c:(c['origin'][1],c['origin'][0])):
+        if not rows or abs(char['origin'][1] - rows[-1][0]) > 0.75:
+            rows.append((char['origin'][1], []))
+        rows[-1][1].append(char)
+    result = []
+    for _, row in rows:
+        row.sort(key=lambda c:c['origin'][0])
+        kept = []
+        for char in row:
+            if not any(char['c'] == old['c'] and abs(char['origin'][0]-old['origin'][0]) < 0.8 for old in kept[-4:]):
+                kept.append(char)
+        row = kept
+        result.append((min(c['bbox'][0] for c in row), min(c['bbox'][1] for c in row),
+                       max(c['bbox'][2] for c in row), max(c['bbox'][3] for c in row), ''.join(c['c'] for c in row), 0, 0))
+    return result
+
+
+def _covered_figures(figures, limit):
+    """先覆盖全章页域，再补同页图片；显式上限不能只留下前半章。"""
+    if limit < 1:
+        raise ValueError('max_figures 必须为正整数')
+    if len(figures) <= limit:
+        return figures
+    pages = sorted({fig['page'] for fig in figures})
+    chosen_pages = pages if len(pages) <= limit else [pages[round(i*(len(pages)-1)/max(1,limit-1))] for i in range(limit)]
+    selected = [next(fig for fig in figures if fig['page'] == page) for page in chosen_pages]
+    for fig in figures:
+        if len(selected) >= limit:
+            break
+        if fig not in selected:
+            selected.append(fig)
+    return [fig for fig in figures if any(fig is selected_fig for selected_fig in selected)]
 
 
 def _page_area(page):
@@ -204,9 +248,10 @@ def extract_from_pdf(pdf_path, figures_dir, min_side=DEFAULT_MIN_SIDE,
     try:
         for page_no, page in enumerate(doc, 1):
             area = _page_area(page)
-            blocks = page.get_text("blocks")
+            blocks = _text_rows(page)
             # ── 内嵌位图 ──
-            for info in page.get_image_info(xrefs=True):
+            image_infos = page.get_image_info(xrefs=True)
+            for info in image_infos:
                 bbox = tuple(info.get("bbox") or ())
                 if len(bbox) != 4:
                     continue
@@ -242,6 +287,33 @@ def extract_from_pdf(pdf_path, figures_dir, min_side=DEFAULT_MIN_SIDE,
                 })
                 seen_digest[digest] = True
 
+            # 带明确图号的碎片计算图可能由上千条1px位图组成，先合区域再筛尺寸。
+            for caption in blocks:
+                label = figure_id(caption[4])
+                if (not _CAPTION_LABEL.match(caption[4]) or not label or len(caption[4]) > 60
+                        or caption[2]-caption[0] > page.rect.width*0.75
+                        or any(f['page'] == page_no and figure_id(f['caption']) == label for f in figures)):
+                    continue
+                floor = max([caption[1]-220, *[b[3]+2 for b in blocks if b[3] < caption[1]
+                             and b[2]-b[0] > page.rect.width*0.6]])
+                parts = [info['bbox'] for info in image_infos if floor <= info['bbox'][1] < info['bbox'][3] <= caption[1]+1]
+                if not parts:
+                    continue
+                box = [min(b[0] for b in parts),min(b[1] for b in parts),max(b[2] for b in parts),max(b[3] for b in parts)]
+                labels = [b for b in blocks if floor <= b[1] and b[3] < caption[1]
+                          and len(re.findall(r'[\u3400-\u9fff]',b[4])) < 12
+                          and _h_overlap_ratio(b[0],b[2],box[0],box[2]) > 0.5]
+                if labels:
+                    box[1] = min(box[1],min(b[1] for b in labels))
+                    box[0] = min(box[0],min(b[0] for b in labels))
+                    box[2] = max(box[2],max(b[2] for b in labels))
+                pix = page.get_pixmap(clip=pymupdf.Rect(box),dpi=dpi)
+                if min(pix.width,pix.height) < min_side/2:
+                    continue
+                figures.append({'page':page_no,'bbox':[round(v,1) for v in box],
+                    'src_width':pix.width,'src_height':pix.height,'shown_ratio':round(pymupdf.Rect(box).get_area()/area,4),
+                    'kind':'composite','format':'png','caption':_clean_caption(caption[4]),'_raw':pix.tobytes('png'),'merged_parts':len(parts)})
+
             # ── 矢量簇兜底（阈值未标定，保守）──
             raster_boxes = [f["bbox"] for f in figures if f["page"] == page_no]
             try:
@@ -249,7 +321,7 @@ def extract_from_pdf(pdf_path, figures_dir, min_side=DEFAULT_MIN_SIDE,
             except Exception:
                 clusters = []
             for rect in clusters:
-                if len([f for f in figures if f["kind"] == "vector"]) >= VECTOR_MAX:
+                if len([f for f in figures if f["kind"] == "vector" and f['page'] == page_no]) >= VECTOR_MAX:
                     break
                 w, h = rect.width, rect.height
                 if w < VECTOR_MIN_WIDTH_RATIO * page.rect.width:
@@ -280,13 +352,28 @@ def extract_from_pdf(pdf_path, figures_dir, min_side=DEFAULT_MIN_SIDE,
                     "_raw": raw,
                 })
                 seen_digest[digest] = True
+        # 同一图号的相邻碎片合成一个源页裁剪，保留文字/矢量叠层。
+        for fig in figures:
+            fig['figure_id'] = figure_id(fig['caption'])
+        grouped = []
+        for fig in figures:
+            parts = [part for part in figures if fig['figure_id'] and part['page'] == fig['page'] and part['figure_id'] == fig['figure_id']]
+            if len(parts) > 1:
+                if any(item.get('figure_id') == fig['figure_id'] and item['page'] == fig['page'] for item in grouped):
+                    continue
+                box = [min(p['bbox'][0] for p in parts), min(p['bbox'][1] for p in parts), max(p['bbox'][2] for p in parts), max(p['bbox'][3] for p in parts)]
+                pix = doc[fig['page']-1].get_pixmap(clip=pymupdf.Rect(box),dpi=dpi)
+                fig = {**fig,'bbox':box,'kind':'composite','format':'png','_raw':pix.tobytes('png'),
+                       'src_width':pix.width,'src_height':pix.height,'merged_parts':len(parts)}
+            grouped.append(fig)
+        figures = grouped
     finally:
         doc.close()
 
     # 排序：先按页，同页内 raster 优先、再按显示面积从大到小
     figures.sort(key=lambda f: (f["page"], 0 if f["kind"] == "raster" else 1,
                                 -f["shown_ratio"]))
-    figures = figures[:max_figures]
+    figures = _covered_figures(figures, max_figures)
 
     os.makedirs(figures_dir, exist_ok=True)
     out = []
@@ -487,11 +574,14 @@ def extract(source_path, project_root, *, force=False, log=print, **kwargs):
 
     source_ok = bool(source_path) and os.path.isfile(source_path)
     source_digest = _file_sha1(source_path) if source_ok else None
+    parameters = {key:kwargs.get(key,default) for key,default in (
+        ('min_side',DEFAULT_MIN_SIDE),('min_page_ratio',DEFAULT_MIN_PAGE_RATIO),
+        ('max_figures',DEFAULT_MAX_FIGURES),('max_dim',DEFAULT_MAX_DIM),('dpi',DEFAULT_DPI))}
 
     if not force:
         cached = read_index(figures_dir)
         if cached and str(cached.get("version")) == FIGURES_VERSION:
-            if cached.get("source_sha1") and cached["source_sha1"] == source_digest:
+            if cached.get("source_sha1") and cached["source_sha1"] == source_digest and cached.get('parameters') == parameters:
                 return (cached.get("figures") or [],
                         "已有 %d 张图的清单（版本 %s，源指纹一致），跳过提取" % (
                             len(cached.get("figures") or []), cached.get("version")))
@@ -534,6 +624,7 @@ def extract(source_path, project_root, *, force=False, log=print, **kwargs):
         "source_kind": kind,
         # 源指纹进清单：幂等跳过要以它为准（见 extract 的 docstring）
         "source_sha1": source_digest,
+        'parameters':parameters,
         "figures": figures,
     }
 
@@ -587,10 +678,14 @@ def figure_prompt_block(project_root, lang="zh", limit=None):
                 "Please **prefer** \\includegraphics on the slides whose content "
                 "matches them, with relative widths (e.g. width=0.8\\textwidth) and "
                 "a caption. Do not reference any image not listed below.")
+    head += ('\n每张源图必须在对应 figure 环境内注明清单给出的 figure_id（如 % source-figure: F2-13）与原图号，'
+             'caption 必须完整逐字保留清单原图注；不得把神经网络图称为山谷/梯度图。无可信图注的图只可说明源页，不能猜图号或用途。'
+             if lang == 'zh' else '\nBind every image within its figure environment using % source-figure: <figure_id> and its original caption. Never relabel a network diagram as a gradient valley.')
     lines = [head, ""]
     for fig in figures:
         cap = fig.get("caption") or ("page %s" % fig["page"] if fig.get("page") else "")
-        lines.append("  - %s%s" % (fig["rel"], ("  —— " + cap) if cap else ""))
+        lines.append("  - %s | figure_id=%s | source_page=%s | bbox=%s | %s" %
+                     (fig['rel'],fig.get('figure_id') or 'unlabeled',fig.get('page'),fig.get('bbox'),cap))
     return "\n".join(lines)
 
 

@@ -7,6 +7,8 @@ import { Help, Section } from './Section';
 import type { SubtitleStyle } from './subtitleStyle';
 
 type Review = { version: string; pages: string[]; editable: boolean;
+  teaching?: { passed: boolean; issues: string[]; warnings: string[];
+    example_coverage: { example_id: string; source_page: number | null; slide_pages: number[] }[] } | null;
   timing: { estimated_minutes: number; actual_minutes: number | null; target_minutes: number | null;
     pages: { planned_minutes: number; estimated_minutes: number; actual_seconds: number | null; section: string }[] } | null };
 
@@ -48,6 +50,7 @@ export function ReviewPanel({ jobId, apiKey, apiBase, modelConfig, modelOrigin, 
     else onJob(data.job_id);
   }, (e) => setError(errorMessage(e)));
   const timing = review?.timing;
+  const teachingNeedsSave = !!review?.teaching && pages.join('\n') !== review.pages.join('\n');
   const delta = timing?.actual_minutes != null && timing.target_minutes ? (timing.actual_minutes - timing.target_minutes) / timing.target_minutes : null;
   const estimatedDelta = timing?.target_minutes ? (timing.estimated_minutes - timing.target_minutes) / timing.target_minutes : null;
   return <Section title="课件与讲稿审核" important help="核对课件与讲稿后再确认配音合片。可逐页编辑；未变化的音频与定位结果可复用，最终视频会重新合成。光标选择用于下一次生成，已有成片不会自动更改。" actions={<Button variant="text" disabled={busy} onClick={() => {
@@ -59,6 +62,11 @@ export function ReviewPanel({ jobId, apiKey, apiBase, modelConfig, modelOrigin, 
     {!review && !error && <p role="status">正在读取审核内容…</p>}
     {review && <>
       {timing && <div className="notice info"><span>讲稿预算约 {timing.estimated_minutes} 分钟{timing.target_minutes ? ` · 目标 ${timing.target_minutes} 分钟` : ""}{timing.actual_minutes != null ? ` · 已合成音频 ${timing.actual_minutes} 分钟` : " · 实际时长将在音频生成后显示"}{delta != null ? ` · 偏差 ${(delta * 100).toFixed(1)}%` : ""}</span></div>}
+      {review.teaching && <div aria-live="polite">
+        {review.teaching.issues.map((issue) => <p className="notice warn" key={issue}>{issue}</p>)}
+        {review.teaching.warnings.map((warning) => <p className="hint" key={warning}>{warning}</p>)}
+        {review.teaching.example_coverage.map((example) => <p className="hint" key={example.example_id}>例题 {example.example_id} · 源文{example.source_page ? `第 ${example.source_page} 页` : "页码未标记"} · {example.slide_pages.length ? `课件第 ${example.slide_pages.join("、")} 页` : "待补充课件步骤"}</p>)}
+      </div>}
       {delta != null && Math.abs(delta) > 0.1 && <p className="notice warn">实际时长超出目标 ±10%。可调整相应页讲稿，再重新配音合片；系统不会强行放慢语音或重复内容。</p>}
       {delta == null && estimatedDelta != null && Math.abs(estimatedDelta) > 0.1 && <p className="notice warn">当前讲稿估算与目标相差 {(estimatedDelta * 100).toFixed(1)}%。请在配音前检查讲稿是否覆盖教学内容，并按需要补充讲解或调整长度；此估算仍需用实际音频校准。</p>}
       <div className="field"><label htmlFor="review-page">查看页码</label><select id="review-page" value={selected} disabled={busy} onChange={(e) => setSelected(Number(e.target.value))}>{pages.map((_, i) => <option key={i} value={i}>第 {i + 1} 页{timing?.pages[i] ? ` · ${timing.pages[i].section}` : ""}</option>)}</select></div>
@@ -72,7 +80,8 @@ export function ReviewPanel({ jobId, apiKey, apiBase, modelConfig, modelOrigin, 
       <div className="actions"><Button variant="outline" disabled={!review.editable || busy} onClick={() => apply("save")}>保存全部讲稿修改</Button><Button variant="outline" disabled={!review.editable || busy || !apiKey.trim()} onClick={() => apply("regenerate")}>调用模型重写本页</Button></div>
       <CursorPicker options={cursors} style={style} scale={scale} disabled={!review.editable || busy} onStyle={(value) => { setStyle(value); setAccepted(false); }} onScale={(value) => { setScale(value); setAccepted(false); }} />
       <label className="checkrow"><input type="checkbox" checked={accepted} disabled={!review.editable || busy} onChange={(e) => setAccepted(e.target.checked)} />已核对所有课件和讲稿，确认开始配音与合片</label>
-      <div className="actions"><Button theme="primary" loading={busy} disabled={!review.editable || !accepted || busy} onClick={() => apply("render")}>确认并生成配音视频</Button></div>
+      {teachingNeedsSave && <p className="hint">讲稿已修改，请先保存，重新核验例题与时长预算。</p>}
+      <div className="actions"><Button theme="primary" loading={busy} disabled={!review.editable || !accepted || busy || teachingNeedsSave || review.teaching?.passed === false} onClick={() => apply("render")}>确认并生成配音视频</Button></div>
       {!review.editable && <p className="hint">有任务正在使用这份产物，暂不能编辑。结束后可重新读取。</p>}
     </>}
   </Section>;

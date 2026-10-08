@@ -46,10 +46,20 @@ def render_cursor_on_video(input_video, output_video, cursor_points, transition_
         raise ValueError('光标尺寸和移动时间必须为正数')
     points = {}
     for t, x, y in cursor_points:
+        if x is None and y is None:
+            if not isinstance(t, (float, int)) or not math.isfinite(t):
+                raise ValueError('光标时间必须为有限数字')
+            points[max(0, t)] = (None, None)
+            continue
         if not all(isinstance(v, (float, int)) and math.isfinite(v) for v in (t, x, y)):
             raise ValueError('光标坐标和时间必须为有限数字')
         points[max(0, t)] = (x, y)
-    ordered = [(t, *xy) for t, xy in sorted(points.items())]
+    events = [(t, *xy) for t, xy in sorted(points.items())]
+    ordered = [event for event in events if event[1] is not None]
+    if not ordered:
+        if Path(input_video).resolve() != Path(output_video).resolve():
+            shutil.copy2(input_video, output_video)
+        return
     overlay = cursor_overlay(cursor_img_path, int(cursor_size))
     # 单个 overlay 表达式保持最后一个目标，只有一个目标时也能生成视频。
     def position(axis):
@@ -65,7 +75,12 @@ def render_cursor_on_video(input_video, output_video, cursor_points, transition_
             terms = ['({}+{})'.format(terms[i], terms[i + 1]) if i + 1 < len(terms) else terms[i]
                      for i in range(0, len(terms), 2)]
         return terms[0]
-    filters = "[0:v][1:v]overlay=x='{}':y='{}':enable='gte(t,{})':eval=frame[vout]".format(position(1), position(2), ordered[0][0])
+    visible = ['gte(t,{}){}'.format(event[0], '*lt(t,{})'.format(events[i + 1][0]) if i + 1 < len(events) else '')
+               for i, event in enumerate(events) if event[1] is not None]
+    while len(visible) > 1:
+        visible = ['({}+{})'.format(visible[i], visible[i + 1]) if i + 1 < len(visible) else visible[i]
+                   for i in range(0, len(visible), 2)]
+    filters = "[0:v][1:v]overlay=x='{}':y='{}':enable='{}':eval=frame[vout]".format(position(1), position(2), visible[0])
     # 长课可有上千个目标，Windows 命令行有长度上限，滤镜写入临时文件。
     with tempfile.NamedTemporaryFile(dir=pv_env.TMP_DIR, suffix='.ffscript', mode='w', encoding='utf-8', delete=False) as handle:
         handle.write(filters)
@@ -86,6 +101,8 @@ def render_video_with_cursor_from_json(video_path, out_video_path, json_path, cu
         return
     with open(json_path, encoding='utf-8') as handle:
         data = json.load(handle)
-    points = [(slide['start'] + (0.5 if i else 0), *slide['cursor']) for i, slide in enumerate(data)]
+    points = []
+    for slide in data:
+        points.extend([(slide['start'], *(slide.get('cursor') or (None, None))), (slide['end'], None, None)])
     render_cursor_on_video(video_path, out_video_path, points, transition_duration, cursor_size,
                            cursor_img_path, cursor_hotspot)

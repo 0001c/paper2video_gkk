@@ -216,7 +216,7 @@ def main():
             point_calls.append(task)
             return {'slide': task[0], 'sentence': task[1], 'speech_text': task[2], 'cursor_prompt': task[3], 'cursor': [20, 20], 'token': ''}
         cursor._infer_task = infer
-        speech.align_with_qwen3 = lambda *args, **kwargs: alignment_calls.append(args) or {}
+        speech.align_with_qwen3 = lambda audio_path, text, **kwargs: alignment_calls.append((audio_path,text)) or {'segments':[{'words':[{'word':text,'start':0.02,'end':0.1}]}]}
         cursor.timesteps = lambda *args: [{'start': 0.02, 'end': 0.1, 'text': '测试'}]
         cursor_json = result / 'cursor.json'
         cursor.cursor_gen_per_sentence(script, slides, audio, str(cursor_json), gpu_list='0', language='Chinese', resume_cache=True)

@@ -17,6 +17,8 @@
 import os
 import shutil
 import subprocess
+import json
+import math
 from os import path
 
 AUDIO_EXTS = ("wav", "mp3", "m4a", "aac", "flac", "ogg", "opus")
@@ -69,12 +71,12 @@ def merge_slides_and_audio(slide_dir, audio_dir, output_dir, num_video,
     if parent:
         os.makedirs(parent, exist_ok=True)
 
-    segments = []
+    segments, audios, timeline = [], [], []
+    total, previous_frame = 0.0, 0
     for index in range(1, int(num_video) + 1):
         slide_path = path.join(slide_dir, "{}.png".format(index))
         if not path.isfile(slide_path):
-            print("  [跳过] 第 {} 页：找不到幻灯片 {}".format(index, slide_path))
-            continue
+            raise FileNotFoundError('第 {} 页缺少幻灯片 {}'.format(index,slide_path))
 
         audio_path = None
         for ext in AUDIO_EXTS:
@@ -83,14 +85,22 @@ def merge_slides_and_audio(slide_dir, audio_dir, output_dir, num_video,
                 audio_path = candidate
                 break
         if audio_path is None:
-            print("  [跳过] 第 {} 页：{} 下无对应音频".format(index, audio_dir))
-            continue
+            raise FileNotFoundError('第 {} 页缺少音频'.format(index))
 
         try:
             duration = probe_duration(audio_path)
         except RuntimeError as exc:
-            print("  [跳过] 第 {} 页：{}".format(index, exc))
-            continue
+            raise RuntimeError('第 {} 页音频时长不可用'.format(index)) from exc
+        if not math.isfinite(duration) or duration <= 0:
+            raise ValueError('页音频时长必须为正数')
+        total += duration
+        end_frame = round(total*30)
+        frames = end_frame-previous_frame
+        if frames < 1:
+            raise ValueError('页音频不足一帧')
+        timeline.append({'page':index,'start_frame':previous_frame,'end_frame':end_frame,
+                         'video_start_seconds':previous_frame/30,'audio_start_seconds':total-duration,'audio_end_seconds':total})
+        previous_frame = end_frame
 
         out_path = path.join(output_dir, "page_{:03d}.mp4".format(index))
         print("  [合成] 第 {} 页  音频 {}  {:.2f}s".format(
@@ -98,15 +108,14 @@ def merge_slides_and_audio(slide_dir, audio_dir, output_dir, num_video,
 
         _run([
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-loop", "1", "-t", "{:.3f}".format(duration), "-i", _as_posix(slide_path),
-            "-i", _as_posix(audio_path),
-            "-map", "0:v", "-map", "1:a",
+            "-loop", "1", "-framerate", "30", "-i", _as_posix(slide_path),
+            "-frames:v", str(frames), "-an",
             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30",
             "-preset", "fast", "-crf", "23",
-            "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2",
-            "-shortest", _as_posix(out_path),
+            _as_posix(out_path),
         ])
         segments.append(out_path)
+        audios.append(audio_path)
 
     if not segments:
         print("  [警告] 没有生成任何片段，跳过拼接")
@@ -119,14 +128,22 @@ def merge_slides_and_audio(slide_dir, audio_dir, output_dir, num_video,
             handle.write("file '{}'\n".format(_as_posix(path.abspath(seg))))
 
     print("  [拼接] {} 个片段 -> {}".format(len(segments), video_path))
+    master = path.join(output_dir,'master.wav')
+    audio_args = ['ffmpeg','-y','-v','error']
+    for audio in audios:
+        audio_args += ['-i',_as_posix(audio)]
+    filters = ''.join('[{}:a]'.format(i) for i in range(len(audios)))+'concat=n={}:v=0:a=1[a]'.format(len(audios))
+    _run(audio_args+['-filter_complex',filters,'-map','[a]','-c:a','pcm_s16le','-ar','48000',_as_posix(master)])
     _run([
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         "-f", "concat", "-safe", "0", "-i", _as_posix(path.abspath(list_path)),
-        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30",
-        "-preset", "fast", "-crf", "23",
+        '-i',_as_posix(master),'-map','0:v:0','-map','1:a:0',
+        "-c:v", "copy",
         "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2",
-        _as_posix(path.abspath(video_path)),
+        '-t',str(total),_as_posix(path.abspath(video_path)),
     ])
+    with open(path.join(output_dir,'media_timeline.json'),'w',encoding='utf-8') as handle:
+        json.dump({'fps':30,'audio_seconds':total,'pages':timeline,'max_boundary_delta_seconds':max(abs(p['video_start_seconds']-p['audio_start_seconds']) for p in timeline)},handle,ensure_ascii=False,indent=2)
     print("  [完成] {}".format(video_path))
     return video_path
 

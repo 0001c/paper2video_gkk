@@ -27,6 +27,7 @@ whisperx large-v3 + align  ->  Qwen3-ASR-0.6B + Qwen3-ForcedAligner-0.6B
 """
 
 import os
+import copy
 import re
 import json
 import string
@@ -450,8 +451,9 @@ class PdfSlideLocator:
         except Exception:
             rects = []
         if rects:
-            first = rects[0]
-            return self._to_pixels(page, (first.x0, first.y0, first.x1, first.y1))
+            # 同一引用换行时使用完整匹配区域，不只取第一行。
+            return self._to_pixels(page, (min(r.x0 for r in rects),min(r.y0 for r in rects),
+                                          max(r.x1 for r in rects),max(r.y1 for r in rects)))
 
         target = normalize_text(phrase)
         if not target:
@@ -682,9 +684,9 @@ def cursor_gen_per_sentence(script_path, slide_img_dir, slide_audio_dir,
                               'connection': settings['connection_id'], 'endpoint': settings['url'], 'protocol': PROTOCOL,
                               'pdf': course.digest(Path(slide_pdf_path).read_bytes()) if slide_pdf_path and path.isfile(slide_pdf_path) else None}
     def point_key(task):
-        identity = {'v': 1, 'image': course.digest(Path(task[4]).read_bytes()), 'cursor': task[3]}
+        identity = {'v': 4, 'image': course.digest(Path(task[4]).read_bytes()), 'cursor': task[3]}
         if grounding_identity is not None:
-            identity.update(v=2, grounding=grounding_identity)
+            identity.update(grounding=grounding_identity)
         return course.digest(identity)
     cache_path = cursor_save_path.replace('.json', '_cache.json')
     cache = course.read_json(cache_path, {}) if resume_cache else {}
@@ -718,17 +720,20 @@ def cursor_gen_per_sentence(script_path, slide_img_dir, slide_audio_dir,
 
     # ── 第一级：PDF 文本坐标 ──
     resolved = [None] * len(task_list)
-    point_sources = [None] * len(task_list)
+    hidden = [task[3].strip().lower() == 'no' for task in task_list]
+    point_sources = ['hidden' if value else None for value in hidden]
     point_keys = [point_key(task) for task in task_list] if resume_cache else []
     if resume_cache:
         for pos, key in enumerate(point_keys):
+            if hidden[pos]:
+                continue
             resolved[pos] = points.get(key)
             if resolved[pos] is not None:
                 point_sources[pos] = 'cache'
     locator = _open_pdf_locator(slide_pdf_path, slide_w, slide_h, len(parsed_speech))
     if locator is not None:
         for pos, task in enumerate(task_list):
-            if resolved[pos] is not None:
+            if hidden[pos] or resolved[pos] is not None:
                 continue
             slide_idx, _, _, cursor_prompt, _, _ = task
             phrase = extract_quote(cursor_prompt) or strip_cursor_prefix(cursor_prompt)
@@ -743,7 +748,7 @@ def cursor_gen_per_sentence(script_path, slide_img_dir, slide_audio_dir,
 
     # ── 第二级：GUI-Owl grounding，只处理 PDF 没命中的 ──
     devices = pv_env.gpu_list(gpu_list)
-    pending = [task for pos, task in enumerate(task_list) if resolved[pos] is None]
+    pending = [task for pos, task in enumerate(task_list) if not hidden[pos] and resolved[pos] is None]
 
     if not pending:
         print("[cursor_gen] 全部由缓存/PDF定位完成，未调用 grounding 模型")
@@ -755,7 +760,8 @@ def cursor_gen_per_sentence(script_path, slide_img_dir, slide_audio_dir,
             fallback.append({'slide': task[0], 'sentence': task[1], 'speech_text': task[2],
                              'cursor_prompt': task[3], 'cursor': point, 'token': token})
             if resume_cache:
-                points[point_key(task)] = point if point is not None else [slide_w // 2, slide_h // 2]
+                if point is not None:
+                    points[point_key(task)] = point
                 course.write_json(cache_path, cache)
             if progress_report:
                 progress_report.report('cursor', stage=2, done=index, total=len(pending))
@@ -801,7 +807,7 @@ def cursor_gen_per_sentence(script_path, slide_img_dir, slide_audio_dir,
     fallback_iter = iter(fallback)
     for pos, task in enumerate(task_list):
         slide_idx, sentence_idx, prompt, cursor_prompt, _, _ = task
-        if resolved[pos] is not None:
+        if hidden[pos] or resolved[pos] is not None:
             cursor_result.append({
                 "slide": slide_idx, "sentence": sentence_idx, "speech_text": prompt,
                 "cursor_prompt": cursor_prompt, "cursor": resolved[pos],
@@ -812,14 +818,11 @@ def cursor_gen_per_sentence(script_path, slide_img_dir, slide_audio_dir,
             item["source"] = "bailian_grounding" if api_grounding else "grounding"
             cursor_result.append(item)
 
-    # 「no」指令与解析失败 -> 画面中心
-    center = (slide_w // 2, slide_h // 2)
-    for item in cursor_result:
-        if item["cursor"] is None:
-            item["cursor"] = center
+    # 无目标/未找到保持 None，渲染器隐藏；不能把中心点算成命中。
     if resume_cache:
         for key, item in zip(point_keys, cursor_result):
-            points[key] = item['cursor']
+            if item['cursor'] is not None:
+                points[key] = item['cursor']
         course.write_json(cache_path, cache)
 
     cursor_token = "".join(item["token"] for item in cursor_result)
@@ -857,13 +860,13 @@ def cursor_gen_per_sentence(script_path, slide_img_dir, slide_audio_dir,
             pcm, api_alignment = read_pair(slide_audio_path)
             if plain_text(api_alignment['text']) != plain_text(' '.join(raw_texts)):
                 raise ValueError('时间戳原稿与光标稿不一致，禁止回退本地对齐')
-        alignment_identity = {'v': 1, 'audio': course.digest(Path(slide_audio_path).read_bytes()), 'texts': raw_texts, 'cursor': cursor, 'language': language}
+        alignment_identity = {'v': 4, 'audio': course.digest(Path(slide_audio_path).read_bytes()), 'texts': raw_texts, 'cursor': cursor, 'language': language}
         if api_alignment is not None:
-            alignment_identity.update(v=3, source=timing_source, timing=api_alignment)
+            alignment_identity.update(source=timing_source, timing=api_alignment)
         alignment_key = course.digest(alignment_identity) if resume_cache else None
         cached_alignment = alignments.get(alignment_key)
         if cached_alignment is not None:
-            sentence_timesteps = [dict(item) for item in cached_alignment]
+            sentence_timesteps = copy.deepcopy(cached_alignment)
         else:
             aligned = api_alignment if api_alignment is not None else align_with_qwen3(slide_audio_path, " ".join(raw_texts), lang=language)
             if api_alignment is not None:
@@ -871,6 +874,10 @@ def cursor_gen_per_sentence(script_path, slide_img_dir, slide_audio_dir,
                 sentence_timesteps = timestamp_sentences(raw_texts, aligned, get_audio_length(slide_audio_path))
             else:
                 sentence_timesteps = timesteps(subtitle, aligned, slide_audio_path)
+            from caption_timing import sentence_word_spans
+            spans = sentence_word_spans(raw_texts, aligned)
+            for sentence, words in zip(sentence_timesteps, spans):
+                sentence['word_spans'] = words
 
         # 句数可能因词数统计偏差而对不齐，取较短的一侧做保护性配对
         if len(sentence_timesteps) != len(cursor):
@@ -882,10 +889,12 @@ def cursor_gen_per_sentence(script_path, slide_img_dir, slide_audio_dir,
             # 同时保留原文：sentence_timesteps 里的 text 是 clean_text 的产物
             # （全小写、去标点），用于字幕显示不合适。
             sentence_timesteps[pos]["raw_text"] = raw_texts[pos]
+            sentence_timesteps[pos]['page'] = idx + 1
+            sentence_timesteps[pos]['sentence'] = pos
 
         slide_sentence_timesteps.append(sentence_timesteps)
         if resume_cache:
-            alignments[alignment_key] = [dict(item) for item in sentence_timesteps]
+            alignments[alignment_key] = copy.deepcopy(sentence_timesteps)
             course.write_json(cache_path, cache)
 
     # 拼接为全局时间轴
@@ -902,6 +911,9 @@ def cursor_gen_per_sentence(script_path, slide_img_dir, slide_audio_dir,
         for idx in range(len(sentence_timesteps)):
             sentence_timesteps[idx]["start"] += start_time_now
             sentence_timesteps[idx]["end"] += start_time_now
+            for word in sentence_timesteps[idx].get('word_spans', []):
+                word['start'] += start_time_now
+                word['end'] += start_time_now
             duration += sentence_timesteps[idx]["end"] - sentence_timesteps[idx]["start"]
 
         # 页间时间轴必须包含静音和停顿，长课不能累计丢掉这些时长。

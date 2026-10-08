@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Sequence, Tuple, Optional
 from PIL import Image, ImageDraw, ImageFont
 from wei_utils import create_agent
+from slide_quality import LAYOUT_PROMPT, record_quality
 
 
 def extract_json_block(text: str, first_only: bool = True):
@@ -92,7 +93,7 @@ def latex_code_gen_upgrade(prompt_path, tex_dir, beamer_save_path,
             "Use Beamer Theme: {}".format(beamer_temp_name) 
         ]
         
-    main_inference_prompt = "\n".join(map(str, main_inference_prompt))
+    main_inference_prompt = "\n".join(map(str, main_inference_prompt)) + LAYOUT_PROMPT
 
     # ── 论文类型的显式覆盖（来自 --paper_type）──
     # 放在**最后**：指令的权威性靠"离提问最近"保证。prompt 模板里那套
@@ -131,7 +132,7 @@ def latex_code_gen_upgrade(prompt_path, tex_dir, beamer_save_path,
     ## fix if error
     num_try = 0
     token_usage["fix"] = []
-    while num_try < 10 and not ok:
+    while if_fix and num_try < 3 and not ok:
         error_info = re.findall(r'^(error: .+)', feedback, flags=re.MULTILINE)
         if not error_info:
             # 编译失败但拿不到 "error: " 行，说明失败原因不在反馈文本里（例如
@@ -150,6 +151,9 @@ def latex_code_gen_upgrade(prompt_path, tex_dir, beamer_save_path,
         ok, feedback = compile_tex(beamer_save_path)
         num_try += 1
 
+    if not ok:
+        raise RuntimeError('课件未通过编译/版面/源图质量门禁，已在讲稿和配音前停止：\n'+feedback[-3000:])
+
     ## improve slide layout
     config = model_config_vl
     if if_tree_search is True:
@@ -161,6 +165,8 @@ def latex_code_gen_upgrade(prompt_path, tex_dir, beamer_save_path,
 
 select_proposal_prompt_path = "prompts/select_proposal.txt"
 def improve_layout(code, feedback, beamer_save_path, model_config):
+    if 'Overfull' not in feedback:
+        return beamer_save_path.replace('.tex','.pdf'), []
     # ⚠️ 编码必须写死 utf-8：这段提示词是 UTF-8（里面有 `→`），
     # 而 Windows 上 `open()` 不带 encoding 会用 ANSI(GBK) 解码 ——
     # 实测在 `→`（e2 86 92）的第三字节 0x92 上抛
@@ -172,7 +178,6 @@ def improve_layout(code, feedback, beamer_save_path, model_config):
     
     ## get layout warning info
     warning_info = re.findall(r'^(warning: .+)', feedback, flags=re.MULTILINE)
-    warning_info = warning_info[:len(warning_info)//2]
     warning_info = [s for s in warning_info if 'Overfull' in s]
     
     ## find out which slide needed to be improved
@@ -256,7 +261,9 @@ def improve_layout(code, feedback, beamer_save_path, model_config):
     # ⚠️ 这是**最终返回给流水线**的幻灯片源码（下游据此渲染 PDF 再做幻灯片图），
     # 写成 GBK 会让后续读它的人（tectonic / pipeline）拿到乱码，且不报错。
     with open(new_code_save_path, 'w', encoding="utf-8") as f: f.write(new_code)
-    _, feedback = compile_tex(new_code_save_path)
+    ok, feedback = compile_tex(new_code_save_path)
+    if not ok:
+        raise RuntimeError('改进课件未通过质量门禁：'+feedback[-2000:])
     return new_code_save_path.replace(".tex", ".pdf"), token_usage_improve
 
 def improve_per_slide(data):
@@ -695,9 +702,8 @@ def _clean_feedback(text):
 def compile_tex(tex_path):
     """编译 tex，返回 ``(是否成功, 反馈文本)``。
 
-    判定成败只认**进程退出码**，不再对输出做子串匹配 —— 子串匹配会被
-    上面那行 Fontconfig 噪声骗到。反馈文本仍保留 stdout+stderr（已去噪），
-    因为 ``improve_layout`` 需要从里面 grep ``^warning:`` 找 Overfull。
+    编译退出码与本地版面/图号检查均须通过；已去除 Fontconfig 噪声，
+    真实 Overfull 会作为修复依据，不能仅凭 PDF 存在继续收费阶段。
     """
     tex_path = Path(tex_path).resolve()
     if not tex_path.exists(): raise FileNotFoundError(f"Tex file {tex_path} does not exist")
@@ -713,6 +719,10 @@ def compile_tex(tex_path):
     )
     ok = result.returncode == 0
     feedback = _clean_feedback("\n".join([result.stdout or "", result.stderr or ""]))
+    errors = record_quality(tex_path,feedback,ok)
+    if errors:
+        ok = False
+        feedback += '\n' + '\n'.join('error: '+error+'；先拆页/减正文，保留原图绑定与可读字号。' for error in errors)
     print("Tex File Compilation succeeded." if ok else "Compilation failed:")
     print(feedback)
     return ok, feedback

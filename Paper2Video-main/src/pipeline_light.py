@@ -146,6 +146,13 @@ if __name__ == "__main__":
     speech_save_dir = os.path.join(args.result_dir, "audio")
     subtitle_cursor_save_path = os.path.join(args.result_dir, "subtitle_w_cursor.txt")
     cursor_save_path = os.path.join(args.result_dir, "cursor.json")
+    teaching = None
+    if args.paper_type == 'textbook':
+        import course
+        from teaching_quality import source_examples
+        teaching = {'examples':source_examples(course.latex_source(args.paper_latex_root)),
+                    'speech_rate':220 if lang['script_lang'] == 'zh' else 140,'script_lang':lang['script_lang']}
+        course.write_json(os.path.join(args.result_dir,'teaching_contract.json'),teaching)
 
     # ── Step 1: 幻灯片生成 ──
     slide_latex_path = os.path.join(args.paper_latex_root, "slides.tex")
@@ -157,7 +164,9 @@ if __name__ == "__main__":
         if args.skip_slide_gen:
             print("[Stage 1] 跳过 LLM 生成，直接使用现有 slides.tex: {}".format(slide_latex_path))
             from slide_code_gen_select_improvement import compile_tex
-            compile_tex(slide_latex_path)
+            ok, feedback = compile_tex(slide_latex_path)
+            if not ok:
+                raise ValueError('课件未通过质量门禁：'+feedback[-2000:])
             beamer_path = slide_latex_path.replace(".tex", ".pdf")
             usage_slide = {}
         else:
@@ -166,6 +175,9 @@ if __name__ == "__main__":
             prompt_path = lang["slide_prompt"]
             slide_extra_prompt = language_config.paper_type_directive(
                 args.paper_type, lang["slide_lang"])
+            if teaching:
+                from teaching_quality import directive
+                slide_extra_prompt = (slide_extra_prompt or '')+directive(teaching['examples'])
             if slide_extra_prompt:
                 print("[pipeline] 论文类型显式指定为 {}，已附加覆盖指令".format(
                     args.paper_type))
@@ -215,9 +227,19 @@ if __name__ == "__main__":
     # ── Step 2: 字幕 + 光标提示 / TTS / 光标定位 ──
     if "2" in stage or "0" in stage:
         start_time = time.time()
+        from slide_quality import require_quality
+        require_quality(args.paper_latex_root)
 
         prompt_path = lang["script_prompt"]
-        subtitle, usage_subtitle = subtitle_cursor_gen(slide_image_dir, prompt_path, agent_config_v)
+        if teaching:
+            subtitle, usage_subtitle = course.generate_script(None,slide_image_dir,prompt_path,agent_config_v,
+                args.result_dir,subtitle_cursor_gen,teaching=teaching)
+            report = course.teaching_review(course.split_pages(subtitle),args.result_dir,teaching)
+            course.write_json(os.path.join(args.result_dir,'teaching_report.json'),report)
+            if not report['passed']:
+                raise ValueError('教学内容未通过收费前审核：'+'；'.join(report['issues']))
+        else:
+            subtitle, usage_subtitle = subtitle_cursor_gen(slide_image_dir, prompt_path, agent_config_v)
         with open(subtitle_cursor_save_path, "w", encoding="utf-8") as handle:
             handle.write(subtitle)
         if args.model_name_v not in token_usage:

@@ -25,6 +25,8 @@ import subprocess
 import shutil
 import tempfile
 import unicodedata
+import math
+import re
 
 import pv_env
 import subtitle_style
@@ -75,7 +77,8 @@ def _load_segments(cursor_json_path):
         text = (item.get("raw_text") or item.get("text") or "").strip()
         if not text:
             continue
-        segments.append({"start": float(item["start"]), "end": float(item["end"]), "text": text})
+        segments.append({"start": float(item["start"]), "end": float(item["end"]), "text": text,
+                         'word_spans': item.get('word_spans', [])})
     return segments
 
 
@@ -103,6 +106,59 @@ def _wrap_text(text, width, font_size):
 
 def _ass_color(color, opacity=1):
     return '&H{:02X}{}{}{}'.format(round((1 - opacity) * 255), color[5:7], color[3:5], color[1:3])
+
+
+def timed_captions(segment, width, font_size, max_seconds=8):
+    """沿真实字词切最多两行字幕；展开数字的原文范围不能切成两半。"""
+    text = segment['text']
+    words = segment.get('word_spans') or []
+    if not words:
+        if len(_wrap_text(text, width, font_size).splitlines()) > 2:
+            raise ValueError('长字幕缺少真实字词区间，请重新执行定位阶段；禁止按字数平均切时间')
+        return [segment]
+    groups = []
+    previous = -1.0
+    for word in words:
+        first, last = word['text_start'], word['text_end']
+        start, end = word['start'], word['end']
+        if (not 0 <= first < last <= len(text) or not all(math.isfinite(v) for v in (start,end))
+                or start < previous - 0.001 or end < start or start < segment['start'] - 0.001 or end > segment['end'] + 0.001):
+            raise ValueError('字幕真实字词区间无效')
+        previous = end
+        if groups and first < groups[-1]['text_end']:
+            groups[-1].update(text_end=max(last, groups[-1]['text_end']), end=end)
+        else:
+            groups.append(dict(word))
+    protected = list(re.finditer(r'\d+(?:\.\d+)?%?|[A-Za-z]+|\$[^$]+\$', text))
+    captions, begin, index = [], 0, 0
+    while index < len(groups):
+        choices = []
+        for stop in range(index, len(groups)):
+            last = groups[stop]['text_end']
+            while last < len(text) and not text[last].isalnum() and text[last] not in '$\\':
+                last += 1
+            if any(match.start() < last < match.end() for match in protected):
+                continue
+            candidate = text[begin:last]
+            if len(_wrap_text(candidate, width, font_size).splitlines()) > 2:
+                break
+            if choices and groups[stop]['end'] - groups[index]['start'] > max_seconds:
+                break
+            choices.append((stop, last))
+        if not choices:
+            raise ValueError('单个不可分字词/公式超过两行，请拆分明确口述后重新配音')
+        stop, last = choices[-1]
+        punctuation = [(s,l) for s,l in choices if text[l-1:l] in '。！？；.!?;' and l-begin >= (last-begin)//2]
+        if punctuation:
+            stop, last = punctuation[-1]
+        captions.append({'text':text[begin:last], 'start':segment['start'] if index == 0 else groups[index]['start'],
+                         'end':segment['end'] if stop == len(groups)-1 else groups[stop]['end']})
+        begin, index = last, stop + 1
+    if begin < len(text):
+        captions[-1]['text'] += text[begin:]
+    if ''.join(caption['text'] for caption in captions) != text:
+        raise ValueError('字幕切句未保留完整展示原文')
+    return captions
 
 
 def _write_ass(segments, ass_path, width, height, font_size, font_name, style=None):
@@ -133,18 +189,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
            outline_color=outline_color, background=background, border_style=border_style)
 
     lines = [header]
-    for seg in segments:
-        event_size = int(font_size)
-        wrapped = _wrap_text(seg['text'], width - 2 * margin_h, event_size)
-        while (wrapped.count('\n') + 1) * event_size * 1.4 > height - 2 * margin_v and event_size > 8:
-            event_size -= 1
-            wrapped = _wrap_text(seg['text'], width - 2 * margin_h, event_size)
-        if (wrapped.count('\n') + 1) * event_size * 1.4 > height - 2 * margin_v:
-            raise ValueError('字幕段落过长，无法在画面内完整显示，请先拆分讲稿段落')
-        override = r'{\fs' + str(event_size) + '}' if event_size != int(font_size) else ''
+    captions = [caption for segment in segments for caption in timed_captions(segment, width - 2*margin_h, font_size)]
+    for seg in captions:
+        wrapped = _wrap_text(seg['text'], width - 2 * margin_h, font_size)
         lines.append("Dialogue: 0,{},{},Default,,0,0,0,,{}".format(
             _ass_timestamp(seg["start"]), _ass_timestamp(seg["end"]),
-            override + _escape_ass_text(wrapped)))
+            _escape_ass_text(wrapped)))
 
     with open(ass_path, "w", encoding="utf-8-sig") as handle:
         handle.write("\n".join(lines) + "\n")
@@ -182,6 +232,10 @@ def add_subtitles(video_path, output_path, font_size=None,
 
     width, height = _probe_resolution(video_path)
     font_size = max(1, round(style['font_size'] * height / 1080)) if configured or font_size is None else font_size
+    # 在课件下方增加独立字幕区域，不缩小/遮挡源画面的公式与图注。
+    ratio = style['margin_bottom'] / 100
+    band = math.ceil(max(height*0.18, (font_size*2.8 + 2*height*ratio)/(1-2*ratio)))
+    output_height = (height + band + 1)//2*2
     font_name = style['font_name'] or font_name or DEFAULT_FONT
     print("[subtitle_render] 视频 {}x{}，字幕 {} 条，字号 {}".format(
         width, height, len(segments), font_size))
@@ -195,13 +249,13 @@ def add_subtitles(video_path, output_path, font_size=None,
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         "-i", str(os.path.abspath(video_path)),
-        "-vf", "ass={}".format(os.path.basename(ass_path)),
+        "-vf", "pad=iw:{}:0:0:color=0x101827,ass={}".format(output_height, os.path.basename(ass_path)),
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast", "-crf", "23",
         "-c:a", "copy",
         str(os.path.abspath(output_path)),
     ]
     try:
-        _write_ass(segments, ass_path, width, height, font_size, font_name, style)
+        _write_ass(segments, ass_path, width, output_height, font_size, font_name, style)
         result = subprocess.run(cmd, cwd=pv_env.TMP_DIR, capture_output=True, text=True)
     finally:
         os.remove(ass_path)

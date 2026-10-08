@@ -44,10 +44,8 @@ class SubtitleChecks(unittest.TestCase):
         wrapped = render._wrap_text(text, 2268, 42)
         self.assertEqual(wrapped.replace('\n', ''), text)
         self.assertTrue(all(len(line) <= 45 for line in wrapped.splitlines()))
-        content = self.ass(text)
-        self.assertIn('WrapStyle: 0', content)
-        self.assertIn(r'\N', content)
-        self.assertIn('0:00:12.25,0:00:57.85', content)
+        with self.assertRaisesRegex(ValueError,'真实字词'):
+            self.ass(text)
 
     def test_english_words_and_unbroken_tokens_wrap(self):
         text = 'Natural language processing ' * 8
@@ -71,9 +69,9 @@ class SubtitleChecks(unittest.TestCase):
         style = next(line for line in self.ass('透明', {'background_opacity': 0}).splitlines() if line.startswith('Style:'))
         self.assertEqual(style.split(',')[15], '1')
 
-    def test_oversized_paragraph_shrinks_instead_of_vertical_crop(self):
-        content = self.ass('自然语言处理' * 90, size=96, width=1920, height=1080)
-        self.assertIn(r'{\fs', content)
+    def test_oversized_paragraph_without_timing_is_rejected(self):
+        with self.assertRaisesRegex(ValueError,'真实字词'):
+            self.ass('自然语言处理' * 90, size=96, width=1920, height=1080)
 
     def test_disabled_and_empty_captions_still_produce_output(self):
         source = self.root / 'source.mp4'

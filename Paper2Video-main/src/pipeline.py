@@ -233,6 +233,16 @@ if __name__ == '__main__':
     if path.exists(copy_latex_proj_path) is False:
         copy_folder(args.paper_latex_root, copy_latex_proj_path)
     args.paper_latex_root = copy_latex_proj_path
+    teaching = None
+    if course_plan or args.paper_type == 'textbook':
+        from teaching_quality import source_examples
+        source = '\n\n'.join(section['source'] for section in course_plan['sections']) if course_plan else course.latex_source(args.paper_latex_root)
+        teaching = {**(course_plan or {}),'examples':source_examples(source),
+                    'speech_rate':(course_plan or {}).get('speech_rate',220 if lang['script_lang'] == 'zh' else 140),
+                    'script_lang':lang['script_lang']}
+        if course_plan:
+            course_plan['examples'] = teaching['examples']
+        course.write_json(path.join(args.result_dir,'teaching_contract.json'),teaching)
     
     if path.exists(path.join(args.result_dir, "sat.json")) is True:
         with open(path.join(args.result_dir, "sat.json"), 'r', encoding="utf-8") as f:
@@ -308,6 +318,9 @@ if __name__ == '__main__':
         _slide_extra = ((_slide_extra + "\n\n") if _slide_extra else "") + _count_directive
         if course_plan:
             _slide_extra += course.slide_directive(course_plan)
+        elif teaching:
+            from teaching_quality import directive
+            _slide_extra += directive(teaching['examples'])
         if paper_figures is not None:
             _figures, _fig_note = paper_figures.extract(args.paper_source,
                                                         args.paper_latex_root)
@@ -352,6 +365,8 @@ if __name__ == '__main__':
 
     speech_save_dir = path.join(args.result_dir, 'audio')
     if "2" in stage or  "0" in stage:
+        from slide_quality import require_quality
+        require_quality(args.paper_latex_root)
         prompt_path = args.script_prompt_file or lang["script_prompt"]
         if not path.isfile(prompt_path):
             raise FileNotFoundError("讲稿提示词文件不存在：{}".format(prompt_path))
@@ -383,23 +398,28 @@ if __name__ == '__main__':
                 subtitle, usage_subtitle = course.generate_script(course_plan, slide_image_dir,
                     prompt_path, agent_config_v, args.result_dir, subtitle_cursor_gen,
                     selected=json.loads(args.regenerate_pages) if args.regenerate_pages else None, workers=args.script_concurrency,
-                    generation_id=args.script_generation_id)
+                    generation_id=args.script_generation_id, teaching=teaching)
             elif args.regenerate_pages:
                 subtitle, usage_subtitle = course.generate_selected(slide_image_dir, prompt_path,
                     agent_config_v, args.result_dir, subtitle_cursor_gen, json.loads(args.regenerate_pages), workers=args.script_concurrency,
-                    generation_id=args.script_generation_id)
+                    generation_id=args.script_generation_id, teaching=teaching)
             else:
                 subtitle, usage_subtitle = course.generate_script(None,
                     slide_image_dir, prompt_path, agent_config_v, args.result_dir, subtitle_cursor_gen, workers=args.script_concurrency,
-                    generation_id=args.script_generation_id)
+                    generation_id=args.script_generation_id, teaching=teaching)
             # 显式 utf-8：读回处固定用 utf-8，写入端不该依赖环境默认编码
             course.save_script(subtitle_cursor_save_path, subtitle)
+        teaching_report = course.teaching_review(course.split_pages(subtitle),args.result_dir,teaching)
+        if teaching_report:
+            course.write_json(path.join(args.result_dir,'teaching_report.json'),teaching_report)
         if args.review_before_render:
             course.write_json(path.join(args.result_dir, 'course_review.json'), {'ready': True})
             if course_plan:
                 course.write_json(path.join(args.result_dir, 'course_timing.json'), course.audio_report(course_plan, args.result_dir))
             print('[course] 课件与讲稿已准备，请审核后再合成音频与视频', flush=True)
             sys.exit(0)
+        if teaching_report and not teaching_report['passed']:
+            raise ValueError('教学内容未通过收费前审核：'+'；'.join(teaching_report['issues']))
         if args.model_name_v not in token_usage.keys(): 
             token_usage[args.model_name_v] = [usage_subtitle]
         else: token_usage[args.model_name_v].append(usage_subtitle)

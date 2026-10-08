@@ -5,8 +5,9 @@ import { ModelSettings } from "./ModelSettings";
 import { CloudVoicePanel, type CloudVoice } from './CloudVoicePanel';
 import { roleLabels, roles, roleStage, type Connection, type ModelConfig, type ModelOptions } from "./modelConfig";
 
-export function TaskModelSettings({ jobId, snapshot, value, connections: initialConnections, options, concurrency, disabled, onChange, voice, voiceResource, onVoice }: {
+export function TaskModelSettings({ jobId, portraitPath, snapshot, value, connections: initialConnections, options, concurrency, disabled, onChange, voice, voiceResource, onVoice }: {
   voice?: unknown; voiceResource?: CloudVoice; onVoice: (resource?: CloudVoice) => void;
+  portraitPath?: string;
   jobId: string; snapshot: ModelConfig; value: ModelConfig; connections?: Record<string, { label?: string; scope_id: string; provider: string; compatible_base_url: string; catalog_time?: string; catalog_source?: string }>;
   options?: ModelOptions; concurrency: number; disabled: boolean; onChange: (value: ModelConfig) => void;
 }) {
@@ -51,7 +52,7 @@ export function TaskModelSettings({ jobId, snapshot, value, connections: initial
       </details>
       <details><summary>修改此任务下一次执行的模型组合</summary>
         <label className="checkline"><input type="checkbox" checked={value.avatar.enabled} onChange={(event) => onChange({ ...value, avatar: { ...value.avatar, enabled: event.target.checked } })} />启用数字人（单段严格小于20秒）</label>
-        <ModelSettings value={value} options={options} concurrency={concurrency} concurrencyEditable={false} onChange={onChange} onConcurrency={() => {}} voice={voice} />
+        <ModelSettings value={value} options={options} concurrency={concurrency} concurrencyEditable={false} onChange={onChange} onConcurrency={() => {}} voice={voice} portraitPath={portraitPath} />
         {value.stages.tts.mode === 'api' ? <CloudVoicePanel stage={value.stages.tts} value={voiceResource} onChange={onVoice} />
           : <Button variant="outline" onClick={() => onVoice(undefined)}>此任务改用本地默认参考音色</Button>}
       </details>

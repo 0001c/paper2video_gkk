@@ -17,6 +17,7 @@ import { CursorPicker, type CursorOption } from "./CursorPicker";
 import { SubtitleSettings } from "./SubtitleSettings";
 import { defaultSubtitleStyle, readSubtitleStyle, type SubtitleStyle } from "./subtitleStyle";
 import { Help, Section } from './Section';
+import { SourceReview } from './SourceReview';
 
 /* ─────────────────────────────────────────────────────────────
    接口层。三个注意点：
@@ -184,6 +185,7 @@ function legacyPct(p?: Progress): number {
 
 type Job = {
   id: string;
+  ref_img?: string;
   status: string;
   phase: string;
   phase_key?: string;
@@ -412,6 +414,26 @@ export default function App() {
   const [paperFile, setPaperFile] = useState<File | null>(null);
   const [portraitFile, setPortraitFile] = useState<File | null>(null);
   const [portraitInfo, setPortraitInfo] = useState<any | null>(null);
+  const portraitSelection = useRef<File | null>(null);
+  const portraitUpload = useRef<{ file: File; result: Promise<any> } | null>(null);
+  const preparePortrait = useCallback(async () => {
+    const file = portraitSelection.current;
+    if (!file) return undefined;
+    if (portraitUpload.current?.file !== file) {
+      const form = new FormData(); form.append("paper", file);
+      const result = api.postForm("/api/portrait", form).then(({ data }) => {
+        if (!data.portrait_path) throw new Error(data.error || "人像上传失败");
+        return data;
+      });
+      portraitUpload.current = { file, result };
+    }
+    let data;
+    try { data = await portraitUpload.current.result; }
+    catch (error) { if (portraitUpload.current?.file === file) portraitUpload.current = null; throw error; }
+    if (portraitSelection.current !== file) throw new Error("人像已更换，请重新检查当前人像");
+    setPortraitInfo(data);
+    return data.portrait_path as string;
+  }, []);
   const [ingest, setIngest] = useState<any>(null);
   const [ingesting, setIngesting] = useState(false);
 
@@ -691,6 +713,12 @@ export default function App() {
     setCourseSettings((s) => ({ ...s, section_ids: ["all"], sections: undefined }));
   }, reportError), [paperFile]);
 
+  const useCorrectedSource = (data: any, file: File) => {
+    setPaperFile(file); setIngest(data); setCoursePlan(null);
+    setCourseSettings((settings) => ({ ...settings, section_ids: ['all'], sections: undefined }));
+    setView('new');
+  };
+
   const submit = useCallback(async () => runExclusive(submitLock, setSubmitting, async () => {
     setSubmitPhase("正在准备…");
     if (ingestLock.current || voiceLock.current) throw new Error("请等待文件提取或音色准备完成");
@@ -725,14 +753,7 @@ export default function App() {
     let portraitPath: string | undefined;
     if (talkingWillRun && portraitFile) {
       setSubmitPhase("正在上传人像…");
-      const form = new FormData();
-      form.append("paper", portraitFile);
-      const up = await api.postForm("/api/portrait", form);
-      portraitPath = up.data?.portrait_path;
-      if (!portraitPath) {
-        return MessagePlugin.error(up.data?.error || "人像图上传失败");
-      }
-      setPortraitInfo(up.data);
+      portraitPath = await preparePortrait();
     }
 
     await api.post("/api/model-config/validate", { model_config: modelConfig, voice: voiceSpecNow(),
@@ -780,7 +801,7 @@ export default function App() {
       else MessagePlugin.info(`已入队 · 音色：${data.voice_note}`);
     }
     if (data.talking_note) MessagePlugin.info(data.talking_note);
-  }, reportError), [ingest, portraitFile, generateTalking, apiKey, apiBase, slideLang, scriptLang,
+  }, reportError), [ingest, portraitFile, preparePortrait, generateTalking, apiKey, apiBase, slideLang, scriptLang,
       contentProfile, scriptPrompt, slidePrompt, slideCount, opts, ifTreeSearch,
       voiceMode, presetPick, designPrompt, uploadSpec, uploadText, voiceSpecNow, selectJob,
       courseEnabled, coursePlan, courseSettings, textModel, visionModel, scriptConcurrency, cursorStyle, cursorScale, subtitleStyle, modelConfig]);
@@ -1099,8 +1120,8 @@ export default function App() {
               <span className="material-badge required">必需</span>
             </div>
             <Dropzone
-              hint=".docx / .doc / .pdf / .tex / .zip"
-              accept=".docx,.doc,.pdf,.tex,.zip"
+              hint=".docx / .doc / .pdf / .tex / .zip / .txt"
+              accept=".docx,.doc,.pdf,.tex,.zip,.txt"
               picked={paperFile?.name ?? null}
               disabled={ingesting || submitting}
               onPick={(f) => {
@@ -1135,6 +1156,8 @@ export default function App() {
                 picked={portraitFile?.name ?? null}
                 disabled={submitting}
                 onPick={(f) => {
+                  portraitSelection.current = f;
+                  portraitUpload.current = null;
                   setPortraitFile(f);
                   setPortraitInfo(null); // 换图后旧的校验结果作废
                 }}
@@ -1194,6 +1217,8 @@ export default function App() {
             <span><b>有损提取</b>　{ingest.hint || "该格式无法保留结构信息，请在预览中核对"}</span>
           </div>
         )}
+        {!!ingest?.review_pages?.length && <p className="notice warn" role="status">源文第 {ingest.review_pages.join('、')} 页的文字或公式需要核对。请先修正正文，或选择不含缺失字形的教学范围；创建任务前会再次检查。</p>}
+        {ingest?.ingest_id && !ingest.error && ingest.chars > 0 && <SourceReview key={ingest.ingest_id} ingestId={ingest.ingest_id} onSaved={useCorrectedSource} />}
         {/* 内容寻址：同一份文件之前在服务器上存在时直接复用提取结果。
             不说一句的话，"秒出结果"会被当成"没真提取"（实测容易误判）。 */}
         {ingest?.cached && !ingest.error && (
@@ -1358,7 +1383,7 @@ export default function App() {
       {/* 模型决定音色路径：本地复用参考音频，API 选择独立云音色。 */}
       <Section anchor="credentials" number="04" title="模型配置" defaultOpen={false} summary={modelConfig.preset === 'bailian_api' ? '百炼全 API' : modelConfig.preset === 'local_existing' ? '保留现有本地推理' : '自定义组合'} important>
         {!initialDraft.model_config && (initialDraft.textModel || initialDraft.visionModel) && <p className="notice warn">已保留旧草稿的型号与本地路线，未沿用浏览器密钥。请添加兼容连接并重新选择；不会自动改成百炼默认。</p>}
-        <ModelSettings value={modelConfig} options={opts?.model_configuration} concurrency={scriptConcurrency} onChange={setModelConfig} onConcurrency={setScriptConcurrency} voice={voiceSpecNow()} portraitPath={portraitInfo?.portrait_path} onConnectionsChange={setModelConnections} />
+        <ModelSettings value={modelConfig} options={opts?.model_configuration} concurrency={scriptConcurrency} onChange={setModelConfig} onConcurrency={setScriptConcurrency} voice={voiceSpecNow()} preparePortrait={preparePortrait} portraitKey={portraitFile} onConnectionsChange={setModelConnections} />
       </Section>
 
       <Section anchor="voice" number="05" title="音色" defaultOpen={false} summary={modelConfig.stages.tts.mode === 'api' ? cloudVoice?.label ?? '待选择云音色' : voiceMode === 'default' ? '内置默认音色' : voiceMode === 'preset' ? presetPick?.label ?? '待选择音色' : voiceMode === 'design' ? '描述生成' : '上传参考音频'} important={voiceMode === 'upload'} help={<>
@@ -1385,9 +1410,9 @@ export default function App() {
 
 
         {voiceMode === "preset" && (
-          <div className="grid grid-2" style={{ marginTop: 12 }}>
+          <div className="grid grid-2 saved-voice-choice" style={{ marginTop: 12 }}>
             <div className="field">
-              <label>选择音色</label>
+              <div className="field-title"><label>选择音色</label></div>
               <Select
                 value={presetPick ? JSON.stringify(presetPick.spec) : ""}
                 onChange={(v) => {
@@ -1579,8 +1604,9 @@ export default function App() {
         {filesError && <div className="notice err" role="alert"><span>产物读取失败：{filesError}</span><Button variant="outline" onClick={() => setFilesVersion((value) => value + 1)}>重试读取</Button></div>}
         {job && <SubtitleSettings value={taskSubtitleStyle} disabled={!!running} onChange={(value) => setTaskSubtitleOverride({ jobId: job.id, value })} />}
         {job && !running && <p className="hint">字幕样式修改将用于下一次审核合片或续跑，不会立即改变已有视频。</p>}
+        {job?.status === 'failed' && job.phase_key === 'struct' && <div className="notice warn source-failure"><p>正文结构化未完成。若日志提示缺失字形，请对照源页修正，再以新素材创建任务。</p><SourceReview key={job.id} ingestId={job.id} onSaved={useCorrectedSource} /></div>}
         {job?.config?.model_config_origin === "v2" && job.config.model_config && taskModels && <TaskModelSettings key={job.id}
-          jobId={job.id} snapshot={job.config.model_config} value={taskModels} connections={job.config.model_connections} options={opts?.model_configuration}
+          jobId={job.id} portraitPath={job.ref_img} snapshot={job.config.model_config} value={taskModels} connections={job.config.model_connections} options={opts?.model_configuration}
           voice={taskVoice} voiceResource={taskVoiceResource} onVoice={(resource) => setTaskVoiceOverride({ jobId: job.id, voice: resource ? { kind: 'cloud', resource_id: resource.resource_id } : { kind: 'default' }, resource })}
           concurrency={job.config.script_concurrency ?? 3} disabled={!!running} onChange={(value) => setTaskOverride({ jobId: job.id, value })} />}
         {job && job.config?.model_config_origin !== "v2" && <details><summary>旧任务凭据恢复（仅当前页面内存）</summary>

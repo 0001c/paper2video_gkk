@@ -2249,6 +2249,13 @@ def api_cloud_voice_generate(payload: VoiceGenerate, request: Request):
     return _CLOUD_VOICES.generate(payload, entry, request.headers.get('Idempotency-Key'))
 
 
+@app.post('/api/cloud-voices/recover')
+def api_cloud_voice_recover(payload: VoicePreview, request: Request):
+    _local_write(request)
+    entry = _CLOUD_VOICES.connection(_MODEL_CONNECTIONS, payload.connection_id, payload.target_model)
+    return _CLOUD_VOICES.recover(entry, payload.target_model)
+
+
 @app.post('/api/cloud-voices/{resource_id}/refresh')
 def api_cloud_voice_refresh(resource_id: str, payload: VoicePreview, request: Request):
     _local_write(request)
@@ -2459,6 +2466,41 @@ async def api_key_verify(payload: ModelVerifyRequest, request: Request):
         return {"ok": False, "kind": kind, "message": msg}
 
 
+def _source_review(work):
+    root = Path(work, 'ingest')
+    text = root / 'paper_text.md'
+    if not text.is_file():
+        raise HTTPException(404, detail='source：没有可修正的提取正文')
+    try:
+        meta = json.loads((root / 'ingest_meta.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        meta = {}
+    return text.read_text(encoding='utf-8'), meta
+
+
+@app.get('/api/ingest/{ingest_id}/source')
+def api_source_review(ingest_id: str):
+    work = _upload_work(ingest_id)
+    if not work or not os.path.isdir(work):
+        raise HTTPException(404, detail='ingest_id：素材不存在')
+    text, meta = _source_review(work)
+    pages = [{'page': int(image.stem.split('-')[-1]), 'url': f'/api/ingest/{ingest_id}/pages/{int(image.stem.split("-")[-1])}'}
+             for image in sorted(Path(work, 'ingest', 'source_pages').glob('page-????.png'))
+             if image.stem.split('-')[-1].isdigit()]
+    return {'text': text, 'review_pages': meta.get('review_pages', []), 'pages': pages}
+
+
+@app.get('/api/ingest/{ingest_id}/pages/{page}')
+def api_source_page(ingest_id: str, page: int):
+    work = _upload_work(ingest_id)
+    if not work or page < 1 or page > 10000:
+        raise HTTPException(404, detail='page：源页不存在')
+    image = Path(work, 'ingest', 'source_pages', f'page-{page:04d}.png')
+    if not image.is_file():
+        raise HTTPException(404, detail='page：源页不存在')
+    return FileResponse(image, media_type='image/png')
+
+
 @app.post("/api/ingest")
 async def api_ingest(paper: UploadFile = File(...)):
     """上传内容文件 → 提取正文 → 返回预览。
@@ -2525,6 +2567,7 @@ async def api_ingest(paper: UploadFile = File(...)):
         "chars": meta.get("chars", len(text or "")),
         "docx_headings": meta.get("headings"),
         "lossy": meta.get("lossy", False),
+        "review_pages": meta.get("review_pages", []),
         "hint": meta.get("hint"),
         "preview_head": (text or "")[:1500],
         "preview_tail": (text or "")[-500:] if text else "",
@@ -2810,6 +2853,13 @@ async def api_create_job(payload: dict):
             raise HTTPException(422, detail=str(exc))
         if payload.get("course_plan_token") != plan["token"]:
             raise HTTPException(409, detail="教案或材料已变化，请重新预览并确认")
+    source_text = Path(work, 'ingest', 'paper_text.md')
+    if source_text.is_file():
+        import paper_ingest
+        text, source_meta = _source_review(work)
+        if paper_ingest.has_unmapped_glyphs(selected_text if selected_text is not None else text) or (selected_text is None and source_meta.get('review_pages')):
+            pages = '、'.join(map(str, source_meta.get('review_pages', [])))
+            raise HTTPException(422, detail=f'source：正文含未识别字形或扫描内容{f"（源文第 {pages} 页）" if pages else ""}。请在素材中对照源页修正全文，或换用 Word／LaTeX；修正后重新确认教案。尚未创建任务，也未调用模型。')
     config["review_before_render"] = True
     config["stages"] = ["1", "2"]
     config.pop("regenerate_pages", None)

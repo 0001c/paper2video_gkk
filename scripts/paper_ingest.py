@@ -86,6 +86,14 @@ def sniff_format(path):
     # 按「以 \ 开头」判会漏判成 unknown。
     with open(path, "rb") as handle:
         chunk = handle.read(8192)
+    if Path(path).suffix.lower() in ('.txt', '.md'):
+        try:
+            text = Path(path).read_text(encoding='utf-8-sig')
+        except (UnicodeError, OSError):
+            return 'unknown'
+        if text.strip() and not any(ord(c) < 32 and c not in '\n\r\t' for c in text):
+            return 'text'
+        return 'unknown'
     if any(marker in chunk for marker in
            (b"\\documentclass", b"\\begin{document}", b"\\section")):
         return "tex"
@@ -202,6 +210,11 @@ def _geometric_lines(page):
             kept.append(char)
         lines.append(''.join(char['c'] for char in kept))
     return lines, duplicates
+
+
+def has_unmapped_glyphs(text):
+    return ('【未识别字形】' in text or '\ufffd' in text
+            or any(ord(char) < 32 and char not in '\n\r\t' for char in text))
 
 
 def extract_pdf(path):
@@ -461,13 +474,16 @@ def ingest(src, out_dir):
         text, meta = extract_latex(src, out_dir)
     elif fmt in _EXTRACTORS:
         text, meta = _EXTRACTORS[fmt](src)
+    elif fmt == 'text':
+        text = Path(src).read_text(encoding='utf-8-sig').strip()
+        meta = {'format': 'text', 'chars': len(text), 'needs_llm': True}
     elif fmt == "rtf":
         raise RuntimeError(
             "检测到 RTF 格式。请在 Word / WPS 里另存为 .docx 后再上传。")
     else:
         raise RuntimeError(
             "无法识别的文件格式（前 8 字节既不是 OLE2 / ZIP / PDF，也不是 LaTeX）。"
-            "支持：.tex / .zip / .docx / .doc / .pdf")
+            "支持：.tex / .zip / .docx / .doc / .pdf / UTF-8 .txt")
 
     meta.setdefault("needs_llm", True)
     meta["source"] = os.path.abspath(src)

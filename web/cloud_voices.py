@@ -25,7 +25,7 @@ VoiceReference = CloudVoiceReference
 class VoiceRegister(StrictModel):
     connection_id: ConnectionID
     target_model: ModelID
-    voice_id: str = Field(min_length=1, max_length=200, pattern=r'^[a-zA-Z0-9_-]+$')
+    voice_id: str = Field(min_length=1, max_length=200, pattern=r'^[a-zA-Z0-9_.-]+$')
     label: str = Field(min_length=1, max_length=80)
 
 
@@ -132,6 +132,40 @@ class VoiceStore:
             self.save(state)
             return state['voices'][resource['resource_id']]
 
+    def recover(self, entry, model, client=None):
+        """只查询本应用创建的音色，并核对型号；绝不重发 create_voice。"""
+        found = []
+        for page in range(10):
+            result = self.enrollment(entry, {'action': 'list_voice', 'prefix': 'p2v',
+                                             'page_index': page, 'page_size': 100}, client=client)
+            items = result.get('voice_list', [])
+            if not isinstance(items, list):
+                raise ConfigurationError('voice', '云端音色目录响应无效')
+            for item in items:
+                voice_id = item.get('voice_id', '') if isinstance(item, dict) else ''
+                if not isinstance(voice_id, str) or not re.fullmatch(r'[a-zA-Z0-9_.-]{1,200}', voice_id):
+                    continue
+                if not (voice_id.startswith(model + '-p2v-') or voice_id.startswith(model + '-vd-p2v-')):
+                    continue
+                detail = self.enrollment(entry, {'action': 'query_voice', 'voice_id': voice_id}, client=client)
+                if detail.get('target_model') != model:
+                    continue
+                kind = 'design' if voice_id.startswith(model + '-vd-') or detail.get('voice_prompt') else 'clone'
+                resource = self.resource(entry, voice_id, model, '找回的设计音色' if kind == 'design' else '找回的复刻音色', kind)
+                resource['status'] = 'OK' if detail.get('status') == 'OK' else 'unavailable'
+                resource['timestamp_status'] = 'unknown'
+                with self.lock:
+                    state = self.read()
+                    previous = state['voices'].get(resource['resource_id'])
+                    if previous:
+                        resource = {**previous, 'status': resource['status']}
+                    state['voices'][resource['resource_id']] = resource
+                    self.save(state)
+                found.append(resource)
+            if len(items) < 100:
+                break
+        return {'items': found}
+
     def enrollment(self, entry, inputs, parameters=None, client=None):
         from web import model_costs
         ticket = model_costs.begin('voice', 'voice-enrollment', native_base(entry), str(self.directory)) if inputs.get('action') == 'create_voice' else None
@@ -229,7 +263,7 @@ class VoiceStore:
                 inputs['url'] = publisher(filename)
             result = self.enrollment(entry, inputs, {'sample_rate': 24000, 'response_format': 'wav'}, client)
             voice_id = result.get('voice_id', '')
-            if not re.fullmatch(r'[a-zA-Z0-9_-]{1,200}', voice_id) or not voice_id.startswith(payload.target_model + '-'):
+            if not isinstance(voice_id, str) or not re.fullmatch(r'[a-zA-Z0-9_.-]{1,200}', voice_id) or not voice_id.startswith(payload.target_model + '-') or result.get('target_model', payload.target_model) != payload.target_model:
                 raise ConfigurationError('voice', '云音色ID或目标型号无效，需人工核对', 'submission_unknown', 409)
             resource = self.resource(entry, voice_id, payload.target_model, payload.label, payload.kind)
             if reference_sha:

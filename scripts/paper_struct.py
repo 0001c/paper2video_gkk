@@ -386,7 +386,7 @@ def structurize(source, out_dir, model=None, max_tokens=None,
         raise RuntimeError("提取结果为空 —— 若来源是 LaTeX（.tex/.zip），"
                            "本就无需结构化（meta['needs_llm']=False）")
     print("      格式=%s 字符=%d" % (meta.get("detected_format"), len(text)))
-    if '【未识别字形】' in text or '\ufffd' in text or any(ord(char) < 32 and char not in '\n\r\t' for char in text):
+    if paper_ingest.has_unmapped_glyphs(text):
         if not meta.get('review_pages'):
             raise RuntimeError('选定正文仍含未识别字形，请对照源页修正；已在收费结构化前停止')
     if meta.get('review_pages'):

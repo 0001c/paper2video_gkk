@@ -206,6 +206,50 @@ class SpeechTests(unittest.TestCase):
 
 
 class VoiceTests(unittest.TestCase):
+    def test_v35_design_id_preview_and_idempotency(self):
+        voice_id = 'cosyvoice-v3.5-plus-vd-p2v-created'
+        body = {'output': {'voice_id': voice_id, 'target_model': 'cosyvoice-v3.5-plus',
+                           'preview_audio': {'data': base64.b64encode(speech.wav_bytes(PCM)).decode()}}}
+        calls = []
+        def handler(request):
+            calls.append(json.loads(request.content))
+            return httpx.Response(200, json=body)
+        payload = VoiceGenerate(connection_id='fake', target_model='cosyvoice-v3.5-plus', kind='design', label='test', prompt='浑厚男声', consent=True)
+        with mock_client(handler) as client:
+            resource = self.store.generate(payload, CONNECTION, 'design-v35-key-123', client)
+            self.assertEqual(self.store.generate(payload, CONNECTION, 'design-v35-key-123', client), resource)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(resource['voice_id'], voice_id)
+        self.assertEqual(resource['timestamp_status'], 'unknown')
+        self.assertTrue((self.store.directory / (resource['resource_id'] + '.wav')).is_file())
+        self.store.register(VoiceRegister(connection_id='fake', target_model=payload.target_model, voice_id=voice_id, label='registered'), CONNECTION)
+        for bad in ('../../escape', 'cosyvoice-v3.5-plus/escape'):
+            with self.assertRaises(ValueError):
+                VoiceRegister(connection_id='fake', target_model=payload.target_model, voice_id=bad, label='bad')
+
+    def test_recover_only_queries_correct_model_and_preserves_unknown_action(self):
+        self.store.save({'voices': {}, 'actions': {'old': {'status': 'submission_unknown'}}})
+        calls = []
+        def handler(request):
+            body = json.loads(request.content)['input']; calls.append(body['action'])
+            if body['action'] == 'list_voice':
+                self.assertEqual(body['prefix'], 'p2v')
+                return httpx.Response(200, json={'output': {'voice_list': [
+                    {'voice_id': 'cosyvoice-v3.5-plus-vd-p2v-saved'},
+                    {'voice_id': 'cosyvoice-v3.5-plus-p2v-wrong'},
+                    {'voice_id': 'cosyvoice-v2-p2v-other'}]}})
+            self.assertEqual(body['action'], 'query_voice')
+            return httpx.Response(200, json={'output': {'status': 'OK', 'target_model':
+                'cosyvoice-v2' if body['voice_id'].endswith('wrong') else 'cosyvoice-v3.5-plus'}})
+        with mock_client(handler) as client:
+            recovered = self.store.recover(CONNECTION, 'cosyvoice-v3.5-plus', client)['items']
+        self.assertEqual(calls, ['list_voice', 'query_voice', 'query_voice'])
+        self.assertEqual(len(recovered), 1)
+        self.assertEqual(recovered[0]['kind'], 'design')
+        self.assertEqual(recovered[0]['timestamp_status'], 'unknown')
+        self.assertEqual(self.store.read()['actions']['old']['status'], 'submission_unknown')
+        self.assertFalse(self.store.listing({**CONNECTION, 'scope_id': 'other'}, 'cosyvoice-v3.5-plus'))
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)

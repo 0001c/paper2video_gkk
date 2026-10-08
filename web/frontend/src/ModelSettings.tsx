@@ -7,9 +7,10 @@ import { presetConfig, replaceStage, setTextParameter, roleLabels, roles, roleSt
 
 type Candidate = { id: string; selectable: boolean; adapter_implemented: boolean; status: string; verification: string; offline_time: string | null; model_info?: { max_output_tokens?: number } };
 type Catalog = { items: Candidate[]; next_cursor: string | null; source: string; catalog_time: string | null; total: number; warnings: string[] };
-export function ModelSettings({ value, options, concurrency, onChange, onConcurrency, voice = { kind: "default" }, portraitPath, concurrencyEditable = true, onConnectionsChange }: {
+export function ModelSettings({ value, options, concurrency, onChange, onConcurrency, voice = { kind: "default" }, portraitPath, preparePortrait, portraitKey, concurrencyEditable = true, onConnectionsChange }: {
   value: ModelConfig; options?: ModelOptions; concurrency: number; onChange: (value: ModelConfig) => void; onConcurrency: (value: number) => void;
   voice?: unknown; portraitPath?: string;
+  preparePortrait?: () => Promise<string | undefined>; portraitKey?: unknown;
   concurrencyEditable?: boolean;
   onConnectionsChange?: (items: Connection[]) => void;
 }) {
@@ -35,7 +36,7 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
   }, [onConnectionsChange]);
   useEffect(() => { void loadConnections().catch((error) => setMessage(errorMessage(error))); }, [loadConnections]);
   useEffect(() => { version.current++; setBusy(false); setMessage(""); return () => { version.current++; }; }, [value, role, includeRetiring, voiceKey, portraitPath]);
-  useEffect(() => { checkVersion.current++; setCheckMessage(""); return () => { checkVersion.current++; }; }, [value, voiceKey, portraitPath, connections]);
+  useEffect(() => { checkVersion.current++; setCheckMessage(""); return () => { checkVersion.current++; }; }, [value, voiceKey, portraitPath, portraitKey, connections]);
   const stage = roleStage(value, role);
   const catalogKey = `${stage.connection_id}|${role}|${includeRetiring}`;
   const catalog = catalogs[catalogKey];
@@ -77,11 +78,13 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
       const connection = connections.find((entry) => entry.id === selected.connection_id);
       return !connection ? [`${roleLabels[item]}：请选择有效连接`] : selected.mode === "api" && !connection.key_present ? [`${roleLabels[item]}：请补充连接密钥`] : [];
     });
-    if (value.avatar.enabled && !portraitPath) problems.push("数字人：请先上传人像，或关闭数字人");
     if (value.stages.tts.mode === "api" && !(voice as { resource_id?: string })?.resource_id) problems.push("音色：请选择与配音型号匹配的云音色");
     if (problems.length) throw new Error(`${full ? "全链路" : "准备阶段"}配置还需完善：${problems.join("；")}`);
+    const checkedPortrait = value.avatar.enabled && preparePortrait ? await preparePortrait() : portraitPath;
+    if (current !== checkVersion.current) return;
+    if (value.avatar.enabled && !checkedPortrait) throw new Error("数字人：请先选择人像，或关闭数字人");
     const { data } = await api.post("/api/model-config/validate", {
-      model_config: value, requested_stages: full ? ["1", "2", "3"] : ["1", "2"], review_before_render: !full, voice, portrait_path: portraitPath,
+      model_config: value, requested_stages: full ? ["1", "2", "3"] : ["1", "2"], review_before_render: !full, voice, portrait_path: checkedPortrait,
     });
     if (current === checkVersion.current) setCheckMessage(`${full ? "全链路" : "准备阶段"}配置检查通过：${data.required_roles.map((item: Role) => roleLabels[item]).join("、")}。此检查不调用模型，调用权限、余额和效果需实际运行确认。`);
     }, (error) => { if (current === checkVersion.current) { setCheckFailed(true); setCheckMessage(errorMessage(error)); } });

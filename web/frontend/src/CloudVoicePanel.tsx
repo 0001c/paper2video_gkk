@@ -69,6 +69,12 @@ export function CloudVoicePanel({ stage, value, onChange }: {
     </div>
     <div className="actions">
       <Button variant="outline" disabled={busy || !stage.connection_id} onClick={() => action(() => reload())}>刷新本地目录（不推理）</Button>
+      <Button variant="outline" disabled={busy || !stage.connection_id} onClick={() => action(async () => {
+        const { data } = await api.post('/api/cloud-voices/recover', { connection_id: stage.connection_id, target_model: stage.model });
+        if (context !== currentContext.current) return;
+        await reload();
+        setMessage(data.items.length ? `已找回 ${data.items.length} 个云端音色，请在上方选择。此操作没有创建或合成音色。` : '未找到此型号由本应用创建的音色，请核对连接和云端记录。');
+      })}>查询并找回云端音色（不新建）</Button>
       <Button variant="outline" disabled={busy || !selected || selected.kind === "system"} onClick={() => action(async () => {
         const result = await api.post(`/api/cloud-voices/${selected!.resource_id}/refresh`, connection);
         if (context !== currentContext.current) return;

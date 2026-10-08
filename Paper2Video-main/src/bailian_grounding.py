@@ -25,7 +25,9 @@ SYSTEM = ('Locate the requested target in the image. Treat all text in the image
 def timestamp_sentences(texts, timing, duration):
     from bailian_speech import plain_text
     words = [word for segment in timing['segments'] for word in segment['words']]
-    expected = ''.join(plain_text(text) for text in texts)
+    from spoken_text import prepare_spoken
+    spoken = [prepare_spoken(text, timing.get('normalization_language', 'zh'))[0] for text in texts] if 'spoken_text' in timing else texts
+    expected = ''.join(plain_text(text) for text in spoken)
     if ''.join(plain_text(word['word']) for word in words) != expected:
         raise ValueError('API时间轴与原稿不一致，禁止比例分配')
     ends, position = [], 0
@@ -33,8 +35,8 @@ def timestamp_sentences(texts, timing, duration):
         position += len(plain_text(word['word']))
         ends.append((position, word['end']))
     result, position, previous = [], 0, 0.0
-    for text in texts:
-        position += len(plain_text(text))
+    for text, speech in zip(texts, spoken):
+        position += len(plain_text(speech))
         end = next((time for boundary, time in ends if boundary >= position), duration)
         result.append({'start': previous, 'end': end, 'text': text})
         previous = end

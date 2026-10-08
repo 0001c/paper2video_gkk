@@ -327,7 +327,8 @@ def _check_review(job, payload):
         raise HTTPException(422, detail="pages：" + why)
     if any(not course.spoken_text(p).strip() for p in payload.pages):
         raise HTTPException(422, detail="pages：每页至少需要一句讲稿 | 光标目标")
-    return text
+    from script_validation import normalize_script
+    return normalize_script(text)
 
 
 def _save_review(job, text):
@@ -1745,7 +1746,7 @@ def _artifact_facts(job):
         "vlm_model": cfg.get('vision_model') or os.environ.get('PAPER2VIDEO_VLM_MODEL', 'deepseek-flash'),
         "model_api_base": None if backends else cfg.get('model_api_base') or os.environ.get('OPENAI_BASE_URL') or os.environ.get('OPENAI_API_BASE'),
         "text_backend": backends.get('text'), "vision_backend": backends.get('vision'),
-        "script_generation_version": 3 if backends else 2,
+        "script_generation_version": 4 if backends else 3,
         "talking_profile": cfg.get("talking_profile", "musetalk-local"),
         # 幻灯片布局微调（树搜索）：它真的改变 stage 1 的幻灯片产物
         # （溢出页多出 4 个宽度候选、由 VLM 选一张），所以**必须在指纹里**。
@@ -1812,15 +1813,15 @@ async def _prepare_latex(job, job_dir, log, env):
     （``--paper_latex_root``），而使用者的输入是 PDF / Word —— 这是整条链路上
     原本缺失的一环，不补上的话 stage 1 会因为找不到 main.tex 而直接失败。
 
-    这一步要一次 LLM 调用（实测约 1 万 token），是**唯一无法本地完成**的一步；
-    正文提取（paper_ingest）本身是纯本地的，包在 paper_struct 内部。
-    已存在 main.tex 时直接跳过，便于重跑与续跑。
+    PDF 和已审核课程正文在本地按原文排版；Word 的模型版式须通过保真校验。
+    只有 main.tex 与源文件、正文的哈希绑定仍有效时才复用已有产物。
 
     返回 True 表示可以继续跑流水线。
     """
     latex_root = job.get("paper_latex_root") or os.path.join(job_dir, "latex_proj")
     main_tex = os.path.join(latex_root, "main.tex")
-    if os.path.isfile(main_tex):
+    from paper_struct import verified_source_binding
+    if os.path.isfile(main_tex) and verified_source_binding(main_tex, job.get('source_path'), os.path.join(job_dir, 'ingest', 'paper_text.md')):
         _log_line(log, "[struct] main.tex 已存在，跳过结构化 -> {}".format(main_tex))
         return True
 
@@ -1836,10 +1837,9 @@ async def _prepare_latex(job, job_dir, log, env):
         argv += ['--model-config', os.path.join(job_dir, 'model_config.json')]
     if job.get("config", {}).get("course_plan_path"):
         argv += ["--text-file", os.path.join(job_dir, "ingest", "paper_text.md")]
-    _log_line(log, "[struct] 正在把 {} 转成 LaTeX 工程（一次 API 调用，约 1~2 分钟）".format(
+    _log_line(log, "[struct] 正在准备 {} 的保真 LaTeX 工程（PDF和已审核课程正文在本地排版）".format(
         os.path.basename(source)))
-    # 阶段要显式推进两次：提取正文是本地的（秒级），结构化才要 API 调用。
-    # 不写这两行的话，这 1~2 分钟界面只能显示"启动中"。
+    # 阶段显式推进两次，覆盖正文提取与保真排版/编译。
     await _set_phase(job["id"], "extract")
     proc = await asyncio.create_subprocess_exec(
         *argv, cwd=REPO_ROOT, stdout=log, stderr=asyncio.subprocess.STDOUT, env=env)
@@ -1953,9 +1953,7 @@ async def _run_job(job):
                 else "已关闭数字人")))
         log.flush()
 
-        # ── 产物缓存：命中结构化 ⇒ 这一次不调 LLM ──
-        # 为什么必须在 `_prepare_latex` **之前**：那一步本身就要花钱，
-        # 放在它后面等于"钱已经花了才说可以省"，命中就失去意义了。
+        # 源文绑定有效的缓存可跳过排版、编译和可选模型调用。
         facts = _artifact_facts(job)
         cache_info["struct_key"] = artifact_cache.struct_key(facts)
         force = bool((job.get("config") or {}).get("force_regenerate"))
@@ -1965,14 +1963,19 @@ async def _run_job(job):
             cached_tex, _cdir, why = artifact_cache.lookup_struct(
                 facts, key=cache_info["struct_key"])
             if cached_tex:
+                from paper_struct import verified_source_binding
+                if not verified_source_binding(cached_tex, job.get('source_path'), os.path.join(job_dir, 'ingest', 'paper_text.md')):
+                    cached_tex, why = None, '旧产物或源文绑定失效，需要重新准备'
+            if cached_tex:
                 target = os.path.join(job["paper_latex_root"], "main.tex")
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 shutil.copy2(cached_tex, target)
+                shutil.copy2(os.path.join(_cdir, 'source_binding.json'), os.path.join(job['paper_latex_root'], 'source_binding.json'))
                 job["needs_struct"] = False           # 已拿到 main.tex，前置步骤不必跑
                 cache_info["struct_hit"] = True
                 _log_line(log, "[cache] 结构化命中：{} → 跳过这次 LLM 调用".format(why))
             else:
-                _log_line(log, "[cache] 结构化未命中（{}），本次会调用 LLM".format(why))
+                _log_line(log, "[cache] 结构化未命中（{}），本次重新准备保真工程".format(why))
             log.flush()
 
         # 前置：PDF / Word 输入先转成 LaTeX 工程（见 _prepare_latex 的说明）

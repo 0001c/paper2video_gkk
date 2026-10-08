@@ -126,7 +126,7 @@ def main():
         render_job = web._load_job(render.json()['job_id'])
         check(render_job['config']['cursor_style'] == 'arrow-white' and render_job['config']['cursor_scale'] == 1.5 and job['config']['cursor_style'] == 'classic-red', '审核可为成片选择光标，原任务配置保持不变')
         check(render_job['config']['script_concurrency'] == 5, '审核调用未指定并发时保留任务原设置')
-        check(web._JOB_KEYS[render_job['id']] == {'api_key': 'fake-original-key', 'api_base': 'https://provider-two.invalid/v1'}, '续跑只补服务地址也保留任务 Key')
+        check({name: web._JOB_KEYS[render_job['id']].get(name) for name in ('api_key', 'api_base')} == {'api_key': 'fake-original-key', 'api_base': 'https://provider-two.invalid/v1'}, '续跑只补服务地址也保留任务 Key')
         check(not render_job['config']['review_before_render'] and render_job['config']['require_reuse_script'] and render_job['config']['stages'] == ['2', '3'], '配音只复用已审核讲稿，不再次调用模型')
         check(client.put(route, json={'version': current['version'], 'pages': current['pages']}).status_code == 409, '共享产物被占用时禁止保存')
         render_job['status'] = 'canceled'
@@ -149,7 +149,7 @@ def main():
         assert retry_rewrite.status_code == 200, retry_rewrite.text
         retry_job = web._load_job(retry_rewrite.json()['job_id'])
         check(retry_job['config']['script_generation_id'] == rewrite_job['config']['script_generation_id'], '失败恢复沿用同一次重写缓存标识')
-        check(web._JOB_KEYS[retry_job['id']] == {'api_key': 'fake-replacement-key', 'api_base': 'https://provider-one.invalid/v1'}, '准备恢复只补 Key 也保留服务地址')
+        check({name: web._JOB_KEYS[retry_job['id']].get(name) for name in ('api_key', 'api_base')} == {'api_key': 'fake-replacement-key', 'api_base': 'https://provider-one.invalid/v1'}, '准备恢复只补 Key 也保留服务地址')
         check(retry_rewrite.status_code == 200 and retry_job['config']['regenerate_pages'] == [1], '失败的局部重写恢复仍只操作原来选定的页')
         retry_job['status'] = 'canceled'
         web._save_job(retry_job)

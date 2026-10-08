@@ -7,7 +7,6 @@ import json
 import math
 import os
 import re
-import unicodedata
 import uuid
 import wave
 from datetime import datetime, timezone
@@ -18,6 +17,7 @@ import httpx
 
 from web.model_connections import checked_url
 from web.model_config import ConfigurationError
+from spoken_text import plain_text, prepare_spoken, NORMALIZATION_VERSION
 
 
 MODELS = frozenset(('cosyvoice-v3.5-plus', 'cosyvoice-v3.5-flash', 'cosyvoice-v3-plus',
@@ -25,6 +25,7 @@ MODELS = frozenset(('cosyvoice-v3.5-plus', 'cosyvoice-v3.5-flash', 'cosyvoice-v3
 SAMPLE_RATE = 24000
 MAX_AUDIO_BYTES = 64 * 1024 * 1024
 MAX_CHUNK_CHARACTERS = 400
+CHUNK_TARGET_CHARACTERS = 180
 GAP_SECONDS = 0.35
 
 
@@ -44,11 +45,6 @@ def native_base(connection):
     return base.rstrip('/')
 
 
-def plain_text(text):
-    return ''.join(character.casefold() for character in unicodedata.normalize('NFKC', text)
-                   if character.isalnum())
-
-
 def word_identity(word):
     if type(word.get('begin_index')) is int and type(word.get('end_index')) is int:
         return word['begin_index'], word['end_index']
@@ -58,7 +54,14 @@ def word_identity(word):
 def validate_timing(timing, pcm, text):
     duration = len(pcm) / (2 * SAMPLE_RATE)
     words = [word for segment in timing.get('segments', []) for word in segment.get('words', [])]
-    if not words or plain_text(''.join(word.get('word', '') for word in words)) != plain_text(text):
+    expected = text
+    if 'spoken_text' in timing:
+        spoken, mapping = prepare_spoken(text, timing.get('normalization_language', 'zh'))
+        if (timing.get('normalization_version') != NORMALIZATION_VERSION or timing['spoken_text'] != spoken
+                or timing.get('normalization_map') != mapping or timing.get('spoken_sha256') != digest(spoken)):
+            raise ValueError('口播与展示原文映射无效')
+        expected = spoken
+    if not words or plain_text(''.join(word.get('word', '') for word in words)) != plain_text(expected):
         raise ValueError('云时间戳未完整映射原稿；不会回退本地对齐')
     previous = 0.0
     for word in words:
@@ -98,7 +101,7 @@ class SpeechClient:
                     model_costs.finish(ticket, state='rejected')
                     raise ValueError('百炼配音请求被拒绝（HTTP {}）；未自动重试'.format(response.status_code))
                 pcm, sentences, finished = bytearray(), {}, False
-                pending = []
+                pending, word_events = [], []
                 total = 0
                 for line in response.iter_lines():
                     total += len(line)
@@ -124,9 +127,17 @@ class SpeechClient:
                             raise ValueError('配音音频超过大小限制')
                     sentence = output.get('sentence') or {}
                     if sentence.get('words'):
+                        word_events.append({'index': sentence['index'], 'words': [
+                            {name: word[name] for name in ('text', 'begin_time', 'end_time', 'begin_index', 'end_index') if name in word}
+                            for word in sentence['words']]})
                         words = sentences.setdefault(sentence['index'], {})
                         for word in sentence['words']:
                             identity = word_identity(word)
+                            if type(word.get('begin_index')) is int and type(word.get('end_index')) is int:
+                                for old_key, old in list(words.items()):
+                                    if (type(old.get('begin_index')) is int and type(old.get('end_index')) is int
+                                            and old['begin_index'] < word['end_index'] and word['begin_index'] < old['end_index']):
+                                        del words[old_key]
                             words[identity] = word
                     finished = finished or output.get('finish_reason') == 'stop'
                 if pending or not finished or not pcm or len(pcm) % 2:
@@ -135,7 +146,18 @@ class SpeechClient:
                            'end': word['end_time'] / 1000} for word in sorted(sentences[index].values(), key=lambda value: (value['begin_time'], value['end_time'])) if plain_text(word['text'])]} for index in sorted(sentences)]}
                 model_costs.finish(ticket, usage if 'characters' in usage else {'characters': len(text)}, source='provider' if 'characters' in usage else 'submitted_text_estimate')
                 if timestamps:
-                    validate_timing(timing, pcm, text)
+                    try:
+                        validate_timing(timing, pcm, text)
+                    except ValueError:
+                        if ticket is not None:
+                            directory, record = ticket
+                            evidence = Path(directory) / 'tts_diagnostics'
+                            evidence.mkdir(parents=True, exist_ok=True)
+                            atomic_json(evidence / (record['id'] + '.json'), {
+                                'text_sha256': digest(text), 'sample_count': len(pcm) // 2,
+                                'provider_word_events': word_events, 'aggregated_timing': timing,
+                                'state': 'mapping_failed', 'usage_record_id': record['id']})
+                        raise
                 return bytes(pcm), timing
         except httpx.HTTPError:
             raise ValueError('云配音连接中断；可能仍在计费，未自动重试') from None
@@ -188,8 +210,9 @@ def write_pair(filename, pcm, timing, text):
     timing = {**timing, 'schema_version': 1, 'source': 'tts_timestamp', 'audio_sha256': digest(body),
               'script_sha256': digest(text), 'sample_rate': SAMPLE_RATE, 'sample_count': len(pcm) // 2,
               'text': text, 'time_unit': 'seconds', 'time_origin': 'page'}
-    timing['normalization_map'] = [{'original_index': original_index, 'normalized': plain_text(character)}
-                                   for original_index, character in enumerate(text) if plain_text(character)]
+    if 'spoken_text' not in timing:
+        timing['normalization_map'] = [{'original_index': original_index, 'normalized': plain_text(character)}
+                                       for original_index, character in enumerate(text) if plain_text(character)]
     target = Path(filename)
     temporary = target.with_name(target.name + '.' + uuid.uuid4().hex + '.tmp')
     temporary.write_bytes(body)
@@ -198,13 +221,13 @@ def write_pair(filename, pcm, timing, text):
     return timing
 
 
-def chunks(text):
+def chunks(text, limit=CHUNK_TARGET_CHARACTERS):
     remaining = text
     while remaining:
-        boundary = min(MAX_CHUNK_CHARACTERS, len(remaining))
-        if len(remaining) > MAX_CHUNK_CHARACTERS:
-            candidates = [match.end() for match in re.finditer(r'[。！？!?；;\n\s]', remaining[:MAX_CHUNK_CHARACTERS]) if match.end() >= MAX_CHUNK_CHARACTERS // 2]
-            boundary = candidates[-1] if candidates else MAX_CHUNK_CHARACTERS
+        boundary = min(limit, len(remaining))
+        if len(remaining) > limit:
+            candidates = [match.end() for match in re.finditer(r'[。！？!?；;\n\s]', remaining[:limit]) if match.end() >= limit // 2]
+            boundary = candidates[-1] if candidates else limit
         yield remaining[:boundary]
         remaining = remaining[boundary:]
 
@@ -225,14 +248,18 @@ def tts_pages(parsed, directory, snapshot, resume=True, client=None):
     identity = {'mode': 'api', 'provider': 'bailian', 'model': stage['model'], 'scope': connection['scope_id'],
                 'endpoint': connection['native_http_base_url'],
                 'voice': {name: voice.get(name) for name in ('voice_id', 'target_model', 'language', 'reference_sha', 'gmt_modified')},
-                'parameters': stage['parameters'], 'timing_version': 1,
-                'chunk_strategy': {'max_characters': MAX_CHUNK_CHARACTERS, 'gap_seconds': GAP_SECONDS}}
-    for page_index, lines in enumerate(parsed):
+                'parameters': stage['parameters'], 'timing_version': 2, 'normalization_version': NORMALIZATION_VERSION,
+                'chunk_strategy': {'max_characters': CHUNK_TARGET_CHARACTERS, 'gap_seconds': GAP_SECONDS}}
+    language = voice.get('language', 'zh')
+    # 全章先检查，再开始任何收费请求；后页无效不能让前页先付费。
+    prepared = []
+    for lines in parsed:
         text = '\n\n\n'.join(prompt for prompt, cursor in lines)
-        if not text.strip():
-            continue
+        spoken, mapping = prepare_spoken(text, language)
+        prepared.append((text, spoken, mapping))
+    for page_index, (text, spoken, mapping) in enumerate(prepared):
         filename = target / f'{page_index}.wav'
-        key = digest({'identity': identity, 'text': text})
+        key = digest({'identity': identity, 'text': text, 'spoken': spoken, 'language': language})
         saved = manifest.get(str(page_index), {})
         if resume and saved.get('key') == key:
             try:
@@ -248,7 +275,7 @@ def tts_pages(parsed, directory, snapshot, resume=True, client=None):
         part_dir = target / '.cloud_parts' / str(page_index)
         part_dir.mkdir(parents=True, exist_ok=True)
         page_pcm, segments, parts = bytearray(), [], []
-        for part_index, chunk in enumerate(chunks(text)):
+        for part_index, chunk in enumerate(chunks(spoken)):
             part = part_dir / (digest({'identity': identity, 'text': chunk}) + '.wav')
             try:
                 if not resume:
@@ -273,7 +300,10 @@ def tts_pages(parsed, directory, snapshot, resume=True, client=None):
             segments.extend({'words': [{**word, 'start': word['start'] + offset, 'end': word['end'] + offset}
                                        for word in segment['words']]} for segment in timing['segments'])
             page_pcm.extend(pcm)
-        timing = write_pair(filename, bytes(page_pcm), {'segments': segments, 'chunks': parts}, text)
+        timing = write_pair(filename, bytes(page_pcm), {'segments': segments, 'chunks': parts,
+                            'spoken_text': spoken, 'spoken_sha256': digest(spoken),
+                            'normalization_version': NORMALIZATION_VERSION, 'normalization_language': language,
+                            'normalization_map': mapping}, text)
         manifest[str(page_index)] = {'key': key, **identity, 'wav_sha': timing['audio_sha256'],
                                     'timing_sha': digest(filename.with_suffix('.timing.json').read_bytes()),
                                     'seconds': timing['sample_count'] / SAMPLE_RATE}

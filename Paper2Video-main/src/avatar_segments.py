@@ -97,7 +97,8 @@ def prepare(audio_path, directory, enabled=True, timing=None):
         if overlapping and expanded_map and normalized_count == len(expanded_map):
             first, last = min(item[0] for item in overlapping), max(item[1] for item in overlapping)
             if last > first:
-                text_range = [expanded_map[first], expanded_map[last - 1] + 1]
+                original_ends = [item.get('original_end', item['original_index'] + 1) for item in normalization_map for character in item['normalized']]
+                text_range = [expanded_map[first], original_ends[last - 1]]
         segments.append({'index': index, 'file': str(filename.resolve()), 'start_sample': start, 'end_sample': end,
                          'sample_count': end - start, 'start_seconds': start / rate, 'end_seconds': end / rate,
                          'text_range': text_range, 'text': original[slice(*text_range)] if text_range else None,
@@ -111,10 +112,27 @@ def prepare(audio_path, directory, enabled=True, timing=None):
 def stitch(videos, manifest, master_audio, output, fps=25):
     if len(videos) != len(manifest['segments']):
         raise ValueError('数字人视频片段缺失')
-    for segment in manifest['segments']:
-        verify_segment(segment['file'])
     if hashlib.sha256(Path(master_audio).read_bytes()).hexdigest() != manifest['source_sha256']:
         raise ValueError('数字人合片主音频已变化')
+    rate, channels, width, count, master_pcm = audio_data(master_audio)
+    if rate != manifest['sample_rate'] or count != manifest['sample_count']:
+        raise ValueError('数字人合片采样清单不一致')
+    previous = 0
+    for segment in manifest['segments']:
+        verify_segment(segment['file'])
+        data = audio_data(segment['file'])
+        if (segment['start_sample'] != previous or segment['end_sample'] - previous != segment['sample_count']
+                or data[:4] != (rate, channels, width, segment['sample_count'])
+                or data[4] != master_pcm[previous * channels * width:segment['end_sample'] * channels * width]):
+            raise ValueError('数字人分段与主音轨不连续或内容变化')
+        previous = segment['end_sample']
+    if previous != count:
+        raise ValueError('数字人分段没有覆盖主音轨')
+    words = None
+    if Path(master_audio).with_suffix('.timing.json').exists():
+        from bailian_speech import read_pair
+        timing = read_pair(master_audio)[1]
+        words = [word for item in timing['segments'] for word in item['words']]
     arguments = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y']
     filters, labels = [], []
     for index, (video, segment) in enumerate(zip(videos, manifest['segments'])):
@@ -124,13 +142,28 @@ def stitch(videos, manifest, master_audio, output, fps=25):
         except (ValueError, KeyError, IndexError):
             raise ValueError('数字人片段缺少有效视频时长') from None
         expected = segment['sample_count'] / manifest['sample_rate']
-        if not math.isfinite(duration) or duration < expected - 0.15:
-            raise ValueError('数字人视频片段明显短于对应音频，禁止补帧掩盖缺失')
+        if not math.isfinite(duration) or duration <= 0:
+            raise ValueError('数字人片段缺少有效视频时长')
+        missing = expected - duration
+        if missing > 1 / fps:
+            first = segment['start_sample'] + max(0, math.floor(duration * rate))
+            cutoff = first / rate
+            end = segment['end_sample'] / rate
+            tail = master_pcm[first * channels * width:segment['end_sample'] * channels * width]
+            quiet = bool(tail) and max(abs(item[0]) for item in struct.iter_unpack('<h', tail)) < 256
+            word_safe = words is not None and not any(word['start'] < end and word['end'] > cutoff for word in words)
+            if missing > 0.5 or not quiet or not word_safe:
+                raise ValueError('数字人视频片段明显短于对应音频，缺失区域未经字词与采样静音双重确认，禁止补帧掩盖缺失')
+        elif missing > 0 and words is not None:
+            # 一帧内的量化差异也不能跨过仍在发声的末字。
+            cutoff = segment['start_seconds'] + duration
+            if any(word['start'] < segment['end_seconds'] and word['end'] > cutoff + 0.001 for word in words):
+                raise ValueError('数字人片段尾部缺少真实语音，禁止补帧掩盖缺失')
         frames = round(segment['end_seconds'] * fps) - round(segment['start_seconds'] * fps)
         if frames < 1:
             raise ValueError('数字人片段不足一帧')
         arguments += ['-i', str(video)]
-        filters.append('[{}:v]fps={},tpad=stop_mode=clone:stop_duration=0.2,trim=end_frame={},setpts=PTS-STARTPTS[v{}]'.format(index, fps, frames, index))
+        filters.append('[{}:v]fps={},tpad=stop_mode=clone:stop_duration={},trim=end_frame={},setpts=PTS-STARTPTS[v{}]'.format(index, fps, max(0.2, missing + 1 / fps), frames, index))
         labels.append('[v{}]'.format(index))
     arguments += ['-i', str(master_audio)]
     filters.append('{}concat=n={}:v=1:a=0[v]'.format(''.join(labels), len(videos)))

@@ -180,7 +180,9 @@ def main():
                 requests.append(kwargs)
                 return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='虚构正文'), finish_reason='stop')], usage=None)
             fake = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=complete)))
-            with patch.dict(os.environ, {'OPENAI_API_KEY': 'fake-key'}), patch('openai.OpenAI', return_value=fake):
+            context = MagicMock()
+            context.__enter__.return_value = fake
+            with patch.dict(os.environ, {'OPENAI_API_KEY': 'fake-key'}), patch('openai.OpenAI', return_value=context):
                 paper_struct.call_llm('虚构系统提示', '虚构文本', model='provider/text')
                 assert 'max_tokens' not in requests[0], '不能给未知模型强塞 65536 输出上限'
                 paper_struct.call_llm('虚构系统提示', '虚构文本', model='provider/text', max_tokens=2048)
@@ -194,7 +196,7 @@ def main():
             limited = RuntimeError('模拟限流')
             limited.status_code = 429
             answer = SimpleNamespace(msg=SimpleNamespace(content='知识解释。 | no'), info={})
-            with patch.object(script_gen.ModelFactory, 'create'), patch.object(script_gen, 'ChatAgent') as agent, patch.object(script_gen.time, 'sleep') as wait:
+            with patch.object(script_gen, 'create_agent') as agent, patch.object(script_gen.time, 'sleep') as wait:
                 agent.return_value.step.side_effect = [limited, answer]
                 generated, _ = script_gen.subtitle_cursor_gen(str(tmp), str(prompt), {'model_platform': 'stub', 'model_type': 'stub'}, retries=2, image_paths=[str(image)])
                 assert generated == '知识解释。 | no' and agent.return_value.step.call_count == 2 and wait.call_count == 1

@@ -274,20 +274,8 @@ def synth_page_qwen3tts(text_prompt, save_path, ref_audio, ref_text, language=No
 
 
 def parse_script(script_text):
-    pages = script_text.strip().split("###\n")
-    result = []
-    for page in pages:
-        if not page.strip():
-            continue
-        lines = page.strip().split("\n")
-        page_data = []
-        for line in lines:
-            if "|" not in line:
-                continue
-            text, cursor = line.split("|", 1)
-            page_data.append([text.strip(), cursor.strip()])
-        result.append(page_data)
-    return result
+    from script_validation import parse_script as parse
+    return parse(script_text)
 
 
 def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=None,

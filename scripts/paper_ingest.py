@@ -35,6 +35,7 @@ PDF 里的一行句子会被列宽**硬切成多行**，实测拿到过
 直接逐行拼接喂给 LLM，重建出的章节结构会跟着碎。
 """
 import argparse
+import hashlib
 import io
 import json
 import os
@@ -42,6 +43,7 @@ import re
 import shutil
 import sys
 import zipfile
+from pathlib import Path
 
 # ── 格式嗅探：扩展名不可信，一律看 magic bytes ──
 _MAGIC = (
@@ -180,20 +182,60 @@ def _merge_pdf_lines(raw_lines):
     return merged
 
 
+def _geometric_lines(page):
+    """按基线/横坐标重组碎片字符；只去掉同位置的重复绘制。"""
+    chars = [char for block in page.get_text('rawdict')['blocks'] if block['type'] == 0
+             for line in block['lines'] for span in line['spans'] for char in span['chars']]
+    rows = []
+    for char in sorted(chars, key=lambda item: (item['origin'][1], item['origin'][0])):
+        if not rows or abs(char['origin'][1] - rows[-1][0]) > 0.75:
+            rows.append((char['origin'][1], []))
+        rows[-1][1].append(char)
+    lines, duplicates = [], 0
+    for baseline, row in rows:
+        kept = []
+        for char in sorted(row, key=lambda item: item['origin'][0]):
+            if any(char['c'] == old['c'] and abs(char['origin'][0] - old['origin'][0]) < 0.8
+                   for old in kept[-4:]):
+                duplicates += 1
+                continue
+            kept.append(char)
+        lines.append(''.join(char['c'] for char in kept))
+    return lines, duplicates
+
+
 def extract_pdf(path):
     """PyMuPDF 提文本，逐页做行合并。返回 (正文, 元数据)。"""
     import pymupdf
 
     doc = pymupdf.open(path)
-    pages, empty_pages = [], []
+    pages, empty_pages, quality = [], [], []
     for idx in range(doc.page_count):
         page = doc[idx]
         raw = page.get_text()
-        lines = _merge_pdf_lines(raw.splitlines())
+        blocks = [block for block in page.get_text('blocks') if block[6] == 0]
+        fragmented = len(blocks) > 80 and sum(len(block[4].strip()) <= 5 for block in blocks) > len(blocks) * 0.5
+        duplicates = 0
+        if fragmented:
+            raw_lines, duplicates = _geometric_lines(page)
+        else:
+            raw_lines = raw.splitlines()
+        controls = sum(ord(c) < 32 and c not in '\n\r\t' for c in raw)
+        reasons = []
+        if controls or '\ufffd' in raw:
+            reasons.append('字形映射缺失（含公式），需要对照源页转录')
+        if len(raw.strip()) < 20:
+            reasons.append('正文过少，可能为扫描或图片页')
+        # 缺失字形不能被 _normalize 静默删掉后当作完整公式。
+        raw_lines = [re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\ufffd]', '【未识别字形】', line) for line in raw_lines]
+        lines = _merge_pdf_lines(raw_lines)
         body = "\n\n".join(lines)
         if len(body.strip()) < 20:
             empty_pages.append(idx + 1)
-        pages.append(body)
+        pages.append('[源文第 {} 页]\n\n{}'.format(idx + 1, body))
+        quality.append({'page': idx + 1, 'fragmented': fragmented, 'reading_order_repaired': fragmented,
+                        'duplicate_glyphs_removed': duplicates, 'unmapped_glyphs': controls,
+                        'needs_review': bool(reasons), 'reasons': reasons})
     total_chars = sum(len(p) for p in pages)
     doc.close()
 
@@ -203,6 +245,9 @@ def extract_pdf(path):
         "chars": total_chars,
         "empty_pages": empty_pages,      # 空页多 = 很可能是扫描版
         "likely_scanned": bool(empty_pages) and len(empty_pages) >= max(1, len(pages) // 3),
+        "page_quality": quality,
+        "review_pages": [item['page'] for item in quality if item['needs_review']],
+        "source_sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest(),
     }
     text = "\n\n".join(pages)
     return _normalize(text), meta
@@ -393,7 +438,7 @@ def extract_latex(path, out_dir):
 # 调用方（web/app.py 的内容库）用它做缓存键的一部分：
 # 同一个文件 + 同一个版本号才允许直接复用已提取的正文。
 # 不 +1 的后果是"改了预处理却仍命中旧缓存"——内容对不上，且没有任何报错。
-EXTRACTOR_VERSION = "1"
+EXTRACTOR_VERSION = "2"
 
 _EXTRACTORS = {
     "pdf": extract_pdf,
@@ -427,6 +472,16 @@ def ingest(src, out_dir):
     meta.setdefault("needs_llm", True)
     meta["source"] = os.path.abspath(src)
     meta["detected_format"] = fmt
+    if fmt == 'pdf' and meta.get('review_pages'):
+        import pymupdf
+        evidence_dir = os.path.join(out_dir, 'source_pages')
+        os.makedirs(evidence_dir, exist_ok=True)
+        with pymupdf.open(src) as document:
+            for item in meta['page_quality']:
+                if item['needs_review']:
+                    filename = os.path.join(evidence_dir, 'page-{:04d}.png'.format(item['page']))
+                    document[item['page'] - 1].get_pixmap(matrix=pymupdf.Matrix(2, 2)).save(filename)
+                    item['source_image'] = os.path.abspath(filename)
 
     if text:
         text_path = os.path.join(out_dir, "paper_text.md")

@@ -8,7 +8,7 @@ from pathlib import Path
 from camel.messages import BaseMessage
 from camel.types import ModelPlatformType
 from wei_utils import create_agent
-from script_validation import validate_script_output
+from script_validation import validate_script_output, normalize_script
 
 
 def _empty_response_hint(response, model_config):
@@ -88,6 +88,9 @@ def subtitle_cursor_gen(slide_imgs_dir, prompt_path, model_config, retries=None,
     task_prompt = task_prompt.rstrip() + (
         "\n\n【本次输入】共有 {} 张幻灯片。请为**每一张**都生成一段，"
         "一张都不能遗漏，且必须在最后一张之后才结束输出。".format(len(images)))
+    task_prompt += ('\n【机器可读输出】只返回 JSON：{"pages":[{"sentences":[{"speech_text":"口播",'
+                    '"cursor_prompt":"课件原文短语或 no"}]}]}。不要分行写口播与目标，不要伪脚注。'
+                    '保留年份、小数、百分比，不要凭常识补写课件未提供的事实、公式或演示承诺。')
     messages = BaseMessage.make_user_message(role_name="user", content=task_prompt, image_list=images, meta_dict={})
 
     attempts = retries if retries is not None else int(
@@ -110,7 +113,7 @@ def subtitle_cursor_gen(slide_imgs_dir, prompt_path, model_config, retries=None,
         if content and content.strip():
             ok, why = validate_script_output(content, len(images))
             if ok:
-                return content.strip(), (getattr(response, "info", None) or {}).get("usage", {})
+                return normalize_script(content), (getattr(response, "info", None) or {}).get("usage", {})
             last_note = "结构不完整：{}".format(why)
             if attempt < attempts:
                 wait = 3 * attempt

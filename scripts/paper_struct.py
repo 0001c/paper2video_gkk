@@ -1,9 +1,9 @@
-"""论文正文 → main.tex：让 LLM 把提取出的文本重组成可编译的 LaTeX 源码。
+"""正文 → main.tex：PDF/审核正文在本地保真排版，Word 可选模型排版。
 
 为什么单独一层
 --------------
 提取（`paper_ingest`）是**纯本地、零成本**的，可以随便调、反复测；
-结构化要调 LLM、**花钱**、还慢。拆开之后两层的质量可以分开评估 ——
+结构化中的可选模型调用会产生费用。拆开之后两层的质量可以分开评估 ——
 出问题时能立刻判断是"提取没提对"还是"模型没排对"，而不是一起返工。
 
 ⚠️ 写进 prompt 的四条硬约束（都是本项目的实测结论）
@@ -21,6 +21,7 @@
     python scripts/paper_struct.py <输入文件> [--out 目录] [--no-compile]
 """
 import argparse
+import hashlib
 import io
 import json
 import os
@@ -28,6 +29,7 @@ import re
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import paper_ingest  # noqa: E402
@@ -227,6 +229,9 @@ def compile_tex(tex_path, timeout=600):
     往 stderr 打 `Fontconfig error: Cannot load default config file` 之类的噪声，
     按子串判错会把每一次成功都误判成失败。
     """
+    # 本地原文排版不经过 call_llm，也需要项目配置的工具 PATH。
+    sys.path.insert(0, PAPER2VIDEO_SRC)
+    import pv_env  # noqa: F401
     workdir = os.path.dirname(os.path.abspath(tex_path)) or "."
     try:
         # 必须显式指定编码：不给 encoding 时 subprocess 按**平台默认编码**解码
@@ -348,6 +353,23 @@ def _continue_tex(tex, info, model, max_tokens, max_rounds=3, model_snapshot=Non
     return tex, info
 
 
+def verified_source_binding(tex_path, source=None, text_path=None):
+    try:
+        target = Path(tex_path)
+        binding = json.loads(target.with_name('source_binding.json').read_text(encoding='utf-8'))
+        if (binding.get('version') != 1 or binding.get('compile_ok') is False
+                or binding.get('tex_sha256') != hashlib.sha256(target.read_bytes()).hexdigest()):
+            return False
+        if source:
+            if not Path(source).is_file() or binding.get('source_file_sha256') != hashlib.sha256(Path(source).read_bytes()).hexdigest():
+                return False
+        if text_path and Path(text_path).is_file() and binding.get('source_sha256') != hashlib.sha256(Path(text_path).read_text(encoding='utf-8').encode()).hexdigest():
+            return False
+        return True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def structurize(source, out_dir, model=None, max_tokens=None,
                 do_compile=True, keep_text=False, text_file=None, model_snapshot=None):
     """完整流程：提取 → 结构化 → 落盘 → （可选）编译验证。"""
@@ -355,7 +377,8 @@ def structurize(source, out_dir, model=None, max_tokens=None,
 
     print("[1/3] 提取正文 ...")
     if text_file:
-        text = io.open(text_file, encoding="utf-8").read()
+        with io.open(text_file, encoding="utf-8") as handle:
+            text = handle.read()
         meta = {"detected_format": "selected course source", "chars": len(text)}
     else:
         text, meta = paper_ingest.ingest(source, os.path.join(out_dir, "ingest"))
@@ -363,16 +386,28 @@ def structurize(source, out_dir, model=None, max_tokens=None,
         raise RuntimeError("提取结果为空 —— 若来源是 LaTeX（.tex/.zip），"
                            "本就无需结构化（meta['needs_llm']=False）")
     print("      格式=%s 字符=%d" % (meta.get("detected_format"), len(text)))
+    if '【未识别字形】' in text or '\ufffd' in text or any(ord(char) < 32 and char not in '\n\r\t' for char in text):
+        if not meta.get('review_pages'):
+            raise RuntimeError('选定正文仍含未识别字形，请对照源页修正；已在收费结构化前停止')
+    if meta.get('review_pages'):
+        raise RuntimeError('源文第 {} 页存在未识别字形/扫描内容，已保存高分辨率 source_pages 证据；'
+                           '请对照源页修正正文，再通过 --text-file 使用审核文本。已在收费结构化前停止，不猜公式。'
+                           .format('、'.join(map(str, meta['review_pages']))))
 
-    print("[2/3] 调用 %s 结构化 ..." % (model or DEFAULT_MODEL))
+    source_only = meta.get('format') == 'pdf' or bool(text_file)
+    print('[2/3] 本地原文排版 ...' if source_only else '[2/3] 调用 {} 结构化 ...'.format(model or DEFAULT_MODEL))
     user_prompt = USER_TEMPLATE.format(
         fmt=meta.get("detected_format", "?"),
         chars=len(text),
         quality_hint=_quality_hint(meta),
         text=text)
     system_prompt = SYSTEM_PROMPT + ("\n本次材料是已选择的教学内容。保留教材或课程的原章节、公式、例题和推导，不套用论文研究结构。" if text_file else "")
-    content, info = call_llm(system_prompt, user_prompt, model=model,
-                             max_tokens=max_tokens, model_snapshot=model_snapshot)
+    if source_only:
+        content, info = '', {'model': 'local-source-layout', 'usage': {}, 'elapsed': 0,
+                            'finish_reason': 'stop'}
+    else:
+        content, info = call_llm(system_prompt, user_prompt, model=model,
+                                 max_tokens=max_tokens, model_snapshot=model_snapshot)
     tex = strip_code_fence(content)
     print("      %.1fs | tokens=%s | finish=%s"
           % (info["elapsed"], info["usage"].get("total_tokens"),
@@ -385,6 +420,30 @@ def structurize(source, out_dir, model=None, max_tokens=None,
         # 保证产物至少是**可编译**的。
         print("      ⚠️ finish_reason=length —— 输出撞上限，开始续写 ...")
         tex, info = _continue_tex(tex, info, model, max_tokens, model_snapshot=model_snapshot)
+
+    # 模型只负责版式；任何文本偏差都改用本地原文排版，不能靠编译成功放行。
+    from check_struct_fidelity import tex_to_plain
+    def norm(value):
+        return ''.join(char for char in value if char.isalnum() or char in '=+-*/<>^∂∇≤≥×÷')
+    paragraphs = [part.strip() for part in re.split(r'\n\s*\n', text) if part.strip()]
+    plain = norm(tex_to_plain(tex))
+    missing = [index for index, paragraph in enumerate(paragraphs) if norm(paragraph) not in plain]
+    source_plain = norm(text)
+    untraced = [part for part in re.split(r'[。！？!?\n]+', tex_to_plain(tex))
+               if len(norm(part)) >= 15 and norm(part) not in source_plain]
+    fallback = bool(source_only or missing or untraced or info.get('repaired'))
+    if fallback:
+        candidate = os.path.join(out_dir, 'struct_candidate.tex')
+        if tex:
+            with io.open(candidate, 'w', encoding='utf-8') as handle:
+                handle.write(tex)
+        escapes = {'\\': r'\textbackslash{}', '&': r'\&', '%': r'\%', '$': r'\$', '#': r'\#',
+                   '_': r'\_', '{': r'\{', '}': r'\}', '~': r'\textasciitilde{}', '^': r'\textasciicircum{}'}
+        body = '\n\n'.join('% source-paragraph: {} sha256={}\n{}'.format(
+            index, hashlib.sha256(paragraph.encode()).hexdigest(), ''.join(escapes.get(c, c) for c in paragraph))
+            for index, paragraph in enumerate(paragraphs))
+        tex = '\\documentclass[11pt]{article}\n\\usepackage{ctex}\n\\usepackage{tabularray}\n\\usepackage{graphicx}\n\\begin{document}\n' + body + '\n\\end{document}'
+        print('      [保真门禁] 采用本地原文排版，保留全部原句、数字和章节顺序')
 
     tex_dir = os.path.join(out_dir, "latex_proj")
     os.makedirs(tex_dir, exist_ok=True)
@@ -410,6 +469,9 @@ def structurize(source, out_dir, model=None, max_tokens=None,
         # 截断相关：续写了几轮、以及是否退化成"截到配平点 + 补收尾"
         "continuation_rounds": info.get("continuation_rounds", 0),
         "repaired": info.get("repaired", False),
+        "fidelity": {'version': 1, 'source_sha256': hashlib.sha256(text.encode()).hexdigest(),
+                     'literal_fallback': fallback, 'missing_paragraphs': missing,
+                     'untraced_fragments': len(untraced), 'paragraph_count': len(paragraphs)},
     }
 
     if do_compile:
@@ -426,6 +488,15 @@ def structurize(source, out_dir, model=None, max_tokens=None,
     with io.open(os.path.join(out_dir, "struct_report.json"), "w",
                  encoding="utf-8", newline="") as handle:
         json.dump(report, handle, ensure_ascii=False, indent=2)
+    with io.open(os.path.join(tex_dir, 'source_binding.json'), 'w', encoding='utf-8') as handle:
+        json.dump({'version': 1, 'tex_sha256': hashlib.sha256(tex.encode()).hexdigest(),
+                   'compile_ok': report.get('compile_ok'),
+                   'source_file_sha256': hashlib.sha256(Path(source).read_bytes()).hexdigest() if Path(source).is_file() else None,
+                   'source_sha256': report['fidelity']['source_sha256'], 'literal_fallback': fallback,
+                   'paragraphs': [{'index': index, 'text': paragraph, 'sha256': hashlib.sha256(paragraph.encode()).hexdigest()}
+                                  for index, paragraph in enumerate(paragraphs)]}, handle, ensure_ascii=False, indent=2)
+    if do_compile and not report.get('compile_ok'):
+        raise RuntimeError('保真结构化产物编译失败，已保存报告；不会进入课件生成')
 
     if not keep_text:
         pass

@@ -167,10 +167,10 @@ class SpeechTests(unittest.TestCase):
             snapshot = self.snapshot()
             speech.tts_pages([[(text, 'cursor')]], directory, snapshot, client=FakeSpeech())
             pcm, timing = speech.read_pair(Path(directory, '0.wav'), text)
-            self.assertEqual(len(pcm) // 2, int(2.35 * 24000))
+            self.assertEqual(len(pcm) // 2, int(3.70 * 24000))
             self.assertAlmostEqual(timing['segments'][1]['words'][0]['start'], 1.35)
             speech.tts_pages([[(text, 'cursor')]], directory, snapshot, client=FakeSpeech())
-            self.assertEqual(len(calls), 2)
+            self.assertEqual(len(calls), 2)  # 两个相同的180字块共用一次合成，PCM仍拼两段。
             Path(directory, '0.timing.json').unlink()
             speech.tts_pages([[(text, 'cursor')]], directory, snapshot, client=FakeSpeech())
             self.assertEqual(len(calls), 2)
@@ -286,12 +286,15 @@ class VoiceTests(unittest.TestCase):
 class BackendTests(unittest.TestCase):
     def test_local_cancellation_is_not_claimed_remote_cancel(self):
         from web import app as web
-        job = {'status': 'running', 'config': {'model_config_origin': 'v2', 'model_config': {'stages': {'tts': {'mode': 'api'}}}}}
-        with patch.object(web, '_load_job', return_value=job), patch.object(web, '_CURRENT', {'proc': None}), patch.object(web, '_update_job', new_callable=AsyncMock) as update:
-            response = asyncio.run(web.api_cancel_job('offline-cancel'))
-            self.assertEqual(response['remote_cancel_state'], 'unconfirmed')
+        from starlette.requests import Request
+        job = {'id': 'offline-cancel', 'status': 'running', 'config': {'model_config_origin': 'v2', 'model_config': {'stages': {'tts': {'mode': 'api'}}}}}
+        with tempfile.TemporaryDirectory() as directory, patch.object(web, 'JOBS_ROOT', directory), patch.object(web, '_load_job', return_value=job), patch.object(web, '_CURRENT', {'proc': None}), patch.object(web, '_update_job', new_callable=AsyncMock) as update:
+            Path(directory, 'offline-cancel').mkdir()
+            request = Request({'type': 'http', 'method': 'POST', 'headers': [], 'client': ('127.0.0.1', 50000), 'server': ('127.0.0.1', 8848)})
+            response = asyncio.run(web.api_cancel_job('offline-cancel', request))
+            self.assertEqual(response['remote_cancel_state'], 'cancel_unconfirmed')
             self.assertIn('计费', response['warning'])
-            self.assertEqual(update.await_args.kwargs['status'], 'canceled')
+            self.assertEqual(update.await_args_list[0].kwargs['status'], 'canceled')
 
     def test_cloud_job_snapshot_environment_and_pure_validation(self):
         from web import app as web

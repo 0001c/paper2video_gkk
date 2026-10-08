@@ -201,7 +201,8 @@ def split_pages(script):
 
 
 def spoken_text(page):
-    return "\n\n\n".join(line.split("|", 1)[0].strip() for line in page.splitlines() if "|" in line)
+    from script_validation import parse_script
+    return "\n\n\n".join(speech for lines in parse_script(page) for speech, cursor in lines)
 
 
 def estimate_minutes(page, language, rate):
@@ -219,7 +220,7 @@ def slide_directive(plan):
 
 def generate_script(plan, slide_dir, prompt_file, model_config, output_dir, generator, selected=None, workers=3, generation_id=None):
     """有界并发逐页请求，按页序组装；失败保留成功页，重试仅补缺失页。"""
-    from script_validation import validate_script_output
+    from script_validation import validate_script_output, normalize_script
     import progress_report
     slides = sorted(Path(slide_dir).glob("*.png"), key=lambda p: int(p.stem))
     if not slides:
@@ -283,7 +284,7 @@ def generate_script(plan, slide_dir, prompt_file, model_config, output_dir, gene
                 page=i + 1, count=len(slides), title=section["title"], minutes=section["page_minutes"], units=units,
                 unit="汉字/英文词" if plan["script_lang"] == "zh" else "英文词", source=source)
         identity = {name: model_config.get(name) for name in ('model_type', 'url', 'model_config', 'connection_id', 'scope_id', 'context_window')}
-        facts = {"v": 3, "prompt": prompt, "slide": digest(slide.read_bytes()), "model": identity}
+        facts = {"v": 4, "prompt": prompt, "slide": digest(slide.read_bytes()), "model": identity}
         if generation_id:
             facts['generation_id'] = generation_id  # 新重写绕开旧缓存；同一次失败恢复复用成功页。
         key = digest(facts)
@@ -292,7 +293,7 @@ def generate_script(plan, slide_dir, prompt_file, model_config, output_dir, gene
             saved = {}
         content = saved.get("text") if (selected is None or generation_id) and saved.get("key") == key else None
         if isinstance(content, str) and content and validate_script_output(content, 1)[0] and len(split_pages(content)) == 1:
-            output[i] = content
+            output[i] = normalize_script(content)
             done += 1
             if selected is not None:
                 save_script(Path(output_dir, 'subtitle_w_cursor.txt'), '\n###\n'.join(output))
@@ -305,6 +306,7 @@ def generate_script(plan, slide_dir, prompt_file, model_config, output_dir, gene
         valid, why = validate_script_output(content, 1)
         if not valid or len(split_pages(content)) != 1:
             raise ValueError('第 {} 页讲稿不合格：{}'.format(i + 1, why or '只允许返回当前一页'))
+        content = normalize_script(content)
         write_json(cache_dir / (str(i) + '.json'), {'key': key, 'text': content})
         return i, content, tokens
     error = None

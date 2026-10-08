@@ -1839,7 +1839,9 @@ async def _prepare_latex(job, job_dir, log, env):
             source, "--out", job_dir, '--model', job['config'].get('text_model') or os.environ.get('PAPER2VIDEO_LLM_MODEL', 'deepseek-flash')]
     if job['config'].get('model_config_origin') == 'v2':
         argv += ['--model-config', os.path.join(job_dir, 'model_config.json')]
-    if job.get("config", {}).get("course_plan_path"):
+    ingest_meta = Path(job_dir, 'ingest', 'ingest_meta.json')
+    reviewed_source = json.loads(ingest_meta.read_text(encoding='utf-8')).get('reviewed_source') if ingest_meta.is_file() else False
+    if job.get("config", {}).get("course_plan_path") or reviewed_source:
         argv += ["--text-file", os.path.join(job_dir, "ingest", "paper_text.md")]
     _log_line(log, "[struct] 正在准备 {} 的保真 LaTeX 工程（PDF和已审核课程正文在本地排版）".format(
         os.path.basename(source)))
@@ -2488,6 +2490,56 @@ def api_source_review(ingest_id: str):
              for image in sorted(Path(work, 'ingest', 'source_pages').glob('page-????.png'))
              if image.stem.split('-')[-1].isdigit()]
     return {'text': text, 'review_pages': meta.get('review_pages', []), 'pages': pages}
+
+
+class SourceReviewRequest(model_settings.StrictModel):
+    text: str = Field(min_length=1, max_length=120000)
+
+
+@app.post('/api/ingest/{ingest_id}/review')
+async def api_save_source_review(ingest_id: str, payload: SourceReviewRequest, request: Request):
+    """派生不可变修正素材，正文与原图同源；旧缓存和历史任务保持可追溯。"""
+    import paper_ingest
+    import tempfile
+    _local_write(request)
+    work = _upload_work(ingest_id)
+    if not work or not os.path.isdir(work):
+        raise HTTPException(404, detail='ingest_id：素材不存在')
+    _, meta = _source_review(work)
+    text = payload.text.strip()
+    if not text or paper_ingest.has_unmapped_glyphs(text):
+        raise HTTPException(422, detail='text：正文为空或仍有未识别字形，请对照源页补齐')
+    source = Path(meta.get('source') or '').resolve()
+    if not source.is_file() or not source.is_relative_to(Path(JOBS_ROOT).resolve()):
+        raise HTTPException(422, detail='source：原文件不可用，请重新上传原素材')
+    source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
+    text_sha = hashlib.sha256(text.encode('utf-8')).hexdigest()
+    digest = hashlib.sha256((source_sha + ':' + text_sha).encode()).hexdigest()
+    content_id = 'ingest_review_' + digest[:24]
+    target = Path(JOBS_ROOT, content_id)
+    cached = target.is_dir()
+    if cached and (_content_meta(target) or {}).get('review_digest') != digest:
+        raise HTTPException(409, detail='text：修正内容记录冲突，请联系维护者')
+    source_target = target / 'input' / ('source' + source.suffix)
+    if not cached:
+        with tempfile.TemporaryDirectory(prefix='.source-review-', dir=JOBS_ROOT) as staging:
+            stage = Path(staging)
+            (stage / 'input').mkdir(); (stage / 'ingest').mkdir()
+            shutil.copy2(source, stage / 'input' / source_target.name)
+            (stage / 'ingest' / 'paper_text.md').write_text(text, encoding='utf-8')
+            pages = Path(work, 'ingest', 'source_pages')
+            if pages.is_dir():
+                shutil.copytree(pages, stage / 'ingest' / 'source_pages')
+            reviewed_meta = {**meta, 'source': str(source_target), 'text_path': str(target / 'ingest' / 'paper_text.md'),
+                             'chars': len(text), 'review_pages': [], 'reviewed_source': True,
+                             'review_digest': digest, 'source_sha256': source_sha, 'text_sha256': text_sha,
+                             'reviewed_from': ingest_id, 'created_at': time.strftime('%Y-%m-%d %H:%M:%S')}
+            (stage / 'ingest' / 'ingest_meta.json').write_text(json.dumps(reviewed_meta, ensure_ascii=False, indent=2), encoding='utf-8')
+            _write_content_meta(stage, reviewed_meta)
+            stage.rename(target)
+    return {'ok': True, 'ingest_id': content_id, 'source_path': str(source_target), 'cached': cached,
+            'detected_format': '已修正正文（保留原图）', 'needs_llm': True, 'chars': len(text),
+            'preview_head': text[:1500], 'review_pages': [], 'reviewed_source': True}
 
 
 @app.get('/api/ingest/{ingest_id}/pages/{page}')

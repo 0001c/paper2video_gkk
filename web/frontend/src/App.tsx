@@ -1191,8 +1191,8 @@ export default function App() {
         </div>
 
         <div className="actions">
-          <Button theme="primary" variant="outline" loading={ingesting} disabled={!paperFile || submitting} onClick={doIngest}>
-            提取并预览
+          <Button theme="primary" variant="outline" loading={ingesting} disabled={!paperFile || submitting || ingest?.reviewed_source} onClick={doIngest}>
+            {ingest?.reviewed_source ? '修正正文已就绪' : '提取并预览'}
           </Button>
         </div>
 

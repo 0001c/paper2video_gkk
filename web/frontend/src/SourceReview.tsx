@@ -22,7 +22,7 @@ export function SourceReview({ ingestId, onSaved }: { ingestId: string; onSaved:
   return <div className="source-review">
     <Button variant="outline" loading={busy} disabled={busy} onClick={open}>对照源页修正正文</Button>
     {source && <>
-      <p className="hint">逐处对照源页补齐文字和公式。保存会上传一份新的修正正文；随后重新确认教学范围与教案，再创建任务。</p>
+      <p className="hint">逐处对照源页补齐文字和公式。保存会生成一份关联原文件及图示的新素材；随后重新确认教学范围与教案，再创建任务。</p>
       <div className="source-review-grid">
         <div className="field"><label htmlFor={`source-text-${ingestId}`}>完整正文 · {text.length} 字符</label>
           <textarea id={`source-text-${ingestId}`} value={text} disabled={busy} onChange={(event) => setText(event.target.value)} />
@@ -39,8 +39,7 @@ export function SourceReview({ ingestId, onSaved }: { ingestId: string; onSaved:
       <Button disabled={busy || unresolved || !text.trim() || text === source.text} onClick={() => runExclusive(lock, setBusy, async () => {
         const current = version.current;
         const file = new File([text], '修正正文.txt', { type: 'text/plain' });
-        const form = new FormData(); form.append('paper', file);
-        const { data } = await api.postForm('/api/ingest', form);
+        const { data } = await api.post(`/api/ingest/${ingestId}/review`, { text });
         if (current !== version.current) return;
         onSaved(data, file); setSource(undefined); setMessage('修正正文已作为新素材保存，请重新确认教案。');
       }, (error) => setMessage(errorMessage(error)))}>保存修正正文为新素材</Button>

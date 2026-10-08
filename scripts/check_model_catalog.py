@@ -98,6 +98,35 @@ class CatalogChecks(unittest.TestCase):
         self.store.invalidate('compatible')
         self.assertIsNone(self.store.current(compatible))
 
+    def test_all_catalog_keeps_prices_and_role_specific_adapter_guards(self):
+        def get(url, params):
+            if '/compatible-mode/' in url:
+                return {'data': [{'id': 'qwen3-vl-plus'}, {'id': 'other-vl'}]}
+            return {'output': {'total': 3, 'models': [
+                {'model': 'qwen3-vl-plus', 'capabilities': ['TG', 'VU'], 'prices': [
+                    {'range_name': '32k<Input<=128k', 'prices': [
+                        {'type': 'input_token', 'price': '0.8', 'price_unit': '每百万tokens', 'price_name': '输入', 'time_band': 'standard'},
+                        {'type': 'output_token', 'price': '0', 'price_unit': '每百万tokens', 'price_name': '输出'},
+                        {'type': 'bad', 'price': 'NaN'}, {'type': 'negative', 'price': '-1'}]}]},
+                {'model': 'other-vl', 'capabilities': ['VU']},
+                {'model': 'image-only', 'capabilities': ['IG']}]}}
+        result = self.store.query(self.entry, CatalogRequest(connection_id=self.entry['id'], role='all', include_retiring=True), get)
+        self.assertEqual(result['source'], 'live_directory')
+        self.assertEqual(result['total'], 3)
+        rows = {row['id']: row for row in result['items']}
+        self.assertTrue(rows['qwen3-vl-plus']['role_support']['grounding']['selectable'])
+        self.assertFalse(rows['other-vl']['role_support']['grounding']['selectable'])
+        self.assertTrue(rows['other-vl']['role_support']['vision']['selectable'])
+        self.assertEqual(rows['image-only']['roles'], [])
+        pricing = rows['qwen3-vl-plus']['pricing']
+        self.assertEqual(pricing['currency'], 'CNY')
+        self.assertEqual(pricing['groups'][0]['range_name'], '32k<Input<=128k')
+        self.assertEqual([row['price'] for row in pricing['groups'][0]['prices']], ['0.8', '0'])
+        self.assertEqual(pricing['groups'][0]['prices'][0]['price_unit'], '每百万tokens')
+        self.assertIsNotNone(pricing['queried_at'])
+        cached = self.store.query(self.entry, CatalogRequest(connection_id=self.entry['id'], role='all'), lambda *args: self.fail('fresh cache must not query HTTP'))
+        self.assertEqual(cached['total'], 3)
+
 
 if __name__ == '__main__':
     unittest.main()

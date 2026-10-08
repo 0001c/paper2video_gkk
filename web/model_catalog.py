@@ -2,6 +2,7 @@ import json
 import uuid
 from collections import OrderedDict
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -21,7 +22,7 @@ SNAPSHOT = json.loads((Path(__file__).resolve().parents[1] / 'docs' / 'bailian-m
 
 class CatalogRequest(StrictModel):
     connection_id: ConnectionID
-    role: Literal['text', 'vision', 'tts', 'asr', 'grounding', 'avatar']
+    role: Literal['all', 'text', 'vision', 'tts', 'asr', 'grounding', 'avatar']
     include_retiring: bool = False
     cursor: str | None = Field(default=None, max_length=100)
     limit: int = Field(default=100, ge=1, le=100)
@@ -30,6 +31,29 @@ class CatalogRequest(StrictModel):
 
 def model_id(value):
     return isinstance(value, str) and 0 < len(value) <= 200 and not any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in value)
+
+
+def prices(raw):
+    """保留官方价格的分段、单位和时段；缺失/非法单价不能展示为免费。"""
+    groups = []
+    for group in raw if isinstance(raw, list) else []:
+        if not isinstance(group, dict):
+            continue
+        rows = []
+        for row in group.get('prices', []) if isinstance(group.get('prices'), list) else []:
+            if not isinstance(row, dict):
+                continue
+            try:
+                amount = Decimal(str(row.get('price')))
+                if not amount.is_finite() or amount < 0:
+                    continue
+            except InvalidOperation:
+                continue
+            rows.append({**{key: str(row.get(key) or '')[:500] for key in ('type', 'price_name', 'price_unit', 'time_band')},
+                         'price': str(amount)})
+        if rows:
+            groups.append({'range_name': str(group.get('range_name') or 'Default')[:500], 'prices': rows})
+    return groups
 
 
 def merged(compatible, native):
@@ -42,7 +66,10 @@ def merged(compatible, native):
         limits = {name: info[name] for name in ('context_window', 'max_input_tokens', 'max_output_tokens')
                   if isinstance(info.get(name), int) and not isinstance(info[name], bool) and info[name] > 0}
         records[identity] = {'id': identity, 'model_info': limits, 'capabilities': [value for value in raw.get('capabilities', []) if isinstance(value, str)],
-                             'sources': ['native'], 'offline_time': (raw.get('inference_offline_info') or {}).get('offline_time')}
+                             'sources': ['native'], 'offline_time': (raw.get('inference_offline_info') or {}).get('offline_time'),
+                             'name': str(raw.get('name') or identity)[:200], 'prices': prices(raw.get('prices')),
+                             'model_provider': str(raw.get('provider') or '')[:100],
+                             'inference_provider': str(raw.get('inference_provider') or '')[:100]}
     for identity in compatible:
         if not model_id(identity):
             continue
@@ -55,7 +82,7 @@ def candidate(record, role, provider, today=None):
     caps = record['capabilities']
     compatible = 'compatible' in record['sources']
     known = {'text': 'TG' in caps, 'vision': 'VU' in caps, 'tts': 'TTS' in caps,
-             'asr': 'ASR' in caps, 'grounding': record['id'] == RECOMMENDED['grounding'],
+             'asr': 'ASR' in caps, 'grounding': 'VU' in caps or record['id'] == RECOMMENDED['grounding'],
              'avatar': record['id'] == RECOMMENDED['avatar']}[role]
     unknown = role in ('text', 'vision') and compatible and not caps
     if not known and not unknown:
@@ -63,7 +90,7 @@ def candidate(record, role, provider, today=None):
     speech = role == 'tts' and 'native' in record['sources'] and record['id'] in (
         'cosyvoice-v3.5-plus', 'cosyvoice-v3.5-flash', 'cosyvoice-v3-plus', 'cosyvoice-v3-flash', 'cosyvoice-v2')
     avatar = role == 'avatar' and 'native' in record['sources'] and record['id'] == 'wan2.2-s2v'
-    implemented = (role in ('text', 'vision', 'grounding') and compatible) or speech or avatar
+    implemented = (role in ('text', 'vision') and compatible) or (role == 'grounding' and compatible and record['id'] == RECOMMENDED['grounding']) or speech or avatar
     offline = record['offline_time']
     status = 'active'
     if offline:
@@ -181,7 +208,11 @@ class CatalogStore:
             raise ConfigurationError('cursor', '刷新时不能使用旧游标')
         catalog = self.current(entry)
         warnings = []
-        if request.refresh:
+        # 全目录首次打开即查询；半小时内复用同一连接目录，手动刷新仍强制 GET。
+        stale = catalog is None or catalog.get('source') != 'live_directory'
+        if not stale and catalog.get('catalog_time'):
+            stale = (datetime.now(timezone.utc) - datetime.fromisoformat(catalog['catalog_time'])).total_seconds() > 1800
+        if request.refresh or (request.role == 'all' and stale):
             try:
                 catalog = self.refresh(entry, get)
             except Exception:
@@ -196,7 +227,25 @@ class CatalogStore:
             if saved is None or saved[0] != fingerprint:
                 raise ConfigurationError('cursor', '游标已过期或不属于此连接/查询，请从第一页刷新', status=409)
             offset = saved[1]
-        items = [item for record in catalog['items'] if (item := candidate(record, request.role, entry['provider'], today)) is not None]
+        def decorate(item):
+            host = urlsplit(entry.get('native_http_base_url') or entry['compatible_base_url']).hostname or ''
+            item['pricing'] = {'groups': item.get('prices', []), 'currency': 'CNY' if host == 'dashscope.aliyuncs.com' or '.cn-beijing.' in host else None,
+                               'source': catalog['source'], 'queried_at': catalog['catalog_time'],
+                               'region': host, 'reference_url': 'https://help.aliyun.com/zh/model-studio/model-pricing'}
+            return item
+        items = []
+        for record in catalog['items']:
+            if request.role == 'all':
+                support = {role: item for role in ROLES if (item := candidate(record, role, entry['provider'], today)) is not None}
+                exemplar = next(iter(support.values()), None)
+                # 未用于本项目的图像/向量/视频等模型仍保留在完整目录，便于核对总数。
+                item = {**record, 'roles': list(support), 'role_support': {role: {key: value[key] for key in ('selectable', 'adapter_implemented', 'verification', 'recommended')} for role, value in support.items()},
+                        'status': exemplar['status'] if exemplar else 'active', 'recommended': False,
+                        'selectable': any(value['selectable'] for value in support.values())}
+            else:
+                item = candidate(record, request.role, entry['provider'], today)
+            if item is not None:
+                items.append(decorate(item))
         if not request.include_retiring:
             items = [item for item in items if item['status'] == 'active']
         items.sort(key=lambda item: (not item['recommended'], not item['selectable'], item['id']))

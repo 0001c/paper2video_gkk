@@ -34,7 +34,7 @@ class SubtitleChecks(unittest.TestCase):
         invalid = [{'enabled': 'false'}, {'font_name': 'Arial,Injected'}, {'font_name': 'Font\nDialogue: 1'},
                    {'font_name': '{\\pos(0,0)}'}, {'text_color': 'red'}, {'background_color': '#000000FF'},
                    {'font_size': True}, {'font_size': 0}, {'font_size': 32.5}, {'background_opacity': float('nan')},
-                   {'background_opacity': 1.1}, {'margin_horizontal': 50}, {'margin_bottom': -1}, {'unknown': 1}, []]
+                   {'background_opacity': 1.1}, {'margin_horizontal': 50}, {'margin_bottom': -1}, {'line_spacing': 1.5}, {'line_spacing': float('inf')}, {'unknown': 1}, []]
         for value in invalid:
             with self.subTest(value=value), self.assertRaises(ValueError):
                 subtitle_style.normalize(value)
@@ -56,7 +56,20 @@ class SubtitleChecks(unittest.TestCase):
 
     def test_explicit_newlines_and_ass_escape(self):
         content = self.ass('第一行\r\n第二行{\\pos(0,0)}')
-        self.assertIn(r'第一行\N第二行\{\\pos(0,0)\}', content)
+        self.assertIn('第一行', content)
+        self.assertIn(r'第二行\{\\pos(0,0)\}', content)
+        events = [line for line in content.splitlines() if line.startswith('Dialogue:')]
+        self.assertEqual(len(events), 2)
+        self.assertTrue(all(line.startswith('Dialogue: 0,0:00:12.25,0:00:57.85') for line in events))
+
+    def test_line_spacing_positions_preserve_timing_and_text(self):
+        import re
+        for spacing, difference in ((1.6, 67), (2.4, 101)):
+            content = self.ass('第一行\n第二行', {'line_spacing': spacing})
+            events = [line for line in content.splitlines() if line.startswith('Dialogue:')]
+            positions = [int(re.search(r'\\pos\(1260,(\d+)\)', line)[1]) for line in events]
+            self.assertEqual(positions[1] - positions[0], difference)
+            self.assertEqual([line.split('}', 1)[1] for line in events], ['第一行', '第二行'])
 
     def test_bgr_colors_opacity_and_safe_margins(self):
         content = self.ass('样式测试', {'text_color': '#123456', 'background_color': '#ABCDEF',

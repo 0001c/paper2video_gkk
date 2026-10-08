@@ -50,7 +50,7 @@ export function CoursePanel({ ingestId, settings, onSettings, slideCount, script
       settings, slide_count: slideCount, script_lang: scriptLang });
     if (current === contextRef.current) { setDraftPlan(data); setPlanContext(current); setConfirmed(false); }
   }, (e) => setError(errorMessage(e)));
-  return <Section anchor="teaching" number="03" title="教学范围与目标时长" label="课程计划" summary={confirmed ? `已确认 · ${draftPlan?.planned_minutes} 分钟` : '待确认教案'} important help={<>
+  return <Section anchor="teaching" number="03" title="教学范围与目标时长" defaultOpen={false} label="课程计划" summary={confirmed ? `已确认 · ${draftPlan?.planned_minutes} 分钟` : '待确认教案'} important help={<>
     <p>先提取素材，再选择章节或小节。选整章会包含其小节，请避免重复选择；没有可靠标题时可以上传单独的小节文件。</p>
     <p>预览教案在本机分配教学时间，不调用生成接口。核对后再生成课件与讲稿；修改范围或时间后需重新更新并确认。</p>
     <p>目标时长用于讲稿预算，合成后显示实际时长及偏差。不保证精确到秒，建议验收范围 ±10%。</p>

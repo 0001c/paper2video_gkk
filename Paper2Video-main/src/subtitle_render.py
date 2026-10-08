@@ -192,9 +192,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     captions = [caption for segment in segments for caption in timed_captions(segment, width - 2*margin_h, font_size)]
     for seg in captions:
         wrapped = _wrap_text(seg['text'], width - 2 * margin_h, font_size)
-        lines.append("Dialogue: 0,{},{},Default,,0,0,0,,{}".format(
-            _ass_timestamp(seg["start"]), _ass_timestamp(seg["end"]),
-            _escape_ass_text(wrapped)))
+        # ASS 的 Spacing 是字间距。逐行定位才能让行距同时作用于文字和底色框。
+        rows = wrapped.split('\n')
+        for index, row in enumerate(rows):
+            bottom = height - margin_v - round((len(rows) - index - 1) * font_size * style['line_spacing'])
+            lines.append("Dialogue: 0,{},{},Default,,0,0,0,,{{\\an2\\pos({},{})}}{}".format(
+                _ass_timestamp(seg["start"]), _ass_timestamp(seg["end"]),
+                width // 2, bottom, _escape_ass_text(row)))
 
     with open(ass_path, "w", encoding="utf-8-sig") as handle:
         handle.write("\n".join(lines) + "\n")
@@ -234,7 +238,7 @@ def add_subtitles(video_path, output_path, font_size=None,
     font_size = max(1, round(style['font_size'] * height / 1080)) if configured or font_size is None else font_size
     # 在课件下方增加独立字幕区域，不缩小/遮挡源画面的公式与图注。
     ratio = style['margin_bottom'] / 100
-    band = math.ceil(max(height*0.18, (font_size*2.8 + 2*height*ratio)/(1-2*ratio)))
+    band = math.ceil(max(height*0.18, (font_size*(1.4 + style['line_spacing']) + 2*height*ratio)/(1-2*ratio)))
     output_height = (height + band + 1)//2*2
     font_name = style['font_name'] or font_name or DEFAULT_FONT
     print("[subtitle_render] 视频 {}x{}，字幕 {} 条，字号 {}".format(

@@ -98,6 +98,7 @@ type VoiceItem = {
   sample_url?: string;
   ref_text?: string | null;
   spec: VoiceSpec;
+  source_spec?: VoiceSpec;
 };
 
 type Voices = {
@@ -519,7 +520,7 @@ export default function App() {
   useEffect(() => {
     if (!opts || restoredVoice.current) return;
     restoredVoice.current = true;
-    setPresetPick(voiceList.find((it) => JSON.stringify(it.spec) === initialDraft.presetSpec) ?? null);
+    setPresetPick(voiceList.find((it) => JSON.stringify(it.spec) === initialDraft.presetSpec || (it.source_spec && JSON.stringify(it.source_spec) === initialDraft.presetSpec)) ?? null);
   }, [opts, voiceList, initialDraft.presetSpec]);
 
   // 讲稿语言一变，选中的预置音色很可能已不在候选里（中英是两组不同的音色），
@@ -545,9 +546,11 @@ export default function App() {
 
   const genVoice = useCallback(
     async (force: boolean) => runExclusive(voiceLock, setVoiceBusy, async () => {
-      throw new Error("新任务v2云音色待P4接入；不会调用旧MiMo接口生成音色，请选择默认或上传参考音频");
+      if (force || !presetPick?.sample_url || presetPick.spec.kind !== "upload") throw new Error("请选择已有参考音频的音色；本地模式只复用已保存样本");
+      setPreview({ sample_url: presetPick.sample_url, duration_s: presetPick.duration_s,
+        ref_text: presetPick.ref_text, cached: true });
     }, reportError),
-    [],
+    [presetPick],
   );
 
   const uploadVoice = useCallback(
@@ -695,7 +698,7 @@ export default function App() {
     if (courseEnabled && !coursePlan) return MessagePlugin.warning("请预览并确认教案和时间分配");
     const avatarProblem = avatarConfigurationProblem(modelConfig, !!portraitFile, opts?.model_configuration);
     if (avatarProblem) return MessagePlugin.warning(avatarProblem);
-    if (modelConfig.stages.tts.mode === "local" && (voiceMode === "preset" || voiceMode === "design")) return MessagePlugin.warning("本地配音请选择默认或上传参考录音");
+    if (modelConfig.stages.tts.mode === "local" && (voiceMode === "design" || (voiceMode === "preset" && (!presetPick?.sample_url || presetPick.spec.kind !== "upload")))) return MessagePlugin.warning("本地配音请选择默认、已保存音色或上传参考录音");
     if (!scriptPrompt.trim()) return MessagePlugin.warning("讲稿提示词不能为空");
     if (!slidePrompt.trim() || slidePrompt.length > (opts?.slide_prompt_max_chars ?? 30000)) {
       return MessagePlugin.warning("请填写有效的幻灯片提示词，并检查字符上限");
@@ -957,7 +960,7 @@ export default function App() {
   const avatarProblem = avatarConfigurationProblem(modelConfig, !!portraitFile, opts?.model_configuration);
   if (avatarProblem) missing.push(avatarProblem);
   if (modelConfig.stages.tts.mode === "api" && (!cloudVoice || cloudVoice.target_model !== modelConfig.stages.tts.model || cloudVoice.status !== "OK" || cloudVoice.timestamp_status !== "supported")) missing.push("选择可用且支持时间戳的云音色");
-  if (modelConfig.stages.tts.mode === "local" && (voiceMode === "preset" || voiceMode === "design")) missing.push("本地请选择默认或上传录音");
+  if (modelConfig.stages.tts.mode === "local" && (voiceMode === "design" || (voiceMode === "preset" && presetPick && (!presetPick.sample_url || presetPick.spec.kind !== "upload")))) missing.push("本地请选择默认、已保存音色或上传录音");
   if (!textModel.trim() || !visionModel.trim()) missing.push("选择文字和视觉模型");
   if (!Number.isInteger(scriptConcurrency) || scriptConcurrency < 1 || scriptConcurrency > 8) missing.push("填写 1～8 的整数并发数");
   if (!slidePrompt.trim() || slidePrompt.length > (opts?.slide_prompt_max_chars ?? 30000)) missing.push("检查幻灯片提示词");
@@ -1066,7 +1069,7 @@ export default function App() {
           {[
             ['material', '01', '素材'], ['language', '02', '语言与内容'],
             ...(courseEnabled ? [['teaching', '03', '教学范围']] : []),
-            ['voice', '04', '音色'], ['cursor', '05', '光标与字幕'], ['credentials', '06', '接口与模型'], ['prepare', '07', '生成与审核'],
+            ['credentials', '04', '模型配置'], ['voice', '05', '音色'], ['cursor', '06', '光标与字幕'], ['prepare', '07', '生成与审核'],
           ].map(([anchor, number, title]) => <a key={anchor} href={'#' + anchor} onClick={(event) => {
             if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
             const section = document.getElementById(anchor);
@@ -1201,7 +1204,7 @@ export default function App() {
       </Section>
 
       {/* ② 语言与类型 */}
-      <Section anchor="language" number="02" title="语言与内容类型" summary={`${slideLang === 'zh' ? '中文' : '英文'}课件 / ${scriptLang === 'zh' ? '中文' : '英文'}讲解 · ${slideCount || '待填'} 页`} help={<>
+      <Section anchor="language" number="02" title="语言与内容类型" defaultOpen={false} summary={`${slideLang === 'zh' ? '中文' : '英文'}课件 / ${scriptLang === 'zh' ? '中文' : '英文'}讲解 · ${slideCount || '待填'} 页`} help={<>
         <p>语言预设同时设置课件和讲稿语言，也可分别覆盖。页数包含封面和结束页，可设置 4～40 页。</p>
         <p>{(opts?.script_prompt_profiles ?? []).find((x) => x.value === contentProfile)?.desc}</p>
       </>}>
@@ -1352,28 +1355,25 @@ export default function App() {
       {courseEnabled && <CoursePanel ingestId={ingest?.ingest_id} settings={courseSettings} onSettings={setCourseSettings}
         slideCount={slideCount} scriptLang={scriptLang} onPlan={setCoursePlan} />}
 
-      {/* ③ 音色 —— 四种来源最终都归结为"一份参考音频 + 它的参考文本"。
-          逐页合成始终是**本地** Qwen3-TTS：云端只用来造这一小段音色样本，
-          所以免费额度、断网、没配 key 都不会影响出片（会回落到内置音色）。 */}
-      <Section anchor="credentials" number="04" title="模型配置" summary={modelConfig.preset === 'bailian_api' ? '百炼全 API · 权限与效果待验证' : modelConfig.preset === 'local_existing' ? '保留现有本地推理' : '自定义组合'} important>
+      {/* 模型决定音色路径：本地复用参考音频，API 选择独立云音色。 */}
+      <Section anchor="credentials" number="04" title="模型配置" defaultOpen={false} summary={modelConfig.preset === 'bailian_api' ? '百炼全 API' : modelConfig.preset === 'local_existing' ? '保留现有本地推理' : '自定义组合'} important>
         {!initialDraft.model_config && (initialDraft.textModel || initialDraft.visionModel) && <p className="notice warn">已保留旧草稿的型号与本地路线，未沿用浏览器密钥。请添加兼容连接并重新选择；不会自动改成百炼默认。</p>}
         <ModelSettings value={modelConfig} options={opts?.model_configuration} concurrency={scriptConcurrency} onChange={setModelConfig} onConcurrency={setScriptConcurrency} voice={voiceSpecNow()} portraitPath={portraitInfo?.portrait_path} onConnectionsChange={setModelConnections} />
       </Section>
 
-      <Section anchor="voice" number="05" title="音色" summary={voiceMode === 'default' ? '内置默认音色' : voiceMode === 'preset' ? presetPick?.label ?? '待选择音色' : voiceMode === 'design' ? '描述生成' : '上传参考音频'} important={voiceMode === 'upload'} help={<>
-        <p>音色只影响说话人。内置音色无需联网；已保存音色直接复用，预置及设计音色按讲稿语言筛选。上传音频需自行核对语言，跨语言克隆可能影响发音。</p>
-        <p>{opts?.voice?.available ? '支持生成与上传；生成样本使用服务端已配置的音色接口，无需另外填凭据。同一音色生成后缓存，可反复使用。' : '服务端未配置音色接口，仍可使用内置音色、已保存的样本或上传音频。'}</p>
-        <p>描述音色时填写性别年龄、质感、语速与角色；混响和 EQ 等属于后期效果，不适合作为音色描述。</p>
+      <Section anchor="voice" number="05" title="音色" defaultOpen={false} summary={modelConfig.stages.tts.mode === 'api' ? cloudVoice?.label ?? '待选择云音色' : voiceMode === 'default' ? '内置默认音色' : voiceMode === 'preset' ? presetPick?.label ?? '待选择音色' : voiceMode === 'design' ? '描述生成' : '上传参考音频'} important={voiceMode === 'upload'} help={<>
+        <p>本地配音支持内置音色、以前保存的预置或设计样本，以及上传参考音频。选择已保存音色与试听都不会重新生成。</p>
+        <p>预置及设计样本按讲稿语言筛选；上传音频需自行核对语言，跨语言克隆可能影响发音。API 配音请在云音色面板选择与当前连接、型号兼容的资源。</p>
       </>}>
 
         {modelConfig.stages.tts.mode === 'api' && <CloudVoicePanel stage={modelConfig.stages.tts} value={cloudVoice} onChange={setCloudVoice} />}
         <div hidden={modelConfig.stages.tts.mode === 'api'}>
         <div className="field">
           <label>讲稿由谁来讲</label>
-          <p className="notice info">本地配音使用默认 / 上传参考录音；API配音使用独立云音色资源。</p>
+          <p className="notice info">本地配音可用默认、已保存音色或上传参考录音。已保存样本可直接复用与试听；没有样本的预置暂不可选。</p>
           <RadioGroup value={voiceMode} onChange={(v) => { setVoiceMode(v as typeof voiceMode); setPreview(null); }}>
             <Radio value="default">内置默认音色（无需联网）</Radio>
-            <Radio value="preset" disabled>
+            <Radio value="preset">
               预置 / 已保存音色
             </Radio>
             <Radio value="design" disabled>
@@ -1396,9 +1396,9 @@ export default function App() {
                   setPreview(null);
                 }}
                 options={voiceList.map((it) => ({
-                  label: it.label + (it.duration_s ? ` · ${it.duration_s}s` : ""),
+                  label: it.label + (it.sample_url ? (it.duration_s ? ` · ${it.duration_s}s` : " · 已保存") : " · 尚未保存"),
                   value: JSON.stringify(it.spec),
-                  disabled: !opts?.voice?.available && !it.sample_url,
+                  disabled: !it.sample_url || it.spec.kind !== "upload",
                 }))}
                 style={{ width: "100%" }}
               />
@@ -1409,10 +1409,10 @@ export default function App() {
                 <Button
                   variant="outline"
                   loading={voiceBusy}
-                  disabled={!presetPick}
+                  disabled={!presetPick?.sample_url || presetPick.spec.kind !== "upload"}
                   onClick={() => genVoice(false)}
                 >
-                  {presetPick?.sample_url ? "试听已保存音色" : "生成并试听"}
+                  试听已保存音色
                 </Button>
               </div>
             </div>
@@ -1510,13 +1510,13 @@ export default function App() {
         </div>
       </Section>
 
-      <Section anchor="cursor" number="06" title="光标与字幕" summary={opts?.cursors?.find((item) => item.value === cursorStyle)?.label ?? '红色光点'} help="选择视频光标与字幕样式，可在任务详情和审核合片前调整。只改变最终画面，不改变讲稿或音频。">
+      <Section anchor="cursor" number="06" title="光标与字幕" defaultOpen={false} summary={opts?.cursors?.find((item) => item.value === cursorStyle)?.label ?? '红色光点'} help="选择视频光标与字幕样式，可在任务详情和审核合片前调整。只改变最终画面，不改变讲稿或音频。">
         <CursorPicker options={opts?.cursors ?? []} style={cursorStyle} scale={cursorScale} onStyle={setCursorStyle} onScale={setCursorScale} />
         <SubtitleSettings value={subtitleStyle} onChange={setSubtitleStyle} />
       </Section>
 
       </fieldset>
-      <Section anchor="prepare" number="07" title="生成与审核" label="创建新任务" summary={missing.length ? '待完善设置' : '准备就绪'} important help={<>
+      <Section anchor="prepare" number="07" title="生成与审核" defaultOpen={false} label="创建新任务" summary={missing.length ? '待完善设置' : '准备就绪'} important help={<>
         <p>所有讲解类型都先生成课件与讲稿并暂停审核；明确确认后才配音和合片。</p>
         <p>生成等待时间与成片播放时长分别计算。长课程尚无完整耗时标定；讲稿阶段动态估计剩余等待时间，配音合片以实际进度为准。新任务按队列串行执行。</p>
       </>}>

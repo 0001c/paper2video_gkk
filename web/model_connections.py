@@ -56,6 +56,8 @@ def checked_url(value, provider, protocols=("http", "https"), local_networks=())
     if literal is not None and (literal.is_unspecified or literal.is_link_local or literal.is_multicast):
         raise ValueError('拒绝未指定、元数据和组播地址')
     if provider == "bailian":
+        if host == 'maas.qianwenapi.com':
+            raise ValueError('请使用兼容 Base URL 的工作空间域名：HTTP 为 https://工作空间域名/api/v1，WebSocket 为 wss://工作空间域名/api-ws/v1/inference；可点击“按兼容地址填入配音端点”')
         if parsed.scheme not in ("https", "wss") or not (host == "dashscope.aliyuncs.com" or host.endswith(".dashscope.aliyuncs.com") or host.endswith(".maas.aliyuncs.com")):
             raise ValueError("百炼连接只允许认可的HTTPS/WSS阿里云主机")
     else:

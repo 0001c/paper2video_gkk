@@ -11,6 +11,13 @@ async function load(name) {
 const models = await load("modelConfig");
 const storage = await load("storage");
 
+test("配音端点使用同一工作空间，拒绝相似域名和携带凭据的地址", () => {
+  assert.deepEqual(models.bailianEndpoints("https://llm-workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"), {
+    native: "https://llm-workspace.cn-beijing.maas.aliyuncs.com/api/v1", websocket: "wss://llm-workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference",
+  });
+  for (const base of ["https://maas.qianwenapi.com/api/v1", "https://evilmaas.aliyuncs.com/v1", "https://dashscope.aliyuncs.com.evil.invalid/v1", "https://user:secret@dashscope.aliyuncs.com/v1", "http://dashscope.aliyuncs.com/v1", "https://dashscope.aliyuncs.com/v1?key=secret"]) assert.throws(() => models.bailianEndpoints(base));
+});
+
 test("P4任务音色只取当前任务载荷，不借用新任务草稿或旧密钥", () => {
   const config = models.presetConfig("bailian_api", "task-connection", false);
   const voice = { kind: "cloud", resource_id: "voice_saved_task" };

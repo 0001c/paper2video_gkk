@@ -13,7 +13,8 @@ const storage = await load('storage');
 test('字幕样式默认值与局部配置兼容旧草稿', () => {
   assert.deepEqual(styles.readSubtitleStyle({}), styles.defaultSubtitleStyle);
   assert.equal(styles.readSubtitleStyle({ font_size: 48, text_color: '#abcdef' }).text_color, '#ABCDEF');
-  for (const value of [{ font_size: 1000 }, { font_name: 'Arial,Injected' }, { background_opacity: NaN }, { text_color: 'red' }, { margin_horizontal: 99 }, { enabled: 'false' }, { unknown: true }, { constructor: 1 }]) {
+  assert.equal(styles.readSubtitleStyle({ line_spacing: 2.4 }).line_spacing, 2.4);
+  for (const value of [{ line_spacing: 1.5 }, { line_spacing: Infinity }, { font_size: 1000 }, { font_name: 'Arial,Injected' }, { background_opacity: NaN }, { text_color: 'red' }, { margin_horizontal: 99 }, { enabled: 'false' }, { unknown: true }, { constructor: 1 }]) {
     assert.equal(styles.readSubtitleStyle(value), undefined);
   }
 });

@@ -72,6 +72,17 @@ def main():
         for address in ('http://169.254.169.254/v1', 'http://0.0.0.0/v1', 'http://user:password@localhost/v1', 'http://localhost/v1?key=value'):
             expect_error(lambda: checked_url(address, 'openai_compatible'), ValueError)
         expect_error(lambda: checked_url('http://dashscope.aliyuncs.com/v1', 'bailian'), ValueError)
+        workspace = 'llm-unit.cn-beijing.maas.aliyuncs.com'
+        assert checked_url(f'https://{workspace}/api/v1', 'bailian') == f'https://{workspace}/api/v1'
+        assert checked_url(f'wss://{workspace}/api-ws/v1/inference', 'bailian', ('wss',)).startswith('wss://')
+        speech_connection = store.create(ConnectionCreate(label='完整配音连接', provider='bailian',
+            compatible_base_url=f'https://{workspace}/compatible-mode/v1', native_http_base_url=f'https://{workspace}/api/v1',
+            websocket_url=f'wss://{workspace}/api-ws/v1/inference', api_key='offline-key'))
+        assert speech_connection['native_http_base_url'].endswith('/api/v1')
+        assert speech_connection['websocket_url'].endswith('/api-ws/v1/inference')
+        store.delete(speech_connection['id'])
+        for address in ('https://maas.qianwenapi.com/api/v1', 'https://evilmaas.aliyuncs.com/api/v1', 'https://dashscope.aliyuncs.com.evil.invalid/api/v1'):
+            expect_error(lambda: checked_url(address, 'bailian'), ValueError)
         store.delete(connection_id)
         expect_error(lambda: store.freeze(config, roles), ConfigurationError)
         replacement = store.create(ConnectionCreate(label='重绑', provider='openai_compatible', scope_id=connection['scope_id'],
@@ -99,6 +110,25 @@ def main():
         web._MODEL_CONNECTIONS = store
         config.stages.text.connection_id = config.stages.vision.connection_id = replacement['id']
         incoming = config.public_dict()
+        # 已保存的预置、设计样本必须变成参考音频引用；选择和验证不能再次调用生成接口。
+        with tempfile.TemporaryDirectory(prefix='saved-voices-', dir=ROOT) as directory, patch.object(web.mimo_voice, 'CACHE_DIR', directory), patch.object(web.mimo_voice, 'generate', side_effect=AssertionError('不能生成')):
+            voice = next(item for item in web.mimo_voice.PRESET_VOICES if item['lang'] == 'zh')
+            preset_key = web.mimo_voice.cache_key('preset', voice['id'], None, 'zh')
+            for key, metadata in ((preset_key, {'kind': 'preset', 'voice': voice['id'], 'lang': 'zh'}), ('saved_design', {'kind': 'design', 'prompt': '稳重', 'lang': 'zh'})):
+                Path(directory, key + '.wav').write_bytes(b'offline-reference-audio')
+                Path(directory, key + '.txt').write_text('参考原文', encoding='utf-8')
+                Path(directory, key + '.json').write_text(json.dumps({'key': key, **metadata}), encoding='utf-8')
+            candidates = web.mimo_voice.voices_for('zh')
+            saved = [item for item in candidates['presets'] + candidates['custom'] if item.get('sample_url')]
+            assert len(saved) == 2 and all(item['spec']['kind'] == 'upload' for item in saved)
+            assert not web.mimo_voice.voices_for('en')['custom']
+            for item in saved:
+                candidate = {'model_config': incoming, 'stages': ['1', '2'], 'review_before_render': True, 'voice': item['spec']}
+                web._configure_job_models(candidate, {'model_config': incoming})
+                assert candidate['ref_audio'] == item['spec']['path'] and candidate['ref_text'] == '参考原文'
+                assert web.mimo_voice.resolve(item['spec'], 'zh')[:2] == (item['spec']['path'], '参考原文')
+            Path(directory, preset_key + '.wav').unlink()
+            assert not next(item for item in web.mimo_voice.voices_for('zh')['presets'] if item.get('source_spec', item['spec']).get('voice') == voice['id']).get('sample_url')
         job_config = {'model_config': incoming, 'stages': ['1', '2'], 'review_before_render': True, 'voice': {'kind': 'default'}}
         credentials = web._configure_job_models(job_config, {'config': {'model_config': incoming}})
         assert credentials[replacement['id']] == 'unit-key-rebound'

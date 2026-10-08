@@ -9,6 +9,7 @@ export function SubtitleSettings({ value, onChange, disabled = false }: {
   const update = (change: Partial<SubtitleStyle>) => onChange({ ...value, ...change });
   const sliders = [
     ["font_size", "字体大小（1080p基准）", 16, 72, 1, `${value.font_size} px`],
+    ["line_spacing", "字幕行距", 1.6, 2.4, 0.1, `${value.line_spacing.toFixed(1)} 倍`],
     ["background_opacity", "背景不透明度", 0, 1, 0.05, `${Math.round(value.background_opacity * 100)}%`],
     ["margin_horizontal", "左右安全边距", 2, 20, 1, `${value.margin_horizontal}%`],
     ["margin_bottom", "距底部", 1, 15, 1, `${value.margin_bottom}%`],
@@ -38,11 +39,11 @@ export function SubtitleSettings({ value, onChange, disabled = false }: {
         <div className="subtitle-preview-column">
           <div className="subtitle-preview" aria-label="字幕样式示意预览">
             <div className="subtitle-preview-slide"><strong>自然语言处理基础</strong><p>从文本分析到语言理解</p></div>
-            {value.enabled ? <div className="subtitle-preview-caption" style={{ left: `${value.margin_horizontal}%`, right: `${value.margin_horizontal}%`, bottom: `${value.margin_bottom}%`, fontSize: `${value.font_size / 9.6}cqw`, fontFamily: value.font_name || "inherit", color: value.text_color }}>
+            {value.enabled ? <div className="subtitle-preview-caption" style={{ left: `${value.margin_horizontal}%`, right: `${value.margin_horizontal}%`, bottom: `${value.margin_bottom}%`, fontSize: `${value.font_size / 9.6}cqw`, lineHeight: value.line_spacing, fontFamily: value.font_name || "inherit", color: value.text_color }}>
               <span style={{ background: subtitleBackground(value), textShadow: value.background_opacity === 0 ? "0 1px 2px #000, 0 -1px 2px #000" : undefined }}>自然语言处理连接人类语言与计算机，较长字幕会在安全区域内自动换行。</span>
             </div> : <div className="subtitle-preview-off">字幕已关闭</div>}
           </div>
-          <p className="hint">预览为样式示意，不是成片截图。背景设为0%可去掉底色；长段落保持原时间轴，不会自动拆成逐句字幕。</p>
+          <p className="hint">预览为样式示意，字体以服务端为准。行距应用于实际合片；背景设为0%可去掉底色。长字幕按真实字词时间切分，最多两行。</p>
         </div>
       </div>
     </fieldset>

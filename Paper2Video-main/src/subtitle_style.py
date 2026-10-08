@@ -6,7 +6,7 @@ import re
 DEFAULTS = {
     'enabled': True, 'font_name': '', 'font_size': 32,
     'text_color': '#FFFFFF', 'background_color': '#000000',
-    'background_opacity': 0.55, 'margin_horizontal': 5, 'margin_bottom': 3,
+    'background_opacity': 0.55, 'margin_horizontal': 5, 'margin_bottom': 3, 'line_spacing': 1.6,
 }
 
 
@@ -30,7 +30,7 @@ def normalize(value=None):
             raise ValueError('subtitle_style.' + field + '：必须为#RRGGBB颜色')
         style[field] = style[field].upper()
     for field, lower, upper in (('font_size', 16, 72), ('background_opacity', 0, 1),
-                                ('margin_horizontal', 2, 20), ('margin_bottom', 1, 15)):
+                                ('margin_horizontal', 2, 20), ('margin_bottom', 1, 15), ('line_spacing', 1.6, 2.4)):
         number = style[field]
         if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(number) or not lower <= number <= upper:
             raise ValueError('subtitle_style.' + field + '：必须为{}～{}之间的有限数值'.format(lower, upper))

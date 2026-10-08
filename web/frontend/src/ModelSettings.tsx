@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Button, Select } from "tdesign-react";
 import { api, errorMessage, runExclusive } from "./flow";
 import { ModelConnections } from "./ModelConnections";
+import { Section } from "./Section";
 import { presetConfig, replaceStage, setTextParameter, roleLabels, roles, roleStage, bailianSpeechModels, type Connection, type ModelConfig, type ModelOptions, type Role, type Stage } from "./modelConfig";
 
 type Candidate = { id: string; selectable: boolean; adapter_implemented: boolean; status: string; verification: string; offline_time: string | null; model_info?: { max_output_tokens?: number } };
@@ -21,6 +22,10 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
   const [includeRetiring, setIncludeRetiring] = useState(false);
   const [busy, setBusy] = useState(false);
   const [checking, setChecking] = useState(false);
+  const [checkingFull, setCheckingFull] = useState(false);
+  const [checkMessage, setCheckMessage] = useState("");
+  const [checkFailed, setCheckFailed] = useState(false);
+  const checkVersion = useRef(0);
   const version = useRef(0);
   const lock = useRef(false);
   const voiceKey = JSON.stringify(voice);
@@ -30,6 +35,7 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
   }, [onConnectionsChange]);
   useEffect(() => { void loadConnections().catch((error) => setMessage(errorMessage(error))); }, [loadConnections]);
   useEffect(() => { version.current++; setBusy(false); setMessage(""); return () => { version.current++; }; }, [value, role, includeRetiring, voiceKey, portraitPath]);
+  useEffect(() => { checkVersion.current++; setCheckMessage(""); return () => { checkVersion.current++; }; }, [value, voiceKey, portraitPath, connections]);
   const stage = roleStage(value, role);
   const catalogKey = `${stage.connection_id}|${role}|${includeRetiring}`;
   const catalog = catalogs[catalogKey];
@@ -61,14 +67,24 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
   };
   const check = (full = false) => {
     if (lock.current) return;
-    const current = ++version.current;
+    const current = ++checkVersion.current;
     return runExclusive(lock, setChecking, async () => {
-    setMessage("");
+    setCheckingFull(full);
+    setCheckFailed(false); setCheckMessage(`正在检查${full ? "全链路" : "准备阶段"}配置…`);
+    const problems = roles.filter((item) => item !== "avatar" || value.avatar.enabled).flatMap((item) => {
+      const selected = roleStage(value, item);
+      if (selected.mode !== "api" && item !== "text" && item !== "vision") return [];
+      const connection = connections.find((entry) => entry.id === selected.connection_id);
+      return !connection ? [`${roleLabels[item]}：请选择有效连接`] : selected.mode === "api" && !connection.key_present ? [`${roleLabels[item]}：请补充连接密钥`] : [];
+    });
+    if (value.avatar.enabled && !portraitPath) problems.push("数字人：请先上传人像，或关闭数字人");
+    if (value.stages.tts.mode === "api" && !(voice as { resource_id?: string })?.resource_id) problems.push("音色：请选择与配音型号匹配的云音色");
+    if (problems.length) throw new Error(`${full ? "全链路" : "准备阶段"}配置还需完善：${problems.join("；")}`);
     const { data } = await api.post("/api/model-config/validate", {
       model_config: value, requested_stages: full ? ["1", "2", "3"] : ["1", "2"], review_before_render: !full, voice, portrait_path: portraitPath,
     });
-    if (current === version.current) setMessage(`${full ? "全链路" : "准备阶段"}配置合法：${data.required_roles.map((item: Role) => roleLabels[item]).join("、")}。未验证权限/余额/效果，未进行运行验收。`);
-    }, (error) => { if (current === version.current) setMessage(errorMessage(error)); });
+    if (current === checkVersion.current) setCheckMessage(`${full ? "全链路" : "准备阶段"}配置检查通过：${data.required_roles.map((item: Role) => roleLabels[item]).join("、")}。此检查不调用模型，调用权限、余额和效果需实际运行确认。`);
+    }, (error) => { if (current === checkVersion.current) { setCheckFailed(true); setCheckMessage(errorMessage(error)); } });
   };
   const connectedRoles = roles.filter((item) => roleStage(value, item).connection_id);
   return <div className="model-settings">
@@ -77,11 +93,12 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
         <Button key={preset} variant={value.preset === preset ? "base" : "outline"} theme={value.preset === preset ? "primary" : "default"}
           aria-pressed={value.preset === preset} onClick={() => applyPreset(preset)}>{label}</Button>)}
     </div>
-    <p className="hint">切换预设只修改模型，保留材料、语言与课程。不启用数字人时可使用全API模型链路（仍需有效连接、原生配音端点及兼容云音色）。API光标定位已接入；本地数字人与百炼Wan均支持严格分段；真实云端权限与效果待授权验收。</p>
+    <p className="hint">选择整体方案，再展开需要调整的环节。切换方案保留素材、语言与课程设置。</p>
     {options && !options.recommended_models && <p className="notice warn">后端尚未加载P2版本，请自行重载服务。页面不会改用旧目录接口或推理自检绕过。</p>}
     <div className="actions"><Button variant="outline" onClick={() => setDrawer(true)}>管理连接</Button>
-      <Button variant="outline" loading={checking} disabled={!options?.recommended_models || busy || checking} onClick={() => check()}>检查准备阶段配置</Button>
-      <Button variant="text" disabled={!options?.recommended_models || busy || checking} onClick={() => check(true)}>检查全链路配置</Button></div>
+      <Button variant="outline" loading={checking && !checkingFull} disabled={!options?.recommended_models || busy || checking} onClick={() => check()}>检查准备阶段配置</Button>
+      <Button variant="text" loading={checking && checkingFull} disabled={!options?.recommended_models || busy || checking} onClick={() => check(true)}>检查全链路配置</Button></div>
+    {checkMessage && <p className={`notice ${checkFailed ? "warn" : "info"}`} role="status" aria-live="polite">{checkMessage}</p>}
     {connectedRoles.some((item) => !connections.some((entry) => entry.id === roleStage(value, item).connection_id)) && <p className="notice warn">部分连接尚未配置或已失效。请在下表重新选择；历史任务请使用独立的重新绑定入口，不会借用草稿密钥。</p>}
     <div className="model-role-list">
       {roles.filter((item) => item !== "avatar" || value.avatar.enabled).map((item) => {
@@ -98,10 +115,13 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
           label: `${candidate.id}${!candidate.adapter_implemented ? " · 待接入" : candidate.verification === "capability_unknown" ? " · 能力未验证" : ""}${candidate.offline_time ? ` · 下线 ${candidate.offline_time}` : ""}`,
           disabled: !candidate.selectable }));
         if (item === 'tts' && selected.mode === 'api' && options?.implemented.bailian_speech) {
-          for (const model of bailianSpeechModels) if (!choices.some((choice) => choice.value === model)) choices.push({ value: model, label: `${model} · 已接入 / 权限未验证`, disabled: false });
+          for (const model of bailianSpeechModels) if (!choices.some((choice) => choice.value === model)) choices.push({ value: model, label: model, disabled: false });
         }
-        if (!choices.some((choice) => choice.value === selected.model)) choices.unshift({ value: selected.model, label: `${selected.model} · ${needsConnection ? "未验证 / 预设" : "本地"}`, disabled: !implemented });
-        return <div className="model-role-row" key={item}>
+        if (!choices.some((choice) => choice.value === selected.model)) choices.unshift({ value: selected.model, label: selected.model, disabled: !implemented });
+        const connectionLabel = connections.find((entry) => entry.id === selected.connection_id)?.label ?? "未选择连接";
+        return <Section title={roleLabels[item]} key={item} compact defaultOpen={false}
+          summary={`${selected.mode === "api" ? "API" : "本地"} · ${selected.model} · ${needsConnection ? connectionLabel : "无需连接"}`}>
+          <div className="model-role-row">
           <div><strong>{roleLabels[item]}</strong><span className="hint">{item === "asr" ? "缺参考文本时按需使用" : item === "text" || item === "vision" ? "准备阶段使用" : "审核后使用"}</span></div>
           <div className="field"><label htmlFor={`${prefix}-mode-${item}`}>运行方式</label><select id={`${prefix}-mode-${item}`} value={selected.mode} onChange={(event) => changeMode(item, event.target.value as Stage["mode"])}><option value="api">调用 API</option><option value="local">本地{item === "text" || item === "vision" ? "兼容服务" : "推理"}</option></select></div>
           <div className="field"><label htmlFor={`${prefix}-connection-${item}`}>连接</label>{needsConnection ? <select id={`${prefix}-connection-${item}`} value={selected.connection_id ?? ""} onChange={(event) => {
@@ -114,6 +134,7 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
             onChange={(model) => onChange(replaceStage(value, item, { ...selected, model: String(model) }))}
             onCreate={(model) => onChange(replaceStage(value, item, { ...selected, model: String(model).trim() }))} />
             <span className="hint">{!implemented ? "适配器待接入，不会回退本地" : currentCandidate?.status === "retired" ? "已下线，禁止新执行" : needsConnection ? item === 'tts' ? "原生HTTP流式配音，需云音色及原生端点" : item === 'avatar' ? "Wan检测与异步生成已接入，权限和效果未验证" : "兼容协议已接入，服务/权限未验证" : "已有本地路线"}</span></div>
+          {needsConnection && !currentCandidate && <p className="hint model-role-parameters">当前型号为手动填写或方案默认值，尚未查询此连接的模型目录；可在下方查询目录。配置检查通过也不代表已获得调用权限。</p>}
           {item === 'tts' && selected.mode === 'api' && <div className="field"><label htmlFor={`${prefix}-rate`}>配音语速（0.5～2）</label><input id={`${prefix}-rate`} type="number" min={0.5} max={2} step={0.1} value={selected.parameters.speech_rate ?? 1} onChange={(event) => onChange(replaceStage(value, item, { ...selected, parameters: { speech_rate: event.target.valueAsNumber } }))} /></div>}
           {item === 'avatar' && selected.mode === 'api' && <div className="field"><label htmlFor={`${prefix}-resolution`}>数字人输出分辨率</label><select id={`${prefix}-resolution`} value={selected.parameters.resolution ?? '480P'} onChange={(event) => onChange(replaceStage(value, item, { ...selected, parameters: { resolution: event.target.value as '480P' | '720P' } }))}><option value="480P">480P</option><option value="720P">720P</option></select><span className="hint">按生成视频时长与此分辨率估算费用；云端片段串行提交。</span></div>}
           {(item === "text" || item === "vision") && <details className="model-role-parameters"><summary>请求参数 · {selected.parameters.max_output_tokens == null && selected.parameters.temperature == null ? "未覆盖" : "已自定义"}</summary>
@@ -125,13 +146,16 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
             </div><p className="hint">仅影响此角色；清空取消覆盖。范围：输出1～131072、温度0～2；已知型号还受目录上限约束，未知兼容服务以其文档为准。v2不借用旧任务全局参数。推荐百炼型号使用非思考模式输出课件/讲稿。</p>
             {!options?.implemented.role_model_parameters && <p className="notice warn">后端尚未支持逐角色参数，请重载至P3版本。</p>}
           </details>}
-        </div>;
+          </div>
+        </Section>;
       })}
     </div>
-    <p className="hint">时间轴：{value.timing.source === "tts_timestamp" ? "随 API 配音返回，不加载本地对齐器" : "本地 ForcedAligner"}。文字 / 视觉的本地模式需要自行部署兼容服务，不自动加载权重。{options?.implemented.independent_text_vision_connections ? "文字和视觉可分别选择本地/API连接，任务按角色独立调用。" : "当前后端仍要求文字和视觉共用连接，请重载至P3版本。"}</p>
-    <p className={value.avatar.enabled ? "notice warn" : "hint"}>{value.avatar.enabled
-      ? "数字人单段音频严格小于20秒，默认约18秒自动分段并用完整页音轨拼接，不限制整页/成片。本地MuseTalk与百炼Wan已接入分段；Wan真实素材与生成效果仍待授权验收。"
-      : "未启用数字人，不施加20秒分段限制。"}</p>
+    <details><summary>运行说明 · {value.timing.source === "tts_timestamp" ? "云端时间轴" : "本地时间轴"}{value.avatar.enabled ? " · 数字人自动分段" : ""}</summary>
+      <p className="hint">时间轴：{value.timing.source === "tts_timestamp" ? "随 API 配音返回，不加载本地对齐器" : "本地 ForcedAligner"}。文字 / 视觉的本地模式需要自行部署兼容服务，不自动加载权重。{options?.implemented.independent_text_vision_connections ? "文字和视觉可分别选择本地/API连接，任务按角色独立调用。" : "当前后端仍要求文字和视觉共用连接，请重载至P3版本。"}</p>
+      <p className={value.avatar.enabled ? "notice warn" : "hint"}>{value.avatar.enabled
+        ? "数字人单段音频严格小于20秒，默认约18秒自动分段并用完整页音轨拼接，不限制整页/成片。本地MuseTalk与百炼Wan已接入分段；Wan真实素材与生成效果仍待授权验收。"
+        : "未启用数字人，不施加20秒分段限制。"}</p>
+    </details>
     <details><summary>按环节查询目录</summary><div className="actions">
       <label htmlFor={`${prefix}-catalog-role`}>环节</label><select id={`${prefix}-catalog-role`} value={role} onChange={(event) => setRole(event.target.value as Role)}>{roles.map((item) => <option key={item} value={item}>{roleLabels[item]}</option>)}</select>
       <label className="checkline"><input type="checkbox" checked={includeRetiring} onChange={(event) => setIncludeRetiring(event.target.checked)} />含下线/将下线型号</label>

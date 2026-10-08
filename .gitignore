@@ -217,6 +217,7 @@ assets/gkk/
 .workbuddy/struct_out/
 
 # 前端依赖与构建产物
+.local/browser-fixes-service*.log
 web/frontend/node_modules/
 web/static/
 

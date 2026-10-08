@@ -356,6 +356,8 @@ def voices_for(script_lang):
     for item in presets:
         saved = cached(cache_key("preset", item["spec"]["voice"], None, script_lang))
         if saved:
+            item["source_spec"] = item["spec"]
+            item["spec"] = {"kind": "upload", "path": saved["ref_audio"], "ref_text": saved.get("ref_text")}
             item["sample_url"] = "/api/voices/{}/sample".format(saved["key"])
             item["duration_s"] = saved.get("duration_s")
             item["ref_text"] = saved.get("ref_text")
@@ -370,9 +372,10 @@ def voices_for(script_lang):
             spec = {"kind": "upload", "path": item["ref_audio"], "ref_text": item.get("ref_text")}
             label = "我的音频 · {}".format(item.get("filename") or item["key"])
         else:
-            spec = {"kind": "design", "prompt": item.get("prompt"), "voice": item.get("voice")}
+            spec = {"kind": "upload", "path": item["ref_audio"], "ref_text": item.get("ref_text")}
             label = "我的音色 · {}".format((item.get("prompt") or "?")[:18])
         custom.append({"label": label, "kind": kind, "lang": item.get("lang"),
+                        "source_spec": {"kind": "design", "prompt": item.get("prompt"), "voice": item.get("voice")} if kind == "design" else spec,
                         "duration_s": item.get("duration_s"), "ref_text": item.get("ref_text"), "spec": spec,
                        "sample_url": "/api/voices/{}/sample".format(item["key"])})
     return {"presets": presets, "custom": custom}

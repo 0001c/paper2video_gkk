@@ -1,11 +1,11 @@
 export type SubtitleStyle = {
   enabled: boolean; font_name: string; font_size: number; text_color: string;
-  background_color: string; background_opacity: number; margin_horizontal: number; margin_bottom: number;
+  background_color: string; background_opacity: number; margin_horizontal: number; margin_bottom: number; line_spacing: number;
 };
 
 export const defaultSubtitleStyle: SubtitleStyle = {
   enabled: true, font_name: "", font_size: 32, text_color: "#FFFFFF",
-  background_color: "#000000", background_opacity: 0.55, margin_horizontal: 5, margin_bottom: 3,
+  background_color: "#000000", background_opacity: 0.55, margin_horizontal: 5, margin_bottom: 3, line_spacing: 1.6,
 };
 
 export function readSubtitleStyle(value: unknown): SubtitleStyle | undefined {
@@ -19,7 +19,7 @@ export function readSubtitleStyle(value: unknown): SubtitleStyle | undefined {
     if (typeof style[key] !== "string" || !/^#[0-9a-f]{6}$/i.test(style[key])) return;
   }
   for (const [key, min, max] of [["font_size", 16, 72], ["background_opacity", 0, 1],
-    ["margin_horizontal", 2, 20], ["margin_bottom", 1, 15]] as const) {
+    ["margin_horizontal", 2, 20], ["margin_bottom", 1, 15], ["line_spacing", 1.6, 2.4]] as const) {
     if (typeof style[key] !== "number" || !Number.isFinite(style[key]) || style[key] < min || style[key] > max) return;
   }
   if (!Number.isInteger(style.font_size)) return;

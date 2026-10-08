@@ -1,7 +1,7 @@
 import { useId, useRef, useState } from "react";
 import { Button, Drawer } from "tdesign-react";
 import { api, errorMessage, runExclusive } from "./flow";
-import type { Connection } from "./modelConfig";
+import { bailianEndpoints, type Connection } from "./modelConfig";
 
 const defaultBase = "https://llm-3p2iijyqd4hu17zi.cn-beijing.maas.aliyuncs.com/compatible-mode/v1";
 export function ModelConnections({ visible, connections, onClose, onReload }: {
@@ -19,6 +19,12 @@ export function ModelConnections({ visible, connections, onClose, onReload }: {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const lock = useRef(false);
+  const fillSpeechEndpoints = () => {
+    try {
+      const endpoints = bailianEndpoints(base);
+      setNativeBase(endpoints.native); setWs(endpoints.websocket); setMessage("");
+    } catch (error) { setMessage(errorMessage(error)); }
+  };
   const edit = (entry?: Connection) => {
     setEditing(entry?.id ?? ""); setLabel(entry?.label ?? "北京百炼工作空间"); setProvider(entry?.provider ?? "bailian");
     setBase(entry?.compatible_base_url ?? defaultBase); setNativeBase(entry?.native_http_base_url ?? "");
@@ -65,11 +71,13 @@ export function ModelConnections({ visible, connections, onClose, onReload }: {
           <option value="bailian">阿里云百炼</option><option value="openai_compatible">OpenAI 兼容 / 本地服务</option></select></div>
         <div className="field"><label htmlFor={`${prefix}-base`}>兼容 Base URL</label><input id={`${prefix}-base`} readOnly={!!editing} value={base} onChange={(event) => setBase(event.target.value)} /></div>
         {provider === "bailian" && <>
+          <div className="actions"><Button variant="outline" disabled={!!editing} onClick={fillSpeechEndpoints}>按兼容地址填入配音端点</Button></div>
+          <p className="hint">配音端点使用当前工作空间的同一域名；HTTP 以 /api/v1 结尾，WebSocket 以 /api-ws/v1/inference 结尾。</p>
           <div className="field"><label htmlFor={`${prefix}-native`}>原生 HTTP Base URL（云配音 / 音色必填）</label><input id={`${prefix}-native`} readOnly={!!editing} value={nativeBase} placeholder="https://…/api/v1" onChange={(event) => setNativeBase(event.target.value)} /></div>
           <div className="field"><label htmlFor={`${prefix}-ws`}>WebSocket URL（可选）</label><input id={`${prefix}-ws`} readOnly={!!editing} value={ws} placeholder="wss://…" onChange={(event) => setWs(event.target.value)} /></div>
         </>}
         <div className="field"><label htmlFor={`${prefix}-scope`}>资源范围标识（可选）</label><input id={`${prefix}-scope`} readOnly={!!editing} value={scope} placeholder="新连接默认生成；同账号恢复时填原范围" onChange={(event) => setScope(event.target.value)} /></div>
-        <p className="hint">范围标识是受信管理员的声明，不是平台账号验证。端点/范围需要改变时请新建连接。</p>
+        <p className="hint">范围标识是受信管理员的声明，不是平台账号验证。端点/范围需要改变时请添加新连接、填入完整地址，再在模型配置中重新选择。</p>
         <div className="field"><label htmlFor={`${prefix}-key`}>API Key{editing ? "（留空保留原密钥）" : ""}</label><input id={`${prefix}-key`} type="password" autoComplete="off" value={key} maxLength={2000} onChange={(event) => setKey(event.target.value)} /></div>
         <Button type="submit" loading={busy} theme="primary">{editing ? "保存 / 轮换" : "保存连接"}</Button>
       </fieldset>

@@ -2,7 +2,8 @@
    暖纸底、墨绿操作色、轻边界；正文与编辑控件统一使用无衬线字体。
    保留同一套 TDesign 控件、主题圆形擦换与高度裁切折叠，不新增依赖。 */
 
-.model-role-list { display: grid; gap: 16px; margin-block: 16px; }
+.model-role-list { display: grid; gap: 8px; margin-block: 16px; }
+.model-role-list > .editorial-section { margin: 0; }
 .model-role-row { display: grid; grid-template-columns: minmax(110px, .8fr) minmax(120px, 1fr) minmax(140px, 1fr) minmax(180px, 1.8fr); gap: 12px; align-items: start; padding-block: 16px; border-bottom: 1px solid var(--paper-rule); }
 .model-role-row > div, .model-role-row .t-select { min-width: 0; }
 .model-role-row .hint, .connection-item .hint, .model-snapshot .hint { display: block; margin-top: 8px; overflow-wrap: anywhere; }
@@ -922,7 +923,7 @@ video { width: 100%; border-radius: var(--td-radius-default); background: #000; 
 .subtitle-preview-slide strong { display: block; font-size: clamp(14px, 4cqw, 24px); color: #2e6454; border-bottom: 1px solid #aebbb0; padding-bottom: 4%; }
 .subtitle-preview-slide p { font-size: clamp(12px, 3cqw, 18px); }
 .subtitle-preview-caption { position: absolute; text-align: center; line-height: 1.4; overflow-wrap: anywhere; white-space: pre-wrap; }
-.subtitle-preview-caption span { padding: 2px 4px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+.subtitle-preview-caption span { padding: .08em .24em; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
 .subtitle-preview-off { position: absolute; bottom: 12%; inset-inline: 5%; text-align: center; font-size: 14px; color: #546259; }
 .subtitle-settings:disabled { opacity: .65; }
 @media (max-width: 767px) { .subtitle-settings-layout { grid-template-columns: minmax(0, 1fr); gap: 16px; } }

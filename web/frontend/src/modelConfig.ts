@@ -12,6 +12,15 @@ export type ModelOptions = { implemented: Record<string, boolean>; recommended_m
   local_models: Partial<Record<Role, { provider: Stage["provider"]; model: string; implemented: boolean }>> };
 export const recommended: Record<Role, string> = { text: "qwen3.8-flash", vision: "qwen3-vl-plus", tts: "cosyvoice-v3.5-plus",
   asr: "fun-asr", grounding: "qwen3-vl-plus", avatar: "wan2.2-s2v" };
+
+export function bailianEndpoints(base: string) {
+  const url = new URL(base.trim());
+  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash
+    || !(url.hostname === "dashscope.aliyuncs.com" || url.hostname.endsWith(".dashscope.aliyuncs.com") || url.hostname.endsWith(".maas.aliyuncs.com"))) {
+    throw new Error("请先填写百炼工作空间的 HTTPS 兼容 Base URL，再填入配音端点");
+  }
+  return { native: `${url.origin}/api/v1`, websocket: `${url.origin.replace(/^https:/, 'wss:')}/api-ws/v1/inference` };
+}
 const localModels: Partial<Record<Role, Stage>> = { tts: { mode: "local", provider: "qwen3", model: "qwen3tts", parameters: {} },
   asr: { mode: "local", provider: "qwen3", model: "qwen3-asr", parameters: {} },
   grounding: { mode: "local", provider: "gui_owl", model: "gui-owl", parameters: {} },

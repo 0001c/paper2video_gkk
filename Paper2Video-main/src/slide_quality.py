@@ -18,6 +18,8 @@ def _sha(path):
 
 def quality_errors(code, feedback='', figures=None):
     errors = ['版面裁切：'+line.strip() for line in feedback.splitlines() if re.search(r'Overfull \\[hv]box',line,re.I)]
+    errors += ['字体缺字：'+line.strip() for line in feedback.splitlines()
+               if 'could not represent character' in line and '"nullfont"' not in line]
     if figures is not None:
         known = {fig['rel'].replace('\\','/'):fig for fig in figures}
         for frame_no, frame in enumerate(re.findall(r'\\begin\{frame\}.*?\\end\{frame\}',code,re.S),1):
@@ -45,7 +47,7 @@ def quality_errors(code, feedback='', figures=None):
                         errors.append('第{}帧 {} 必须绑定 {} 并保留对应原图号，禁止图号错配'.format(frame_no,name,fid))
                     if not any(plain_text(re.sub(r'\\[A-Za-z]+','',caption)) == plain_text(fig['caption']) for caption in captions):
                         errors.append('第{}帧 {} 图注与原文不一致；必须保留完整原图注 {}'.format(frame_no,name,fig['caption']))
-                elif not re.search(r'%\s*source-page:\s*'+str(fig.get('page'))+r'\b',context):
+                elif fig.get('page') is not None and not re.search(r'%\s*source-page:\s*'+str(fig['page'])+r'\b',context):
                     errors.append('第{}帧无图号图片 {} 须注明 source-page，不能猜图注'.format(frame_no,name))
     return errors
 
@@ -56,7 +58,7 @@ def record_quality(tex_path, feedback, compile_ok):
     index = target.parent/'figures/index.json'
     figures = json.loads(index.read_text(encoding='utf-8')).get('figures',[]) if index.is_file() else []
     errors = quality_errors(code,feedback,figures) if re.search(r'\\documentclass(?:\[[^\]]*\])?\{(?:ctex)?beamer\}',code) else []
-    report = {'version':2,'tex_sha256':_sha(target),'figures_sha256':_sha(index),'pdf_sha256':_sha(target.with_suffix('.pdf')),
+    report = {'version':3,'tex_sha256':_sha(target),'figures_sha256':_sha(index),'pdf_sha256':_sha(target.with_suffix('.pdf')),
               'compile_ok':compile_ok,'passed':compile_ok and not errors,'errors':errors}
     target.with_suffix('.quality.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
     return errors
@@ -71,7 +73,7 @@ def require_quality(project_root):
         return
     report_path = tex.with_suffix('.quality.json')
     report = json.loads(report_path.read_text(encoding='utf-8')) if report_path.is_file() else {}
-    if report.get('version') != 2 or report.get('tex_sha256') != _sha(tex) or report.get('figures_sha256') != _sha(root/'figures/index.json') or report.get('pdf_sha256') != _sha(tex.with_suffix('.pdf')):
+    if report.get('version') != 3 or report.get('tex_sha256') != _sha(tex) or report.get('figures_sha256') != _sha(root/'figures/index.json') or report.get('pdf_sha256') != _sha(tex.with_suffix('.pdf')):
         from slide_code_gen_select_improvement import compile_tex
         ok, feedback = compile_tex(tex)
         if not ok:

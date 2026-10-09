@@ -43,10 +43,11 @@ import re
 import shutil
 import sys
 import zipfile
+from pathlib import Path
 
 # 改提取逻辑（阈值、命名、筛选）必须 +1 —— 它进 deck 指纹，
 # 不 +1 就会命中"用旧逻辑提的图"生成的那批幻灯片，且不报错。
-FIGURES_VERSION = "2"
+FIGURES_VERSION = "3"
 
 FIGURES_DIRNAME = "figures"
 INDEX_NAME = "index.json"
@@ -606,6 +607,20 @@ def extract(source_path, project_root, *, force=False, log=print, **kwargs):
                 kwargs.get("min_side", DEFAULT_MIN_SIDE),
                 kwargs.get("min_page_ratio", DEFAULT_MIN_PAGE_RATIO)))
             figures = extract_from_pdf(source_path, figures_dir, log=log, **kwargs)
+            # These regions are required source content, not optional illustrations:
+            # never discard them because of min_side/max_figures thresholds.
+            from paper_ingest import extract_pdf, save_glyph_images
+            from PIL import Image
+            _, pdf_meta = extract_pdf(source_path)
+            main = os.path.join(project_root, 'main.tex')
+            code = Path(main).read_text(encoding='utf-8') if os.path.isfile(main) else ''
+            glyphs = [image for image in pdf_meta['glyph_images'] if image['name'] in code]
+            save_glyph_images(source_path, glyphs, figures_dir)
+            for image in glyphs:
+                with Image.open(os.path.join(figures_dir, image['name'])) as bitmap:
+                    width, height = bitmap.size
+                figures.append({**image, 'rel': 'figures/' + image['name'], 'figure_id': None,
+                                'width': width, 'height': height, 'bytes': os.path.getsize(os.path.join(figures_dir, image['name']))})
             kind = "pdf"
         elif ext == ".docx":
             figures = extract_from_docx(source_path, figures_dir, log=log, **kwargs)
@@ -679,13 +694,14 @@ def figure_prompt_block(project_root, lang="zh", limit=None):
                 "matches them, with relative widths (e.g. width=0.8\\textwidth) and "
                 "a caption. Do not reference any image not listed below.")
     head += ('\n每张源图必须在对应 figure 环境内注明清单给出的 figure_id（如 % source-figure: F2-13）与原图号，'
-             'caption 必须完整逐字保留清单原图注；不得把神经网络图称为山谷/梯度图。无可信图注的图只可说明源页，不能猜图号或用途。'
+             'caption 必须完整逐字保留清单原图注；不得把神经网络图称为山谷/梯度图。无图号但有源页的图片须注明 % source-page: <source_page>；Word 图片无可靠页码时按清单路径引用，不得编造源页。'
+             'kind=source_glyphs 是正文中无法转成文字的公式/字形原图：讲解对应内容时必须引用该图，不得省略、猜测或重新转写公式。'
              if lang == 'zh' else '\nBind every image within its figure environment using % source-figure: <figure_id> and its original caption. Never relabel a network diagram as a gradient valley.')
     lines = [head, ""]
     for fig in figures:
         cap = fig.get("caption") or ("page %s" % fig["page"] if fig.get("page") else "")
         lines.append("  - %s | figure_id=%s | source_page=%s | bbox=%s | %s" %
-                     (fig['rel'],fig.get('figure_id') or 'unlabeled',fig.get('page'),fig.get('bbox'),cap))
+                     (fig['rel'],fig.get('figure_id') or 'unlabeled',fig.get('page'),fig.get('bbox'),cap) + ' | kind=' + fig.get('kind', ''))
     return "\n".join(lines)
 
 

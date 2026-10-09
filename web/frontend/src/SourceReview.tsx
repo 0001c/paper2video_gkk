@@ -3,7 +3,7 @@ import { Button } from 'tdesign-react';
 import { api, errorMessage, runExclusive } from './flow';
 
 type Source = { text: string; review_pages: number[]; pages: { page: number; url: string }[] };
-export function SourceReview({ ingestId, onSaved }: { ingestId: string; onSaved: (data: any, file: File) => void }) {
+export function SourceReview({ ingestId, onSaved, preservedGlyphs = 0 }: { ingestId: string; onSaved: (data: any, file: File) => void; preservedGlyphs?: number }) {
   const [source, setSource] = useState<Source>();
   const [text, setText] = useState('');
   const [page, setPage] = useState(0);
@@ -20,9 +20,9 @@ export function SourceReview({ ingestId, onSaved }: { ingestId: string; onSaved:
   }, (error) => setMessage(errorMessage(error)));
   const unresolved = text.includes('【未识别字形】') || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffd]/.test(text);
   return <div className="source-review">
-    <Button variant="outline" loading={busy} disabled={busy} onClick={open}>对照源页修正正文</Button>
+    <Button variant="outline" loading={busy} disabled={busy} onClick={open}>{preservedGlyphs ? '查看保留的公式与源页' : '对照源页修正正文'}</Button>
     {source && <>
-      <p className="hint">逐处对照源页补齐文字和公式。保存会生成一份关联原文件及图示的新素材；随后重新确认教学范围与教案，再创建任务。</p>
+      <p className="hint">{preservedGlyphs ? '公式和特殊字形已保留原图，可以直接生成。如编辑正文，请保留原文字形图标记，或对照源页完整转写。' : '逐处对照源页补齐文字和公式。'}保存会生成一份关联原文件及图示的新素材；随后重新确认教学范围与教案，再创建任务。</p>
       <div className="source-review-grid">
         <div className="field"><label htmlFor={`source-text-${ingestId}`}>完整正文 · {text.length} 字符</label>
           <textarea id={`source-text-${ingestId}`} value={text} disabled={busy} onChange={(event) => setText(event.target.value)} />

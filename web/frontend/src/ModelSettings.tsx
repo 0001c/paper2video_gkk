@@ -3,7 +3,7 @@ import { Button, Select } from "tdesign-react";
 import { api, errorMessage, runExclusive } from "./flow";
 import { ModelConnections } from "./ModelConnections";
 import { Section } from "./Section";
-import { ModelPrice, type CatalogModel } from './ModelPrice';
+import { ModelPrice, ModelPriceProvider, type CatalogModel } from './ModelPrice';
 import { presetConfig, replaceStage, setTextParameter, roleLabels, roles, roleStage, bailianSpeechModels, type Connection, type ModelConfig, type ModelOptions, type Role, type Stage } from "./modelConfig";
 
 type Catalog = { items: CatalogModel[]; next_cursor: string | null; source: string; catalog_time: string | null; total: number; warnings: string[] };
@@ -92,7 +92,7 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
     }, (error) => { if (current === checkVersion.current) { setCheckFailed(true); setCheckMessage(errorMessage(error)); } });
   };
   const connectedRoles = roles.filter((item) => roleStage(value, item).connection_id);
-  return <div className="model-settings">
+  return <ModelPriceProvider><div className="model-settings">
     <div className="actions model-presets" aria-label="模型预设">
       {([["bailian_api", "百炼全 API"], ["local_existing", "保留现有本地推理"], ["custom", "自定义组合"]] as const).map(([preset, label]) =>
         <Button key={preset} variant={value.preset === preset ? "base" : "outline"} theme={value.preset === preset ? "primary" : "default"}
@@ -186,5 +186,5 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
     {message && <p className="notice info" role="status">{message}</p>}
     <div className="field"><label htmlFor={`${prefix}-concurrency`}>讲稿并发请求数（1～8，不控制本地 GPU / 数字人）</label><input id={`${prefix}-concurrency`} type="number" min={1} max={8} step={1} value={concurrency} readOnly={!concurrencyEditable} onChange={(event) => onConcurrency(Number(event.target.value))} /></div>
     <ModelConnections visible={drawer} connections={connections} onClose={() => setDrawer(false)} onReload={loadConnections} />
-  </div>;
+  </div></ModelPriceProvider>;
 }

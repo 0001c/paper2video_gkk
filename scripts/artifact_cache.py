@@ -36,6 +36,7 @@ pipeline 跳过讲稿那次 VLM 调用（它自己还会用 validate_script_outp
 import hashlib
 import io
 import json
+import re
 import os
 import shutil
 import time
@@ -203,6 +204,14 @@ def publish_struct(facts, main_tex_path, job_id=None, key=None):
         binding = os.path.join(os.path.dirname(main_tex_path), 'source_binding.json')
         if os.path.isfile(binding):
             shutil.copy2(binding, os.path.join(directory, 'source_binding.json'))
+            with io.open(binding, encoding='utf-8') as handle:
+                images = json.load(handle).get('glyph_images', {})
+            for name in images:
+                if not re.fullmatch(r'figures/source_p\d{4}_\d{2}\.png', name):
+                    raise ValueError('非法原文字形图路径')
+                target = os.path.join(directory, name)
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                shutil.copy2(os.path.join(os.path.dirname(main_tex_path), name), target)
         _write_manifest(directory, {
             "kind": "struct", "key": key,
             "fields": list(STRUCT_FIELDS),

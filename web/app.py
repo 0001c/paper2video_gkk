@@ -1977,6 +1977,8 @@ async def _run_job(job):
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 shutil.copy2(cached_tex, target)
                 shutil.copy2(os.path.join(_cdir, 'source_binding.json'), os.path.join(job['paper_latex_root'], 'source_binding.json'))
+                if os.path.isdir(os.path.join(_cdir, 'figures')):
+                    shutil.copytree(os.path.join(_cdir, 'figures'), os.path.join(job['paper_latex_root'], 'figures'), dirs_exist_ok=True)
                 job["needs_struct"] = False           # 已拿到 main.tex，前置步骤不必跑
                 cache_info["struct_hit"] = True
                 _log_line(log, "[cache] 结构化命中：{} → 跳过这次 LLM 调用".format(why))
@@ -2620,6 +2622,7 @@ async def api_ingest(paper: UploadFile = File(...)):
         "docx_headings": meta.get("headings"),
         "lossy": meta.get("lossy", False),
         "review_pages": meta.get("review_pages", []),
+        "preserved_glyph_images": len(meta.get('glyph_images', [])),
         "hint": meta.get("hint"),
         "preview_head": (text or "")[:1500],
         "preview_tail": (text or "")[-500:] if text else "",

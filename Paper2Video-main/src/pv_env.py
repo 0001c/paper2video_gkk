@@ -76,6 +76,11 @@ def load_env(dotenv_path=None):
 # 模块导入即生效：保证任何 import pv_env 的脚本都拿到正确路径
 load_env()
 
+# Tectonic downloads missing fonts during PDF output. A service must be able to
+# write that cache, including when the desktop user's AppData cache is read-only.
+TECTONIC_CACHE_DIR = os.environ.setdefault("TECTONIC_CACHE_DIR", str(REPO_ROOT / ".cache" / "tectonic"))
+Path(TECTONIC_CACHE_DIR).mkdir(parents=True, exist_ok=True)
+
 
 def _sync_api_aliases():
     """把 .env 里的 OPENAI_* 同步到各类候选变量名。

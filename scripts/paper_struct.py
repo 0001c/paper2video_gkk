@@ -247,7 +247,10 @@ def compile_tex(tex_path, timeout=600):
     except subprocess.TimeoutExpired:
         return False, "tectonic 编译超时（%ds）" % timeout
     log = (result.stdout or "") + "\n" + (result.stderr or "")
-    return result.returncode == 0, log
+    missing = [line for line in log.splitlines() if 'could not represent character' in line and '"nullfont"' not in line]
+    if missing:
+        log += '\nerror: 正文字体缺少实际使用的字形：\n' + '\n'.join(missing)
+    return result.returncode == 0 and not missing, log
 
 
 CONTINUE_TEMPLATE = """下面是一份 LaTeX 源码的**末尾片段**。它因为长度上限被截断了，还没写完。
@@ -365,6 +368,12 @@ def verified_source_binding(tex_path, source=None, text_path=None):
                 return False
         if text_path and Path(text_path).is_file() and binding.get('source_sha256') != hashlib.sha256(Path(text_path).read_text(encoding='utf-8').encode()).hexdigest():
             return False
+        for name, digest in binding.get('glyph_images', {}).items():
+            if not re.fullmatch(r'figures/source_p\d{4}_\d{2}\.png', name):
+                return False
+            image = target.parent / name
+            if not image.is_file() or hashlib.sha256(image.read_bytes()).hexdigest() != digest:
+                return False
         return True
     except (OSError, ValueError, AttributeError):
         return False
@@ -395,6 +404,19 @@ def structurize(source, out_dir, model=None, max_tokens=None,
                            .format('、'.join(map(str, meta['review_pages']))))
 
     source_only = meta.get('format') == 'pdf' or bool(text_file)
+    glyph_names = set(paper_ingest.GLYPH_IMAGE_RE.findall(text))
+    glyph_images = meta.get('glyph_images', [])
+    if glyph_names and not glyph_images:
+        if paper_ingest.sniff_format(source) != 'pdf':
+            raise RuntimeError('原文字形图缺少对应 PDF 来源，请重新提取材料')
+        _, pdf_meta = paper_ingest.extract_pdf(source)
+        glyph_images = pdf_meta['glyph_images']
+    glyph_images = [image for image in glyph_images if image['name'] in glyph_names]
+    if glyph_names != {image['name'] for image in glyph_images}:
+        raise RuntimeError('原文字形图与源 PDF 不一致，请重新提取材料')
+    tex_dir = os.path.join(out_dir, 'latex_proj')
+    if glyph_images:
+        paper_ingest.save_glyph_images(source, glyph_images, os.path.join(tex_dir, 'figures'))
     print('[2/3] 本地原文排版 ...' if source_only else '[2/3] 调用 {} 结构化 ...'.format(model or DEFAULT_MODEL))
     user_prompt = USER_TEMPLATE.format(
         fmt=meta.get("detected_format", "?"),
@@ -439,8 +461,17 @@ def structurize(source, out_dir, model=None, max_tokens=None,
                 handle.write(tex)
         escapes = {'\\': r'\textbackslash{}', '&': r'\&', '%': r'\%', '$': r'\$', '#': r'\#',
                    '_': r'\_', '{': r'\{', '}': r'\}', '~': r'\textasciitilde{}', '^': r'\textasciicircum{}'}
+        def source_paragraph(paragraph):
+            parts, end = [], 0
+            for match in paper_ingest.GLYPH_IMAGE_RE.finditer(paragraph):
+                parts.append(''.join(escapes.get(c, c) for c in paragraph[end:match.start()]))
+                page = next(image['page'] for image in glyph_images if image['name'] == match[1])
+                parts.append('\n% source-page: {}\n\\par\\noindent\\includegraphics[width=\\linewidth,keepaspectratio]{{figures/{}}}\\par\n'.format(page, match[1]))
+                end = match.end()
+            parts.append(''.join(escapes.get(c, c) for c in paragraph[end:]))
+            return ''.join(parts)
         body = '\n\n'.join('% source-paragraph: {} sha256={}\n{}'.format(
-            index, hashlib.sha256(paragraph.encode()).hexdigest(), ''.join(escapes.get(c, c) for c in paragraph))
+            index, hashlib.sha256(paragraph.encode()).hexdigest(), source_paragraph(paragraph))
             for index, paragraph in enumerate(paragraphs))
         tex = '\\documentclass[11pt]{article}\n\\usepackage{ctex}\n\\usepackage{tabularray}\n\\usepackage{graphicx}\n\\begin{document}\n' + body + '\n\\end{document}'
         print('      [保真门禁] 采用本地原文排版，保留全部原句、数字和章节顺序')
@@ -493,6 +524,7 @@ def structurize(source, out_dir, model=None, max_tokens=None,
                    'compile_ok': report.get('compile_ok'),
                    'source_file_sha256': hashlib.sha256(Path(source).read_bytes()).hexdigest() if Path(source).is_file() else None,
                    'source_sha256': report['fidelity']['source_sha256'], 'literal_fallback': fallback,
+                   'glyph_images': {'figures/' + image['name']: hashlib.sha256(Path(tex_dir, 'figures', image['name']).read_bytes()).hexdigest() for image in glyph_images},
                    'paragraphs': [{'index': index, 'text': paragraph, 'sha256': hashlib.sha256(paragraph.encode()).hexdigest()}
                                   for index, paragraph in enumerate(paragraphs)]}, handle, ensure_ascii=False, indent=2)
     if do_compile and not report.get('compile_ok'):

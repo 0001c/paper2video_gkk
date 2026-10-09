@@ -42,6 +42,7 @@ import os
 import re
 import shutil
 import sys
+import unicodedata
 import zipfile
 from pathlib import Path
 
@@ -190,10 +191,11 @@ def _merge_pdf_lines(raw_lines):
     return merged
 
 
-def _geometric_lines(page):
+def _geometric_lines(page, chars=None):
     """按基线/横坐标重组碎片字符；只去掉同位置的重复绘制。"""
-    chars = [char for block in page.get_text('rawdict')['blocks'] if block['type'] == 0
-             for line in block['lines'] for span in line['spans'] for char in span['chars']]
+    if chars is None:
+        chars = [char for block in page.get_text('rawdict')['blocks'] if block['type'] == 0
+                 for line in block['lines'] for span in line['spans'] for char in span['chars']]
     rows = []
     for char in sorted(chars, key=lambda item: (item['origin'][1], item['origin'][0])):
         if not rows or abs(char['origin'][1] - rows[-1][0]) > 0.75:
@@ -217,12 +219,76 @@ def has_unmapped_glyphs(text):
             or any(ord(char) < 32 and char not in '\n\r\t' for char in text))
 
 
+GLYPH_IMAGE_RE = re.compile(r'\[原文字形图：(source_p\d{4}_\d{2}\.png)\]')
+
+
+def _preserve_pdf_glyphs(page):
+    """Keep lines without a Unicode mapping as source images, never guess symbols.
+
+    CID fallback can look like ordinary printable text. Disable it so all missing
+    mappings are detected, including fonts that use private character codes.
+    """
+    import pymupdf
+    flags = (pymupdf.TEXTFLAGS_RAWDICT & ~pymupdf.TEXT_USE_CID_FOR_UNKNOWN_UNICODE) | pymupdf.TEXT_ACCURATE_BBOXES
+    chars = [char for block in page.get_text('rawdict', flags=flags)['blocks'] if block['type'] == 0
+             for line in block['lines'] for span in line['spans'] for char in span['chars']]
+    # Mapped math glyphs also lose super/subscript placement in plain text, and
+    # common text fonts lack Greek/math coverage. Preserve the whole source line.
+    def needs_image(char):
+        return (has_unmapped_glyphs(char) or any(unicodedata.category(c) in ('Sm', 'Co') and ord(c) > 127
+                or 0x370 <= ord(c) <= 0x3ff or 0x1d400 <= ord(c) <= 0x1d7ff for c in char))
+    bad = [char for char in chars if needs_image(char['c'])]
+    bands = []
+    for char in sorted(bad, key=lambda item: item['bbox'][1]):
+        top, bottom = char['bbox'][1], char['bbox'][3]
+        if bands and top <= bands[-1][1] + 8:
+            bands[-1][1] = max(bands[-1][1], bottom)
+        else:
+            bands.append([top, bottom])
+    images = []
+    for top, bottom in bands:
+        # Include complete neighbouring glyphs in the line (super/subscripts and
+        # equation numbers), rather than clipping just the unknown character.
+        row = [char for char in chars if char['bbox'][3] >= top - 3 and char['bbox'][1] <= bottom + 3]
+        top = min(char['bbox'][1] for char in row) - 2
+        bottom = max(char['bbox'][3] for char in row) + 2
+        # Any glyph removed from the text must be fully inside the image. Grow
+        # across touching lines until stable; this also keeps tall fractions intact.
+        while True:
+            touching = [char for char in chars if char['bbox'][3] > top and char['bbox'][1] < bottom]
+            expanded = (min([top, *[c['bbox'][1] for c in touching]]), max([bottom, *[c['bbox'][3] for c in touching]]))
+            if expanded == (top, bottom):
+                break
+            top, bottom = expanded
+        if images and top <= images[-1]['bbox'][3]:
+            images[-1]['bbox'][3] = bottom
+        else:
+            images.append({'page': page.number + 1, 'bbox': [0, max(0, top), page.rect.width, min(page.rect.height, bottom)], 'kind': 'source_glyphs'})
+    kept = [char for char in chars if not any(image['bbox'][1] <= char['origin'][1] <= image['bbox'][3]
+            or (char['bbox'][3] > image['bbox'][1] and char['bbox'][1] < image['bbox'][3]) for image in images)]
+    for index, image in enumerate(images, 1):
+        image['name'] = 'source_p{:04d}_{:02d}.png'.format(page.number + 1, index)
+        image['caption'] = '源文第 {} 页原文（保留 PDF 字形）'.format(page.number + 1)
+        kept.append({'c': '[原文字形图：{}]'.format(image['name']), 'origin': (0, image['bbox'][1]), 'bbox': image['bbox']})
+    return kept, images, sum(has_unmapped_glyphs(char['c']) for char in chars)
+
+
+def save_glyph_images(source, images, destination):
+    """Render preserved source regions at 300 DPI, without requiring their fonts."""
+    import pymupdf
+    Path(destination).mkdir(parents=True, exist_ok=True)
+    with pymupdf.open(source) as document:
+        for image in images:
+            pixmap = document[image['page'] - 1].get_pixmap(clip=pymupdf.Rect(image['bbox']), dpi=300)
+            pixmap.save(str(Path(destination, image['name'])))
+
+
 def extract_pdf(path):
     """PyMuPDF 提文本，逐页做行合并。返回 (正文, 元数据)。"""
     import pymupdf
 
     doc = pymupdf.open(path)
-    pages, empty_pages, quality = [], [], []
+    pages, empty_pages, quality, glyph_images = [], [], [], []
     for idx in range(doc.page_count):
         page = doc[idx]
         raw = page.get_text()
@@ -233,10 +299,11 @@ def extract_pdf(path):
             raw_lines, duplicates = _geometric_lines(page)
         else:
             raw_lines = raw.splitlines()
-        controls = sum(ord(c) < 32 and c not in '\n\r\t' for c in raw)
+        kept, images, controls = _preserve_pdf_glyphs(page)
+        if images:
+            raw_lines, duplicates = _geometric_lines(page, kept)
+            glyph_images.extend(images)
         reasons = []
-        if controls or '\ufffd' in raw:
-            reasons.append('字形映射缺失（含公式），需要对照源页转录')
         if len(raw.strip()) < 20:
             reasons.append('正文过少，可能为扫描或图片页')
         # 缺失字形不能被 _normalize 静默删掉后当作完整公式。
@@ -248,6 +315,7 @@ def extract_pdf(path):
         pages.append('[源文第 {} 页]\n\n{}'.format(idx + 1, body))
         quality.append({'page': idx + 1, 'fragmented': fragmented, 'reading_order_repaired': fragmented,
                         'duplicate_glyphs_removed': duplicates, 'unmapped_glyphs': controls,
+                        'preserved_glyph_images': len(images),
                         'needs_review': bool(reasons), 'reasons': reasons})
     total_chars = sum(len(p) for p in pages)
     doc.close()
@@ -259,6 +327,7 @@ def extract_pdf(path):
         "empty_pages": empty_pages,      # 空页多 = 很可能是扫描版
         "likely_scanned": bool(empty_pages) and len(empty_pages) >= max(1, len(pages) // 3),
         "page_quality": quality,
+        "glyph_images": glyph_images,
         "review_pages": [item['page'] for item in quality if item['needs_review']],
         "source_sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest(),
     }
@@ -451,7 +520,7 @@ def extract_latex(path, out_dir):
 # 调用方（web/app.py 的内容库）用它做缓存键的一部分：
 # 同一个文件 + 同一个版本号才允许直接复用已提取的正文。
 # 不 +1 的后果是"改了预处理却仍命中旧缓存"——内容对不上，且没有任何报错。
-EXTRACTOR_VERSION = "2"
+EXTRACTOR_VERSION = "3"
 
 _EXTRACTORS = {
     "pdf": extract_pdf,
@@ -488,13 +557,15 @@ def ingest(src, out_dir):
     meta.setdefault("needs_llm", True)
     meta["source"] = os.path.abspath(src)
     meta["detected_format"] = fmt
-    if fmt == 'pdf' and meta.get('review_pages'):
+    if meta.get('glyph_images'):
+        save_glyph_images(src, meta['glyph_images'], os.path.join(out_dir, 'glyph_images'))
+    if fmt == 'pdf' and (meta.get('review_pages') or meta.get('glyph_images')):
         import pymupdf
         evidence_dir = os.path.join(out_dir, 'source_pages')
         os.makedirs(evidence_dir, exist_ok=True)
         with pymupdf.open(src) as document:
             for item in meta['page_quality']:
-                if item['needs_review']:
+                if item['needs_review'] or item.get('preserved_glyph_images'):
                     filename = os.path.join(evidence_dir, 'page-{:04d}.png'.format(item['page']))
                     document[item['page'] - 1].get_pixmap(matrix=pymupdf.Matrix(2, 2)).save(filename)
                     item['source_image'] = os.path.abspath(filename)

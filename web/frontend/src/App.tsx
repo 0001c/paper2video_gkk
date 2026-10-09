@@ -1218,7 +1218,8 @@ export default function App() {
           </div>
         )}
         {!!ingest?.review_pages?.length && <p className="notice warn" role="status">源文第 {ingest.review_pages.join('、')} 页的文字或公式需要核对。请先修正正文，或选择不含缺失字形的教学范围；创建任务前会再次检查。</p>}
-        {ingest?.ingest_id && !ingest.error && ingest.chars > 0 && <SourceReview key={ingest.ingest_id} ingestId={ingest.ingest_id} onSaved={useCorrectedSource} />}
+        {ingest?.preserved_glyph_images > 0 && <p className="notice info" role="status">已将 {ingest.preserved_glyph_images} 处公式或特殊字形按原图保留，可直接生成。公式图片会随正文进入课件；可展开源页查看。</p>}
+        {ingest?.ingest_id && !ingest.error && ingest.chars > 0 && <SourceReview key={ingest.ingest_id} ingestId={ingest.ingest_id} onSaved={useCorrectedSource} preservedGlyphs={ingest.preserved_glyph_images} />}
         {/* 内容寻址：同一份文件之前在服务器上存在时直接复用提取结果。
             不说一句的话，"秒出结果"会被当成"没真提取"（实测容易误判）。 */}
         {ingest?.cached && !ingest.error && (

@@ -385,10 +385,13 @@ async def api_run_review(job_id: str, payload: ReviewRunRequest, request: Reques
                 raise HTTPException(422, detail="page_ids：请选择有效且不重复的零基页索引")
         elif payload.page_ids:
             raise HTTPException(422, detail="page_ids：配音合片时不要指定重写页")
-        _save_review(job, text)
+        if payload.action == 'render':
+            _save_review(job, text)
         plan = _rerun_plan(job)
         response = await api_rerun_job(job_id, {
             "plan_token": plan["token"], "reuse_script": payload.action == "render",
+            "action": "continue" if payload.action == "render" else "regenerate_script",
+            "review_script": text if payload.action == 'regenerate' else None,
             "stages": ["2", "3"] if payload.action == "render" else ["2"],
             "review_pages": payload.page_ids if payload.action == "regenerate" else None,
             "api_key": payload.api_key, "api_base": payload.api_base,
@@ -3080,31 +3083,32 @@ async def api_rerun_plan(job_id: str):
 
 @app.post("/api/jobs/{job_id}/rerun")
 async def api_rerun_job(job_id: str, payload: dict):
-    """从已有任务续跑（默认只重跑 stage 2/3，并复用已有讲稿）。
-
-    为什么这是**省钱主力**：讲稿生成是整条链路里唯一必须联网付费的一步，
-    而它占约 76% 的 token（要把全部幻灯片图喂给 VLM）。只重跑 stage 2/3 且
-    `--reuse_script` 复用已有讲稿 ⇒ 这次调用**不产生 API 费用**
-    （实测：gkk_zh 的补跑就是 0 费用）。
-
-    实现上**不复制产物**：新任务直接指向原任务的 result 目录，
-    于是 stage 1 已生成的幻灯片与讲稿就地重用（动辄几百 MB~GB，复制没必要）。
-    """
+    """续跑复用讲稿与有效配音；显式重写使用独立产物目录，保留原任务。"""
     src_job = _load_job(job_id)
+    reuse_script = _as_bool(payload.get("reuse_script"), True)
+    if not reuse_script and payload.get('action') != 'regenerate_script':
+        raise HTTPException(422, detail="继续生成视频必须复用讲稿；重写请使用课件审核中的显式重写操作")
+    plan = _rerun_plan(src_job)
+    if not plan["can_rerun"]:
+        raise HTTPException(status_code=409, detail=plan["reason"])
     if payload.get("plan_token") or _as_bool(payload.get("require_reuse_script"), False):
-        plan = _rerun_plan(src_job)
-        if not plan["can_rerun"]:
-            raise HTTPException(status_code=409, detail=plan["reason"])
         if payload.get("plan_token") != plan["token"]:
             raise HTTPException(status_code=409, detail="原任务产物已变化，请关闭确认框并重新检查")
-        if _as_bool(payload.get("reuse_script"), True) and not plan["can_reuse_script"]:
-            raise HTTPException(status_code=409, detail=plan["reason"])
+    if reuse_script and not plan["can_reuse_script"]:
+        raise HTTPException(status_code=409, detail=plan["reason"])
     # 用 _result_dir 而不是拼 job_dir/result：这样"续跑的续跑"也能找到真正的产物目录
     # （否则第二次续跑会指向第一个续跑任务的空 result 目录）。
     src_result = _result_dir(src_job)
     if not os.path.isdir(src_result):
         raise HTTPException(status_code=400,
                             detail="原任务没有 result 目录，无法续跑（可能从未开始）")
+    review_script = payload.get('review_script')
+    if not reuse_script and review_script is not None:
+        if not isinstance(review_script, str) or len(review_script) > 200000:
+            raise HTTPException(422, detail='review_script：需要有效且不超过 200000 字符的讲稿')
+        valid, why = validate_script_output(review_script, len(list(Path(src_result, 'slide_imgs').glob('*.png'))))
+        if not valid:
+            raise HTTPException(422, detail='review_script：' + why)
 
     config = copy.deepcopy(src_job.get("config") or {})
     if payload.get('model_config') is not None:
@@ -3130,12 +3134,11 @@ async def api_rerun_job(job_id: str, payload: dict):
         config["talking_note"] = "已关闭数字人；将生成幻灯片讲解视频"
     config.update({
         "stages": payload.get("stages") or ["2", "3"],
-        "reuse_script": _as_bool(payload.get("reuse_script"), True),
-        "require_reuse_script": _as_bool(payload.get("reuse_script"), True)
-            and bool(payload.get("plan_token")),
+        "reuse_script": reuse_script,
+        "require_reuse_script": reuse_script,
         "result_dir": src_result,
         "generate_talking": generate_talking,
-        "review_before_render": not _as_bool(payload.get("reuse_script"), True),
+        "review_before_render": not reuse_script,
     })
     config.pop("regenerate_pages", None)
     config.pop('script_generation_id', None)
@@ -3154,6 +3157,13 @@ async def api_rerun_job(job_id: str, payload: dict):
     _JOB_KEYS[new_id]['connections'] = connection_keys
     new_dir = _job_dir(new_id)
     os.makedirs(new_dir, exist_ok=True)
+    if not reuse_script:
+        # 重写可能改变每一页的配音指纹；不能覆盖已经完成配音的历史任务。
+        target = os.path.join(new_dir, 'result')
+        shutil.copytree(src_result, target)
+        config['result_dir'] = target
+        if review_script is not None:
+            course.save_script(Path(target) / 'subtitle_w_cursor.txt', review_script)
     src_ingest = os.path.join(_job_dir(job_id), "ingest")
     if os.path.isdir(src_ingest):                 # ingest 很小（正文），复制一份
         shutil.copytree(src_ingest, os.path.join(new_dir, "ingest"),

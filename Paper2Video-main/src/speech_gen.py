@@ -315,6 +315,27 @@ def _valid_local_audio(filename, saved, key):
         return False
 
 
+def _archive_local_audio(filename, saved):
+    import course
+    key = saved.get('key') if isinstance(saved, dict) else None
+    if not isinstance(key, str) or not re.fullmatch(r'[0-9a-f]{64}', key) or not _valid_local_audio(filename, saved, key):
+        return
+    version = Path(filename).parent / '.versions' / (key + '.wav')
+    version.parent.mkdir(parents=True, exist_ok=True)
+    if not _valid_local_audio(version, saved, key):
+        shutil.copy2(filename, version)
+    course.write_json(str(version) + '.json', saved)
+
+
+def _restore_local_audio(filename, key):
+    import course
+    version = Path(filename).parent / '.versions' / (key + '.wav')
+    saved = course.read_json(str(version) + '.json', {})
+    if _valid_local_audio(version, saved, key):
+        shutil.copy2(version, filename)
+        return saved
+
+
 def local_audio_status(script_path, directory, ref_audio, ref_text=None, language=None, model_type='qwen3tts'):
     """Read-only resume inspection, using the same identities as synthesis."""
     import course
@@ -331,8 +352,11 @@ def local_audio_status(script_path, directory, ref_audio, ref_text=None, languag
     for index, lines in enumerate(pages):
         text = '\n\n\n'.join(prompt for prompt, _ in lines)
         key = course.digest({'voice': voice_key, 'text': text})
-        if text.strip() and ref_text is not None and _valid_local_audio(
-                path.join(directory, f'{index}.wav'), manifest.get(str(index), {}), key):
+        version = Path(directory) / '.versions' / (key + '.wav')
+        valid = _valid_local_audio(path.join(directory, f'{index}.wav'), manifest.get(str(index), {}), key)
+        if not valid:
+            valid = _valid_local_audio(version, course.read_json(str(version) + '.json', {}), key)
+        if text.strip() and ref_text is not None and valid:
             reusable += 1
     return {'total_pages': len(pages), 'reusable_pages': reusable, 'needs_synthesis': len(pages) - reusable}
 
@@ -406,6 +430,12 @@ def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=
             import numpy as np
             key = course.digest({"voice": voice_key, "text": subtitle})
             cached = manifest.get(str(slide_idx), {})
+            if not _valid_local_audio(speech_result_path, cached, key):
+                _archive_local_audio(speech_result_path, cached)
+                restored = _restore_local_audio(speech_result_path, key)
+                if restored:
+                    cached = manifest[str(slide_idx)] = restored
+                    course.write_json(manifest_path, manifest)
             if _valid_local_audio(speech_result_path, cached, key):
                 print("[course] 第 {} 页音频复用".format(slide_idx + 1), flush=True)
             else:
@@ -427,10 +457,17 @@ def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=
                 part_dir = path.join(speech_save_dir, ".parts", str(slide_idx))
                 os.makedirs(part_dir, exist_ok=True)
                 for j, chunk in enumerate(chunks):
-                    part = path.join(part_dir, str(j) + ".wav")
-                    stamp = part + ".json"
                     part_key = course.digest({"voice": voice_key, "chunk": chunk})
+                    # 按内容保存分段，避免改稿后覆盖旧讲稿的恢复依据。
+                    part = path.join(part_dir, part_key + ".wav")
+                    stamp = part + ".json"
                     saved = course.read_json(stamp, {})
+                    legacy = path.join(part_dir, str(j) + '.wav')
+                    legacy_saved = course.read_json(legacy + '.json', {})
+                    if not _valid_local_audio(part, saved, part_key) and _valid_local_audio(legacy, legacy_saved, part_key):
+                        shutil.copy2(legacy, part)
+                        saved = legacy_saved
+                        course.write_json(stamp, saved)
                     if not _valid_local_audio(part, saved, part_key):
                         synth_page_qwen3tts(chunk, part, ref_audio, ref_text, language=language, page_label="{}-{}".format(slide_idx + 1, j + 1))
                         course.write_json(stamp, {"key": part_key, "wav_sha": course.digest(Path(part).read_bytes())})

@@ -39,6 +39,24 @@ class ResumeChecks(unittest.TestCase):
         speech_gen.tts_per_slide('qwen3tts', str(self.script), str(self.audio), str(self.reference),
                                  ref_text, language=language)
 
+    def test_script_switch_restores_original_audio_without_synthesis(self):
+        original_script = self.script.read_text('utf-8')
+        with patch.object(speech_gen, 'synth_page_qwen3tts', side_effect=self.synthesize):
+            self.run_tts()
+        original_audio = (self.audio / '0.wav').read_bytes()
+        self.script.write_text(original_script.replace('First page', 'Changed page'), encoding='utf-8')
+        with patch.object(speech_gen, 'synth_page_qwen3tts', side_effect=self.synthesize) as synth:
+            self.run_tts()
+            self.assertEqual(synth.call_count, 1)
+        self.script.write_text(original_script, encoding='utf-8')
+        status = speech_gen.local_audio_status(self.script, self.audio, self.reference, 'Reference text', 'English')
+        self.assertEqual(status['reusable_pages'], 3)
+        with patch.object(speech_gen, 'synth_page_qwen3tts', side_effect=AssertionError('must restore original')), \
+                patch.object(speech_gen, 'get_tts_model', side_effect=AssertionError('must not load weights')):
+            self.run_tts()
+        self.assertEqual((self.audio / '0.wav').read_bytes(), original_audio)
+        self.assertEqual(len(list((self.audio / '.parts/0').glob('*.wav'))), 2)
+
     def test_failure_resumes_completed_pages_and_validates_changes(self):
         calls = []
         def interrupted(text, output, *args, **kwargs):

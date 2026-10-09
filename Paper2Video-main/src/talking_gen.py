@@ -702,11 +702,17 @@ def _wan_per_slide(input_list, save_dir, snapshot):
         if cancelled():
             raise ValueError('数字人任务已请求取消；云端任务可能继续处理/计费')
         timing = read_pair(audio)[1] if Path(audio).with_suffix('.timing.json').exists() else None
-        manifest = prepare(audio, root / '.segments' / str(page_index), timing=timing)
+        manifest = prepare(audio, root / '.segments' / str(page_index), timing=timing, max_seconds=19.5)
         portrait_sha = digest(Path(reference).read_bytes())
         cache_key = digest({**identity, 'portrait_sha256': portrait_sha})
         part_root = Path(manifest['segments'][0]['file']).parent / ('wan_' + cache_key)
         part_root.mkdir(parents=True, exist_ok=True)
+        repair_path = part_root / 'tail-repair.json'
+        if repair_path.exists():
+            repaired = json.loads(repair_path.read_text(encoding='utf-8'))
+            if any(repaired.get(name) != manifest[name] for name in ('source_sha256', 'sample_rate', 'sample_count', 'channels')):
+                raise ValueError('数字人尾部修复清单与主音轨不匹配')
+            manifest = repaired
         target_dir, target = _target_paths(save_dir, page_index, reference)
         Path(target_dir).mkdir(parents=True, exist_ok=True)
         stamp_path = Path(target_dir) / 'segments.json'
@@ -715,10 +721,18 @@ def _wan_per_slide(input_list, save_dir, snapshot):
             'scope_id': identity['scope_id'], 'endpoint': identity['endpoint']}) + '.json')
         videos = []
 
+        def part_paths(index):
+            # Explicit repairs use separate records; preserve the original billed ID/media.
+            directory = part_root / 'tail-guard-v1'
+            repairing = manifest.get('repair_policy') == 'tail-guard-v1' and not manifest['segments'][index].get('reuse_video')
+            if not repairing and not (directory / ('wan-task-{:04d}.json'.format(index))).exists():
+                directory = part_root
+            return directory / ('wan-task-{:04d}.json'.format(index)), directory / ('{:04d}.mp4'.format(index))
+
         def save_page_manifest():
             records = []
             for part in manifest['segments']:
-                filename = part_root / ('wan-task-{:04d}.json'.format(part['index']))
+                filename, _ = part_paths(part['index'])
                 try:
                     remote = json.loads(filename.read_text(encoding='utf-8'))
                     if not isinstance(remote, dict):
@@ -735,16 +749,25 @@ def _wan_per_slide(input_list, save_dir, snapshot):
         save_page_manifest()
         for segment in manifest['segments']:
             index = segment['index']
-            record_path = part_root / ('wan-task-{:04d}.json'.format(index))
-            output = part_root / ('{:04d}.mp4'.format(index))
+            record_path, output = part_paths(index)
             if progress_report:
                 progress_report.report('talking', stage=3, page=page_index, segment_index=index,
                     done=page_index, total=len(input_list), role='avatar', mode='api', model=stage['model'],
                     completed_segments=len(videos), total_segments=len(manifest['segments']))
             try:
-                client.run_segment(reference, segment['file'], record_path, output, model=stage['model'],
-                    resolution=resolution, scope_id=identity['scope_id'], cancelled=cancelled,
-                    detection_path=detection_path)
+                if segment.get('reuse_video'):
+                    # Reuse only a verified prefix of the SAME input. Moving a cut into
+                    # silence lets the next generated part include all remaining speech.
+                    from avatar_segments import audio_data, verify_video_tail, word_times
+                    output = client.reuse_prefix(reference, segment['reuse_audio'], segment['file'],
+                        segment['reuse_record'], resolution)
+                    if str(output.resolve()) != segment['reuse_video'] or segment.get('reuse_start_sample') != segment['start_sample']:
+                        raise ValueError('数字人修复前缀与原任务的输入/视频不匹配')
+                    verify_video_tail(output, segment, manifest, audio_data(audio)[4], word_times(audio))
+                else:
+                    client.run_segment(reference, segment['file'], record_path, output, model=stage['model'],
+                        resolution=resolution, scope_id=identity['scope_id'], cancelled=cancelled,
+                        detection_path=detection_path)
                 if not output.is_file():
                     raise ValueError('云端数字人片段未归档，停止合片')
                 videos.append(output)

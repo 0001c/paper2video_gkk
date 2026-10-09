@@ -124,6 +124,8 @@ class WanTests(unittest.TestCase):
     def test_success_protocol_model_bound_uploads_and_output_billing(self):
         result = self.run_segment()
         self.assertEqual(result['state'], 'succeeded')
+        self.assertEqual(result['tail_guard_seconds'], 0.5)
+        self.assertEqual(result['upload_duration_seconds'], 1.5)
         self.assertEqual(result['usage'], {'duration_seconds': 1.25, 'resolution': 720})
         self.assertEqual(self.output.read_bytes(), self.video)
         models = [request.url.params['model'] for request in self.requests if request.url.path.endswith('/uploads')]
@@ -143,6 +145,22 @@ class WanTests(unittest.TestCase):
         self.assertEqual(result['usage_record_id'], usage_id)
         self.assertEqual(self.requests, [])
         self.assertEqual(len(list((self.root / 'model_usage').glob('*.json'))), 2)
+
+    def test_prefix_reuse_keeps_original_ids_and_rejects_changed_inputs(self):
+        self.run_segment()
+        self.requests.clear()
+        prefix = self.root / 'prefix.wav'
+        with wave.open(str(prefix), 'wb') as handle:
+            handle.setparams((1, 2, 24000, 0, 'NONE', 'not compressed'))
+            handle.writeframes(bytes(18000 * 2))
+        self.assertEqual(self.client.reuse_prefix(self.reference,self.audio,prefix,self.record,'480P'),self.output)
+        self.assertEqual(self.requests, [])
+        with self.assertRaisesRegex(ValueError, '不匹配'):
+            self.client.reuse_prefix(self.reference,self.audio,prefix,self.record,'720P')
+        with prefix.open('r+b') as handle:
+            handle.seek(44); handle.write(b'\x10\x10')
+        with self.assertRaisesRegex(ValueError, '不匹配'):
+            self.client.reuse_prefix(self.reference,self.audio,prefix,self.record,'480P')
 
     def test_known_id_resumes_without_upload_or_submit(self):
         self.known_pending()

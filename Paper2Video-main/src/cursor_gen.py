@@ -907,6 +907,9 @@ def cursor_gen_per_sentence(script_path, slide_img_dir, slide_audio_dir,
             sentence_timesteps[pos]['page'] = idx + 1
             sentence_timesteps[pos]['sentence'] = pos
 
+        if api_alignment is None:
+            from avatar_segments import write_alignment_timing
+            write_alignment_timing(slide_audio_path, sentence_timesteps)
         slide_sentence_timesteps.append(sentence_timesteps)
         if resume_cache:
             alignments[alignment_key] = copy.deepcopy(sentence_timesteps)

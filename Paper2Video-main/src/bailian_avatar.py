@@ -15,7 +15,7 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 from PIL import Image
 
-from avatar_segments import verify_segment
+from avatar_segments import verify_segment, audio_data
 from bailian_speech import atomic_json, digest, native_base
 from web import model_costs
 
@@ -25,6 +25,7 @@ DETECT_MODEL = MODEL + '-detect'
 UPLOAD_POLICY_URL = 'https://dashscope.aliyuncs.com/api/v1/uploads'
 MAX_AUDIO_BYTES = 15 * 1024 * 1024
 MAX_VIDEO_BYTES = 512 * 1024 * 1024
+TAIL_GUARD_SECONDS = 0.5
 STATUSES = frozenset(('PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED', 'UNKNOWN', 'CANCELED'))
 ID_PATTERN = re.compile(r'[A-Za-z0-9_-]{1,128}\Z')
 OSS_PATTERN = re.compile(r'dashscope-(?:file|result)(?:-[a-z0-9-]+)?\.oss-cn-(?:beijing|hangzhou|shanghai)\.aliyuncs\.com\Z')
@@ -55,6 +56,26 @@ def read_record(filename):
     if not isinstance(value, dict):
         raise ValueError('Wan 任务记录结构无效')
     return value
+
+
+def guarded_audio(audio, output):
+    """Only the uploaded derivative gets padding; the page master stays unchanged."""
+    import wave
+    rate, channels, width, count, pcm = audio_data(audio)
+    guard = round(TAIL_GUARD_SECONDS * rate)
+    if count + guard >= 20 * rate:
+        raise ValueError('Wan 分段需预留0.5秒尾部保护，上传音频仍须严格小于20秒')
+    target = Path(output)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix('.tmp')
+    with wave.open(str(temporary), 'wb') as handle:
+        handle.setparams((channels, width, rate, 0, 'NONE', 'not compressed'))
+        handle.writeframes(pcm + bytes(guard * channels * width))
+    temporary.replace(target)
+    verify_segment(target)
+    if target.stat().st_size >= MAX_AUDIO_BYTES:
+        raise ValueError('Wan 尾部保护后的上传音频文件必须小于15 MB')
+    return target
 
 
 def oss_url(value, uploading=False):
@@ -358,6 +379,20 @@ class AvatarClient:
                 return record
             return self._reconcile(record_path, record)
 
+    def reuse_prefix(self, reference, original_audio, prefix_audio, record_path, resolution):
+        """Verify a local prefix of archived media without submitting or querying."""
+        record = self._load(record_path)
+        original, prefix = Path(original_audio), Path(prefix_audio)
+        old, current = audio_data(original), audio_data(prefix)
+        output = Path(record['output_path'])
+        if (record.get('state') != 'succeeded' or record.get('reference_sha256') != digest(Path(reference).read_bytes())
+            or record.get('parameters', {}).get('resolution') != resolution
+            or record.get('audio_sha256') != digest(original.read_bytes())
+            or record.get('output_sha256') != digest(output.read_bytes())
+            or old[:3] != current[:3] or old[3] < current[3] or old[4][:len(current[4])] != current[4]):
+            raise ValueError('数字人修复前缀与原任务的输入/视频不匹配')
+        return output
+
     def _cancel(self, filename, record):
         self._save(filename, record, cancellation_requested=True)
         target = Path(record['output_path'])
@@ -433,10 +468,16 @@ class AvatarClient:
                 return self._cancel(filename, record)
             if not record.get('task_id'):
                 try:
+                    # Wan can return ~0.2s less than the uploaded track. Reserve silence
+                    # beyond the original speech and trim it only when assembling the page.
+                    upload_audio = guarded_audio(audio, filename.with_suffix('.upload.wav'))
+                    self._save(filename, record, tail_guard_seconds=TAIL_GUARD_SECONDS,
+                               upload_audio_sha256=digest(upload_audio.read_bytes()),
+                               upload_duration_seconds=verify_segment(upload_audio))
                     detection_path = detection_path or filename.parent / ('wan-detection-' + reference_sha + '.json')
                     self._detect(reference, detection_path, reference_sha, cancelled)
                     image_url = self._upload(reference, MODEL, cancelled)
-                    audio_url = self._upload(audio, MODEL, cancelled)
+                    audio_url = self._upload(upload_audio, MODEL, cancelled)
                     if cancelled():
                         raise InterruptedError('Wan 已停止新提交')
                     self._begin(record, MODEL)

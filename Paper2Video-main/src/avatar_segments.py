@@ -41,7 +41,7 @@ def quiet_cut(pcm, target, rate, channels):
     return min(candidates, key=lambda position: abs(position - target)) if candidates else target
 
 
-def prepare(audio_path, directory, enabled=True, timing=None):
+def prepare(audio_path, directory, enabled=True, timing=None, max_seconds=20):
     if not enabled:
         return None
     source = Path(audio_path)
@@ -49,19 +49,28 @@ def prepare(audio_path, directory, enabled=True, timing=None):
     sha = hashlib.sha256(source.read_bytes()).hexdigest()
     words = [word for segment in (timing or {}).get('segments', []) for word in segment.get('words', [])]
     candidates = sorted({round(word['end'] * rate) for word in words if isinstance(word.get('end'), (int, float)) and math.isfinite(word['end']) and 0 < word['end'] * rate < count})
-    identity = hashlib.sha256(json.dumps({'v': 1, 'audio': sha, 'timing': timing}, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    if not 19 <= max_seconds <= 20:
+        raise ValueError('数字人分段上限必须为19至20秒')
+    def cut_points(limit):
+        cuts, start = [0], 0
+        while count - start >= limit * rate:
+            target = start + 18 * rate
+            nearby = [value for value in candidates if target - rate <= value <= target + rate and value > start and value - start < limit * rate]
+            end = min(nearby, key=lambda value: abs(value - target)) if nearby else quiet_cut(pcm, target, rate, channels)
+            cuts.append(end)
+            start = end
+        cuts.append(count)
+        if len(cuts) > 2 and cuts[-1] - cuts[-2] < rate // 2 and cuts[-1] - cuts[-3] < limit * rate:
+            cuts.pop(-2)
+        return cuts
+    cuts = cut_points(max_seconds)
+    identity_data = {'v': 1, 'audio': sha, 'timing': timing}
+    # Keep existing segment/remote IDs when reserving upload padding changes no cuts.
+    if max_seconds < 20 and cuts != cut_points(20):
+        identity_data['cuts'] = cuts
+    identity = hashlib.sha256(json.dumps(identity_data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     root = Path(directory) / identity
     root.mkdir(parents=True, exist_ok=True)
-    cuts, start = [0], 0
-    while count - start >= 20 * rate:
-        target = start + 18 * rate
-        nearby = [value for value in candidates if target - rate <= value <= target + rate and value > start and value - start < 20 * rate]
-        end = min(nearby, key=lambda value: abs(value - target)) if nearby else quiet_cut(pcm, target, rate, channels)
-        cuts.append(end)
-        start = end
-    cuts.append(count)
-    if len(cuts) > 2 and cuts[-1] - cuts[-2] < rate // 2 and cuts[-1] - cuts[-3] < 20 * rate:
-        cuts.pop(-2)
     normalized_count = 0
     indexed_words = []
     from bailian_speech import plain_text
@@ -104,9 +113,66 @@ def prepare(audio_path, directory, enabled=True, timing=None):
                          'text_range': text_range, 'text': original[slice(*text_range)] if text_range else None,
                          'sha256': hashlib.sha256(filename.read_bytes()).hexdigest()})
     result = {'schema_version': 1, 'identity': identity, 'source_sha256': sha, 'sample_rate': rate,
-              'channels': channels, 'sample_count': count, 'max_seconds_exclusive': 20, 'target_seconds': 18, 'segments': segments}
+              'channels': channels, 'sample_count': count, 'max_seconds_exclusive': max_seconds, 'target_seconds': 18, 'segments': segments}
     atomic_json(root / 'manifest.json', result)
     return result
+
+
+def write_alignment_timing(audio, sentences):
+    """Export already-computed local word times without changing the master WAV."""
+    segments = [{'words': [{'word': sentence['raw_text'][word['text_start']:word['text_end']],
+                           'start': word['start'], 'end': word['end']}
+                          for word in sentence.get('word_spans', [])]} for sentence in sentences]
+    atomic_json(Path(audio).with_suffix('.alignment.json'), {'schema_version': 1,
+        'source': 'local_forced_aligner', 'audio_sha256': hashlib.sha256(Path(audio).read_bytes()).hexdigest(),
+        'segments': segments})
+
+
+def word_times(audio):
+    if Path(audio).with_suffix('.timing.json').exists():
+        from bailian_speech import read_pair
+        timing = read_pair(audio)[1]
+    else:
+        filename = Path(audio).with_suffix('.alignment.json')
+        if not filename.exists():
+            return None
+        timing = json.loads(filename.read_text(encoding='utf-8'))
+        if (timing.get('schema_version') != 1 or timing.get('source') != 'local_forced_aligner'
+                or timing.get('audio_sha256') != hashlib.sha256(Path(audio).read_bytes()).hexdigest()):
+            raise ValueError('本地字词时间戳与主音频不匹配')
+    words = [word for item in timing['segments'] for word in item['words']]
+    rate, _, _, count, _ = audio_data(audio)
+    if not words or any(type(word.get('start')) not in (int, float) or type(word.get('end')) not in (int, float)
+        or not math.isfinite(word['start']) or not math.isfinite(word['end'])
+        or not 0 <= word['start'] <= word['end'] <= count / rate + 0.05 for word in words):
+        raise ValueError('数字人字词时间戳不完整或超出主音频')
+    return words
+
+
+def verify_video_tail(video, segment, manifest, master_pcm, words, fps=25):
+    probe = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=duration', '-of', 'json', str(video)], capture_output=True, check=True)
+    try:
+        duration = float(json.loads(probe.stdout)['streams'][0]['duration'])
+    except (ValueError, KeyError, IndexError):
+        raise ValueError('数字人片段缺少有效视频时长') from None
+    expected, rate = segment['sample_count'] / manifest['sample_rate'], manifest['sample_rate']
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError('数字人片段缺少有效视频时长')
+    missing = expected - duration
+    if missing > 1 / fps:
+        first = segment['start_sample'] + max(0, math.floor(duration * rate))
+        cutoff, end = first / rate, segment['end_sample'] / rate
+        width = 2 * manifest['channels']
+        tail = master_pcm[first * width:segment['end_sample'] * width]
+        quiet = bool(tail) and max(abs(item[0]) for item in struct.iter_unpack('<h', tail)) < 256
+        word_safe = words is not None and not any(word['start'] < end and word['end'] > cutoff for word in words)
+        if missing > 0.5 or not quiet or not word_safe:
+            raise ValueError('数字人第{}段视频 {:.3f}s 短于音频 {:.3f}s（缺少 {:.3f}s）；尾部未通过字词与静音双重校验，禁止补帧掩盖缺失。需使用带尾部保护的音频重生成此段，已有片段保留。'.format(segment['index'] + 1, duration, expected, missing))
+    elif missing > 0 and words is not None:
+        cutoff = segment['start_seconds'] + duration
+        if any(word['start'] < segment['end_seconds'] and word['end'] > cutoff + 0.001 for word in words):
+            raise ValueError('数字人片段尾部缺少真实语音，禁止补帧掩盖缺失')
+    return duration, missing
 
 
 def stitch(videos, manifest, master_audio, output, fps=25):
@@ -128,37 +194,11 @@ def stitch(videos, manifest, master_audio, output, fps=25):
         previous = segment['end_sample']
     if previous != count:
         raise ValueError('数字人分段没有覆盖主音轨')
-    words = None
-    if Path(master_audio).with_suffix('.timing.json').exists():
-        from bailian_speech import read_pair
-        timing = read_pair(master_audio)[1]
-        words = [word for item in timing['segments'] for word in item['words']]
+    words = word_times(master_audio)
     arguments = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y']
     filters, labels = [], []
     for index, (video, segment) in enumerate(zip(videos, manifest['segments'])):
-        probe = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=duration', '-of', 'json', str(video)], capture_output=True, check=True)
-        try:
-            duration = float(json.loads(probe.stdout)['streams'][0]['duration'])
-        except (ValueError, KeyError, IndexError):
-            raise ValueError('数字人片段缺少有效视频时长') from None
-        expected = segment['sample_count'] / manifest['sample_rate']
-        if not math.isfinite(duration) or duration <= 0:
-            raise ValueError('数字人片段缺少有效视频时长')
-        missing = expected - duration
-        if missing > 1 / fps:
-            first = segment['start_sample'] + max(0, math.floor(duration * rate))
-            cutoff = first / rate
-            end = segment['end_sample'] / rate
-            tail = master_pcm[first * channels * width:segment['end_sample'] * channels * width]
-            quiet = bool(tail) and max(abs(item[0]) for item in struct.iter_unpack('<h', tail)) < 256
-            word_safe = words is not None and not any(word['start'] < end and word['end'] > cutoff for word in words)
-            if missing > 0.5 or not quiet or not word_safe:
-                raise ValueError('数字人视频片段明显短于对应音频，缺失区域未经字词与采样静音双重确认，禁止补帧掩盖缺失')
-        elif missing > 0 and words is not None:
-            # 一帧内的量化差异也不能跨过仍在发声的末字。
-            cutoff = segment['start_seconds'] + duration
-            if any(word['start'] < segment['end_seconds'] and word['end'] > cutoff + 0.001 for word in words):
-                raise ValueError('数字人片段尾部缺少真实语音，禁止补帧掩盖缺失')
+        duration, missing = verify_video_tail(video, segment, manifest, master_pcm, words, fps)
         frames = round(segment['end_seconds'] * fps) - round(segment['start_seconds'] * fps)
         if frames < 1:
             raise ValueError('数字人片段不足一帧')

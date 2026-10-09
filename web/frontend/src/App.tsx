@@ -1812,7 +1812,7 @@ export default function App() {
       <section className="section" hidden={view !== "history"}>
         <div className="section-head">
           <h2 className="section-title">任务记录</h2>
-          <span className="section-note">重做前检查复用条件与覆盖范围</span>
+          <span className="section-note">继续前检查有效缓存与更新范围</span>
         </div>
         {jobsError && <div className="notice err" role="alert">任务记录读取失败：{jobsError}；每 5 秒自动重试。</div>}
         {jobs.length === 0 ? (
@@ -1854,7 +1854,7 @@ export default function App() {
                       disabled={rerunning}
                       onClick={() => prepareRerun(j.id)}
                     >
-                      重做配音和视频
+                      {j.status === "done" ? "重新合成视频" : "继续生成视频"}
                     </button>
                   )}
                 </span>
@@ -1865,7 +1865,7 @@ export default function App() {
       </section>
 
       <Dialog
-        header="确认重做配音和视频"
+        header="确认继续生成视频"
         visible={!!rerunPlan}
         onClose={() => { if (!rerunning) setRerunPlan(null); }}
         onConfirm={doRerun}
@@ -1878,7 +1878,7 @@ export default function App() {
           <p>{rerunPlan.source_name || rerunPlan.job_id}</p>
           <p>{rerunPlan.reason}</p>
           {!regenerateScript && rerunPlan.audio_reuse && <p className="notice info" role="status">{rerunPlan.audio_reuse.unavailable ? '暂时无法核验配音缓存，执行前会再次检查。' : `原任务配音可复用 ${rerunPlan.audio_reuse.reusable_pages}/${rerunPlan.audio_reuse.total_pages} 页，需生成 ${rerunPlan.audio_reuse.needs_synthesis} 页。`}调整讲稿、音色或配音语言后，会按新设置重新核验。</p>}
-          <p>将沿用原任务配置，上方新任务草稿不会用于本次重做。</p>
+          <p>将沿用原任务配置，上方新任务草稿不会用于本次续跑。</p>
           <p className="rerun-warning">将更新原任务的{regenerateScript ? "讲稿、" : ""}{rerunPlan.overwrite.join("、")}。有效配音和已完成的定位会按内容校验复用；原任务与续跑任务共用产物目录。</p>
           {rerunPlan.can_rerun && <label className="checkline">
             <input type="checkbox" checked={regenerateScript} disabled={rerunning}

@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 from os import path
+from pathlib import Path
 
 import pv_env
 
@@ -278,8 +279,66 @@ def parse_script(script_text):
     return parse(script_text)
 
 
+def _reference_key(audio_sha, language):
+    import course
+    return course.digest({'audio': audio_sha, 'language': language, 'asr': ASR_REPO, 'v': 1})
+
+
+def _cached_reference_text(directory, audio_sha, language):
+    import course
+    saved = course.read_json(path.join(directory, 'reference.json'), {})
+    if isinstance(saved, dict) and saved.get('key') == _reference_key(audio_sha, language):
+        text = saved.get('text')
+        if isinstance(text, str) and text.strip():
+            return text
+
+
+def _local_voice_key(audio_sha, ref_text, language, model_type):
+    import course
+    # Keep the existing identity so already completed recordings remain reusable.
+    return course.digest({'audio': audio_sha, 'text': ref_text, 'language': language,
+                          'model': model_type, 'repo': TTS_REPO, 'v': 1})
+
+
+def _valid_local_audio(filename, saved, key):
+    import course
+    import soundfile as sf
+    try:
+        if not isinstance(saved, dict) or saved.get('key') != key:
+            return False
+        with open(filename, 'rb') as handle:
+            if saved.get('wav_sha') != course.digest(handle.read()):
+                return False
+        info = sf.info(filename)
+        return info.frames > 0 and info.samplerate > 0
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+
+def local_audio_status(script_path, directory, ref_audio, ref_text=None, language=None, model_type='qwen3tts'):
+    """Read-only resume inspection, using the same identities as synthesis."""
+    import course
+    with open(script_path, encoding='utf-8') as handle:
+        pages = parse_script(handle.read())
+    manifest = course.read_json(path.join(directory, 'manifest.json'), {})
+    manifest = manifest if isinstance(manifest, dict) else {}
+    with open(ref_audio, 'rb') as handle:
+        audio_sha = course.digest(handle.read())
+    if ref_text is None:
+        ref_text = _cached_reference_text(directory, audio_sha, language)
+    voice_key = _local_voice_key(audio_sha, ref_text, language, model_type)
+    reusable = 0
+    for index, lines in enumerate(pages):
+        text = '\n\n\n'.join(prompt for prompt, _ in lines)
+        key = course.digest({'voice': voice_key, 'text': text})
+        if text.strip() and ref_text is not None and _valid_local_audio(
+                path.join(directory, f'{index}.wav'), manifest.get(str(index), {}), key):
+            reusable += 1
+    return {'total_pages': len(pages), 'reusable_pages': reusable, 'needs_synthesis': len(pages) - reusable}
+
+
 def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=None,
-                  language=None, resume_audio=False, model_snapshot=None):
+                  language=None, resume_audio=True, model_snapshot=None):
     """逐页合成语音。
 
     与原版的差异
@@ -303,22 +362,32 @@ def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=
 
     os.makedirs(speech_save_dir, exist_ok=True)
 
+    import course
+    with open(ref_audio, 'rb') as handle:
+        audio_sha = course.digest(handle.read())
     # 参考文本只需一次（原来在循环内，是明显的性能 bug）
     if ref_text is None:
-        print("[speech_gen] 参考音频未给文本，先用 Qwen3-ASR 转写一次")
-        ref_text = transcribe_with_qwen3asr(ref_audio, lang=language)
+        ref_text = _cached_reference_text(speech_save_dir, audio_sha, language) if resume_audio else None
+        if ref_text is None:
+            print("[speech_gen] 参考音频未给文本，先用 Qwen3-ASR 转写一次")
+            ref_text = transcribe_with_qwen3asr(ref_audio, lang=language)
+            if not ref_text.strip():
+                raise ValueError('参考音频转写为空，请补充参考文本')
+            course.write_json(path.join(speech_save_dir, 'reference.json'),
+                              {'key': _reference_key(audio_sha, language), 'text': ref_text})
 
     # 结构化进度的计数：用「已完成页数」而不是循环下标 ——
     # 上面有「无文本页 skip」的分支，用下标会让 done 虚高。
     _progress_total = len(parsed_speech)
     _progress_done = 0
 
-    import course
     manifest_path = path.join(speech_save_dir, "manifest.json")
     manifest = course.read_json(manifest_path, {}) if resume_audio else {}
-    voice_key = course.digest({"audio": course.digest(open(ref_audio, "rb").read()),
-                               "text": ref_text, "language": language, "model": model_type,
-                               "repo": TTS_REPO, "v": 1}) if resume_audio else None
+    manifest = manifest if isinstance(manifest, dict) else {}
+    voice_key = _local_voice_key(audio_sha, ref_text, language, model_type) if resume_audio else None
+    if resume_audio:
+        status = local_audio_status(script_path, speech_save_dir, ref_audio, ref_text, language, model_type)
+        print('[speech_gen] 配音续跑检查：{reusable_pages}/{total_pages} 页有效缓存，本次需合成 {needs_synthesis} 页'.format(**status), flush=True)
 
     for slide_idx in range(len(parsed_speech)):
         speech_with_cursor = parsed_speech[slide_idx]
@@ -337,7 +406,7 @@ def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=
             import numpy as np
             key = course.digest({"voice": voice_key, "text": subtitle})
             cached = manifest.get(str(slide_idx), {})
-            if cached.get("key") == key and path.isfile(speech_result_path) and cached.get("wav_sha") == course.digest(open(speech_result_path, "rb").read()):
+            if _valid_local_audio(speech_result_path, cached, key):
                 print("[course] 第 {} 页音频复用".format(slide_idx + 1), flush=True)
             else:
                 # 长页主动分段，失败保留已完成段；避免一次生成数分钟语音。
@@ -362,9 +431,9 @@ def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=
                     stamp = part + ".json"
                     part_key = course.digest({"voice": voice_key, "chunk": chunk})
                     saved = course.read_json(stamp, {})
-                    if saved.get("key") != part_key or not path.isfile(part) or saved.get("wav_sha") != course.digest(open(part, "rb").read()):
+                    if not _valid_local_audio(part, saved, part_key):
                         synth_page_qwen3tts(chunk, part, ref_audio, ref_text, language=language, page_label="{}-{}".format(slide_idx + 1, j + 1))
-                        course.write_json(stamp, {"key": part_key, "wav_sha": course.digest(open(part, "rb").read())})
+                        course.write_json(stamp, {"key": part_key, "wav_sha": course.digest(Path(part).read_bytes())})
                     wav, part_sr = sf.read(part, dtype="float32")
                     if sr is not None and sr != part_sr:
                         raise RuntimeError("音频分段采样率不一致")
@@ -373,9 +442,11 @@ def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=
                         parts.append(np.zeros(int(sr * 0.35), dtype="float32"))
                     parts.append(wav)
                 merged = np.concatenate(parts)
-                sf.write(speech_result_path, merged, sr)
+                temporary = speech_result_path + '.tmp.wav'
+                sf.write(temporary, merged, sr)
+                os.replace(temporary, speech_result_path)
                 manifest[str(slide_idx)] = {"key": key, "text_sha": course.digest(subtitle),
-                    "wav_sha": course.digest(open(speech_result_path, "rb").read()), "seconds": len(merged) / sr}
+                    "wav_sha": course.digest(Path(speech_result_path).read_bytes()), "seconds": len(merged) / sr}
                 course.write_json(manifest_path, manifest)
             _progress_done += 1
             if progress_report:

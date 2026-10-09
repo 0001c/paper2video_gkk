@@ -208,6 +208,7 @@ type Job = {
 };
 
 type RerunPlan = {
+  audio_reuse?: { total_pages: number; reusable_pages: number; needs_synthesis: number; unavailable?: boolean } | null;
   model_source?: Job["config"];
   job_id: string;
   can_rerun: boolean;
@@ -901,7 +902,7 @@ export default function App() {
     setPages(null);
     MessagePlugin.success(regenerateScript
       ? "已入队：重新生成讲稿和视频，将调用模型接口"
-      : "已入队：复用讲稿并重做配音和视频；若讲稿失效会停止，不会自动重新生成");
+      : "已入队：复用讲稿及有效配音，从未完成的位置继续；变更或损坏的音频页会重新生成");
   }, reportError), [apiKey, apiBase, rerunPlan, regenerateScript, selectJob]);
 
   // 产物链接：逐段转义，但要保留路径分隔符（数字人产物是多层目录）
@@ -1579,7 +1580,7 @@ export default function App() {
 
         <div className="actions">
           {running && <Button theme="danger" variant="outline" loading={canceling} onClick={cancel}>取消此任务</Button>}
-          {job && !running && !job.config?.review_before_render && <Button variant="outline" loading={rerunning} onClick={() => prepareRerun(job.id)}>重做配音和视频</Button>}
+          {job && !running && !job.config?.review_before_render && <Button variant="outline" loading={rerunning} onClick={() => prepareRerun(job.id)}>{job.status === 'done' ? '重新合成视频' : '继续生成视频'}</Button>}
           {job?.config?.review_before_render && ["failed", "canceled"].includes(job.status) && <Button variant="outline" loading={rerunning} onClick={retryPreparation}>继续准备课件与讲稿</Button>}
           {job?.queue_ahead ? (
             <span style={{ fontSize: 12, color: "var(--paper-ink-faint)" }}>
@@ -1876,14 +1877,15 @@ export default function App() {
         {rerunPlan && <>
           <p>{rerunPlan.source_name || rerunPlan.job_id}</p>
           <p>{rerunPlan.reason}</p>
+          {!regenerateScript && rerunPlan.audio_reuse && <p className="notice info" role="status">{rerunPlan.audio_reuse.unavailable ? '暂时无法核验配音缓存，执行前会再次检查。' : `原任务配音可复用 ${rerunPlan.audio_reuse.reusable_pages}/${rerunPlan.audio_reuse.total_pages} 页，需生成 ${rerunPlan.audio_reuse.needs_synthesis} 页。`}调整讲稿、音色或配音语言后，会按新设置重新核验。</p>}
           <p>将沿用原任务配置，上方新任务草稿不会用于本次重做。</p>
-          <p className="rerun-warning">将覆盖原任务的{regenerateScript ? "讲稿、" : ""}{rerunPlan.overwrite.join("、")}。原任务与重做任务共用产物目录。</p>
+          <p className="rerun-warning">将更新原任务的{regenerateScript ? "讲稿、" : ""}{rerunPlan.overwrite.join("、")}。有效配音和已完成的定位会按内容校验复用；原任务与续跑任务共用产物目录。</p>
           {rerunPlan.can_rerun && <label className="checkline">
             <input type="checkbox" checked={regenerateScript} disabled={rerunning}
               onChange={(e) => setRegenerateScript(e.target.checked)} />
             重新生成讲稿（会调用模型接口，可能产生费用）
           </label>}
-          {!regenerateScript && rerunPlan.can_reuse_script && <p className="hint">复用已有讲稿，不调用讲稿生成接口。若讲稿在执行前失效，任务会停止。</p>}
+          {!regenerateScript && rerunPlan.can_reuse_script && <p className="hint">复用已有讲稿与有效配音，继续未完成的定位、数字人或合片。若讲稿在执行前失效，任务会停止。</p>}
           {!rerunPlan.can_reuse_script && <p className="hint">要继续，需明确选择重新生成讲稿；不能按免费复用方式运行。</p>}
         </>}
       </Dialog>

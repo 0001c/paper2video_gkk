@@ -35,7 +35,7 @@ except Exception:                      # pragma: no cover
     progress_report = None
 from pdf_render import render_pdf_to_images
 
-from speech_gen import tts_per_slide
+from speech_gen import tts_per_slide, release_models
 from subtitle_render import add_subtitles
 import subtitle_style
 from talking_gen import talking_gen_per_slide
@@ -435,6 +435,7 @@ if __name__ == '__main__':
         step3_1_time =  time.time()
         time_second["tts"] = [step3_1_time-step2_time]
         print("Speech Generation", step3_1_time-step2_time)
+        release_models(('tts', 'asr'))
         
         ## Step 3-2: Cursor Generation
         os.environ["PYTHONHASHSEED"] = "random"        

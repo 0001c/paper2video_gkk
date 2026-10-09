@@ -33,6 +33,8 @@ import json
 import string
 import subprocess
 import time
+import hashlib
+import tempfile
 from os import path
 from pathlib import Path
 
@@ -66,7 +68,7 @@ _gui_processor = None
 def prepare_grounding_image(image_path):
     """返回「该喂给模型」的图片路径：超过 GROUNDING_MAX_EDGE 才缩放，否则原图。
 
-    副本落在 TMP_DIR（纯英文路径），并按源文件名缓存，同一页的多句复用同一份。
+    副本落在源图目录内，按内容与尺寸缓存，同一页的多句复用同一份。
     """
     from PIL import Image
 
@@ -79,14 +81,27 @@ def prepare_grounding_image(image_path):
                   max(1, int(round(height * scale))))
         resized = handle.convert("RGB").resize(target, Image.LANCZOS)
 
-    os.makedirs(pv_env.TMP_DIR, exist_ok=True)
-    # 文件名带上目标尺寸：否则调整 GROUNDING_MAX_EDGE 后会命中上一次的旧副本
-    stem = path.splitext(path.basename(image_path))[0]
-    out_path = path.join(pv_env.TMP_DIR, "grounding_{}_{}x{}.png".format(
-        stem, target[0], target[1]))
-    if not path.exists(out_path):
-        resized.save(out_path)
-    return out_path
+    directory = Path(image_path).resolve().parent / '.grounding'
+    directory.mkdir(exist_ok=True)
+    identity = hashlib.sha256(Path(image_path).read_bytes()).hexdigest()
+    out_path = directory / '{}_{}x{}.png'.format(identity, *target)
+    if out_path.is_file():
+        try:
+            with Image.open(out_path) as cached:
+                cached.load()
+                if cached.size == target:
+                    return str(out_path)
+        except (OSError, ValueError):
+            pass
+    # Publish only complete PNGs, including when multiple workers use one page.
+    with tempfile.NamedTemporaryFile(dir=directory, suffix='.png', delete=False) as handle:
+        temporary = Path(handle.name)
+    try:
+        resized.save(temporary)
+        temporary.replace(out_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return str(out_path)
 
 
 # ──────────────────────────────────────────────────────────────

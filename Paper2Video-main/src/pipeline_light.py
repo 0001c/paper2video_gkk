@@ -259,6 +259,7 @@ if __name__ == "__main__":
             ref_audio=args.ref_audio,
             ref_text=args.ref_text,
             language=args.tts_language,
+            resume_audio=True,
             model_snapshot=model_snapshot,
         )
         after_tts = time.time()
@@ -282,6 +283,7 @@ if __name__ == "__main__":
             # 分开后将来「中文讲稿配英文参考音频」之类才不会串。
             language=lang["align_language"],
             slide_pdf_path=slide_pdf_path,
+            resume_cache=True,
             model_snapshot=model_snapshot,
             timing_source=model_snapshot['model_config']['timing']['source'] if model_snapshot else 'local_forced_aligner',
         )

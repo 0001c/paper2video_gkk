@@ -3026,7 +3026,7 @@ def _rerun_plan(job):
                 text = handle.read()
             reusable, invalid = validate_script_output(text, len(slide_names))
             reusable = reusable and bool(text.strip()) and slides_ready
-            reason = "讲稿校验通过，可复用讲稿并重做配音和视频" if reusable else \
+            reason = "讲稿校验通过，续跑将复用有效配音，只补齐未完成或已变更的页" if reusable else \
                 "讲稿无法复用：{}；重新生成可能产生 API 费用".format(invalid or "幻灯片不完整")
         except (OSError, UnicodeError):
             reason = "讲稿文件无法读取，重新生成可能产生 API 费用"
@@ -3042,6 +3042,23 @@ def _rerun_plan(job):
             can_rerun = False
             reason = "有运行或排队任务正在使用同一份产物，请等待其结束后再重做"
             break
+    audio_reuse = None
+    config = job.get('config') or {}
+    tts = (config.get('model_config') or {}).get('stages', {}).get('tts', {})
+    if reusable and tts.get('mode', 'local') == 'local' and tts.get('model', 'qwen3tts') == 'qwen3tts':
+        try:
+            import language_config
+            from speech_gen import local_audio_status
+            language = language_config.resolve(config.get('slide_lang'), config.get('script_lang'), for_print=False)
+            reference = config.get('ref_audio') or language['ref_audio']
+            reference_text = config.get('ref_text')
+            if reference_text is None and not config.get('ref_audio'):
+                reference_text = language['ref_text']
+            audio_reuse = local_audio_status(script_file, os.path.join(result, 'audio'), reference,
+                                            reference_text, language['tts_language'])
+        except (OSError, ValueError, RuntimeError):
+            audio_reuse = {'total_pages': len(slide_names), 'reusable_pages': 0,
+                           'needs_synthesis': len(slide_names), 'unavailable': True}
     versions = []
     for name in slide_names:
         stat = os.stat(os.path.join(slide_dir, name))
@@ -3051,8 +3068,8 @@ def _rerun_plan(job):
         sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
     return {"job_id": job["id"], "source_name": job.get("source_name") or "",
             "can_rerun": can_rerun, "can_reuse_script": reusable,
-            "reason": reason, "token": token,
-            "overwrite": ["配音", "光标数据", "数字人视频", "合成视频"],
+            "reason": reason, "token": token, "audio_reuse": audio_reuse,
+            "overwrite": ["需补齐或更新的配音", "光标数据", "数字人视频", "合成视频"],
             "generate_talking": _as_bool((job.get("config") or {}).get("generate_talking"), True)}
 
 

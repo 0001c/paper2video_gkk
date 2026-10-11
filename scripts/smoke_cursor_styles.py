@@ -64,8 +64,10 @@ def main():
         # 光标只影响最终画面，不能使已付费的课件讲稿缓存失效。
         changed = {**job, 'config': {**job['config'], 'cursor_style': 'arrow-white'}}
         assert web.artifact_cache.deck_key(facts) == web.artifact_cache.deck_key(web._artifact_facts(changed))
+        job['status'] = 'failed'
+        web._save_job(job)
         resumed = client.post('/api/jobs/' + job['id'] + '/rerun', json={'reuse_script': True, 'cursor_style': 'arrow-white', 'cursor_scale': 0.75})
-        assert resumed.status_code == 400  # 尚无产物，不能创建空续跑。
+        assert resumed.status_code == 409 and '幻灯片尚未完整生成' in resumed.json()['detail'], resumed.text
         if '--media' in sys.argv:
             source = root / 'source.mp4'
             subprocess.run(['ffmpeg', '-y', '-v', 'error', '-f', 'lavfi', '-i', 'color=c=0x303846:s=320x180:r=10:d=1',
@@ -97,7 +99,7 @@ def main():
             assert box and abs((box[0] + box[2]) / 2 - 220) < 5, '最后一个目标必须保持到视频结束'
             long_video = root / 'long-targets.mp4'
             cursor_render.render_cursor_on_video(str(source), str(long_video), [(i / 1000, 100 + i % 2 * 120, 90) for i in range(1000)], cursor_size=48, cursor_img_path=str(asset))
-            assert long_video.is_file() and not list((root / 'overlays').glob('*.ffscript')), '长滤镜不能超过命令行限制，临时脚本应清理'
+            assert long_video.is_file() and not list((root / '.render-cache').glob('*.ffscript')), '长滤镜不能超过命令行限制，临时脚本应清理'
         assert all(asset.read_bytes() == data for asset, data in originals.items()), '不能改写仓库源素材'
     print('PASS 光标选项、透明素材、配置透传、缓存隔离、付费产物复用' + ('、真实视频热点与末目标保持' if '--media' in sys.argv else ''))
 

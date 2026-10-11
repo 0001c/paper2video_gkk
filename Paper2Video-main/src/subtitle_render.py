@@ -16,7 +16,7 @@
 因此不需要二次转写。字幕用 ASS 格式描述、由 ffmpeg 的 ``ass`` 滤镜烧录：
 - ASS 里显式声明 ``PlayResX/Y`` 为视频真实分辨率，于是 ``FontSize`` 与像素字号 1:1 对应；
 - ``BorderStyle=3`` 提供半透明底色块，贴近原实现的白字黑底效果；
-- 字幕文件写在纯英文临时目录，规避 ffmpeg 在 Windows 上对非 ASCII 路径的解析问题。
+- 字幕文件以英文文件名、相对 cwd 引用，规避 ffmpeg 滤镜的路径解析问题。
 """
 
 import os
@@ -244,9 +244,10 @@ def add_subtitles(video_path, output_path, font_size=None,
     print("[subtitle_render] 视频 {}x{}，字幕 {} 条，字号 {}".format(
         width, height, len(segments), font_size))
 
-    # ASS 必须落在纯英文目录：ffmpeg 的 ass 滤镜在 Windows 上无法解析中文路径
-    os.makedirs(pv_env.TMP_DIR, exist_ok=True)
-    descriptor, ass_path = tempfile.mkstemp(prefix='p2v_subtitle_', suffix='.ass', dir=pv_env.TMP_DIR)
+    # 滤镜仅接收英文文件名；cwd 可含中文，且不依赖模型盘的全局临时目录权限。
+    render_dir = os.path.join(os.path.dirname(os.path.abspath(output_path)), '.render-cache')
+    os.makedirs(render_dir, exist_ok=True)
+    descriptor, ass_path = tempfile.mkstemp(prefix='p2v_subtitle_', suffix='.ass', dir=render_dir)
     os.close(descriptor)
 
     # 以 cwd + 纯文件名引用，彻底绕开路径转义问题（冒号、反斜杠在滤镜串里都要转义）
@@ -260,7 +261,7 @@ def add_subtitles(video_path, output_path, font_size=None,
     ]
     try:
         _write_ass(segments, ass_path, width, output_height, font_size, font_name, style)
-        result = subprocess.run(cmd, cwd=pv_env.TMP_DIR, capture_output=True, text=True)
+        result = subprocess.run(cmd, cwd=render_dir, capture_output=True, text=True)
     finally:
         os.remove(ass_path)
     if result.returncode != 0:

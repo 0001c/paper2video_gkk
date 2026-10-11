@@ -17,11 +17,11 @@ def filter_file_option():
     return '-filter_complex_script' if b'-filter_complex_script ' in help_text else '-/filter_complex'
 
 
-def cursor_overlay(filename, size):
+def cursor_overlay(filename, size, cache_dir=None):
     """按素材内容与尺寸缓存透明叠图，不改源素材，不混用同尺寸的不同样式。"""
     source = Path(filename)
     key = hashlib.sha256(source.read_bytes() + str(size).encode()).hexdigest()[:20]
-    root = Path(pv_env.TMP_DIR)
+    root = Path(cache_dir) if cache_dir is not None else Path(pv_env.TMP_DIR)
     root.mkdir(parents=True, exist_ok=True)
     target = root / ('cursor_overlay_' + key + '.png')
     if not target.is_file():
@@ -60,7 +60,9 @@ def render_cursor_on_video(input_video, output_video, cursor_points, transition_
         if Path(input_video).resolve() != Path(output_video).resolve():
             shutil.copy2(input_video, output_video)
         return
-    overlay = cursor_overlay(cursor_img_path, int(cursor_size))
+    # 渲染只依赖当前产物目录的写权限，避免模型盘全局临时目录不可写时在收尾失败。
+    render_dir = Path(output_video).resolve().parent / '.render-cache'
+    overlay = cursor_overlay(cursor_img_path, int(cursor_size), cache_dir=render_dir)
     # 单个 overlay 表达式保持最后一个目标，只有一个目标时也能生成视频。
     def position(axis):
         offset = cursor_size * cursor_hotspot[axis - 1]
@@ -82,7 +84,7 @@ def render_cursor_on_video(input_video, output_video, cursor_points, transition_
                    for i in range(0, len(visible), 2)]
     filters = "[0:v][1:v]overlay=x='{}':y='{}':enable='{}':eval=frame[vout]".format(position(1), position(2), visible[0])
     # 长课可有上千个目标，Windows 命令行有长度上限，滤镜写入临时文件。
-    with tempfile.NamedTemporaryFile(dir=pv_env.TMP_DIR, suffix='.ffscript', mode='w', encoding='utf-8', delete=False) as handle:
+    with tempfile.NamedTemporaryFile(dir=render_dir, suffix='.ffscript', mode='w', encoding='utf-8', delete=False) as handle:
         handle.write(filters)
         filter_file = Path(handle.name)
     try:

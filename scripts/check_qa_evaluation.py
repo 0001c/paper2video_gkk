@@ -27,6 +27,16 @@ def questions(count=4):
 
 
 class ScoringChecks(unittest.TestCase):
+    def test_activation_error_has_chinese_actionable_message(self):
+        details = {'http_status': 400, 'code': 'invalid_parameter_error',
+            'provider_message': 'The product is not activated, please confirm that you have activated products and try again after activation.'}
+        message = qa.error_message(details)
+        self.assertIn('产品尚未开通', message)
+        self.assertIn('已可调用的问答模型', message)
+        self.assertIn('HTTP 400', message)
+        self.assertNotIn('未填写', message)
+        self.assertTrue(details['provider_message'].startswith('The product'))
+
     def test_provider_failure_details_redact_credentials(self):
         import httpx
         from openai import BadRequestError

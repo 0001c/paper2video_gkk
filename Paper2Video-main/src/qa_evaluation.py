@@ -55,8 +55,11 @@ def error_message(details):
     status = details.get('http_status')
     label = f'HTTP {status}' if status else details.get('type', '未知错误')
     message = f'评价未完成（{label}）；尚未生成实际得分，已设置的通过门槛仍然有效。'
-    if details.get('provider_message'):
-        message += '原因：' + details['provider_message']
+    reason = details.get('provider_message')
+    if reason and 'the product is not activated' in reason.lower():
+        reason = '所选问答模型对应的产品尚未开通；请在模型提供方控制台确认开通，或选择已可调用的问答模型。'
+    if reason:
+        message += '原因：' + reason
     if details.get('code'):
         message += f"（错误码 {details['code']}）"
     return message

@@ -71,6 +71,25 @@ def main():
         expect_error(lambda: store.freeze(PipelineModelConfig.model_validate(invalid), roles), ConfigurationError)
         for address in ('http://169.254.169.254/v1', 'http://0.0.0.0/v1', 'http://user:password@localhost/v1', 'http://localhost/v1?key=value'):
             expect_error(lambda: checked_url(address, 'openai_compatible'), ValueError)
+        # 官方云端无需额外环境白名单；不扩大为 deepseek.com 的任意子域。
+        for address, normalized in (('https://api.deepseek.com', 'https://api.deepseek.com'),
+                                    ('https://API.DEEPSEEK.COM/v1/', 'https://api.deepseek.com/v1'),
+                                    ('https://api.deepseek.com:443/v1', 'https://api.deepseek.com:443/v1')):
+            assert checked_url(address, 'openai_compatible') == normalized
+        cloud = store.create(ConnectionCreate(label='DeepSeek 官方', provider='openai_compatible',
+                             compatible_base_url='https://api.deepseek.com/v1', api_key='offline-deepseek-key'))
+        assert cloud['key_present'] and cloud['compatible_base_url'] == 'https://api.deepseek.com/v1'
+        assert 'offline-deepseek-key' not in json.dumps(cloud)
+        store.delete(cloud['id'])
+        for address in ('http://api.deepseek.com', 'https://api.deepseek.com:8443/v1',
+                        'https://api.deepseek.com.evil.invalid/v1', 'https://evilapi.deepseek.com/v1',
+                        'https://api.deepseek.com@localhost/v1', 'https://user:key@api.deepseek.com/v1',
+                        'https://api.deepseek.com/v1?key=secret', 'https://api.deepseek.com/v1#secret',
+                        'https://api.deepseek.com./v1', 'https://unknown-cloud.invalid/v1'):
+            expect_error(lambda: checked_url(address, 'openai_compatible'), ValueError)
+        with patch.dict(os.environ, {'PAPER2VIDEO_MODEL_HOSTS': 'custom-cloud.invalid'}):
+            assert checked_url('https://custom-cloud.invalid/v1', 'openai_compatible') == 'https://custom-cloud.invalid/v1'
+            expect_error(lambda: checked_url('https://custom-cloud.invalid.evil.invalid/v1', 'openai_compatible'), ValueError)
         expect_error(lambda: checked_url('http://dashscope.aliyuncs.com/v1', 'bailian'), ValueError)
         workspace = 'llm-unit.cn-beijing.maas.aliyuncs.com'
         assert checked_url(f'https://{workspace}/api/v1', 'bailian') == f'https://{workspace}/api/v1'
@@ -108,6 +127,18 @@ def main():
             expect_error(lambda: apply_model_snapshot(args), ConfigurationError)
         from web import app as web
         web._MODEL_CONNECTIONS = store
+        from fastapi.testclient import TestClient
+        client = TestClient(web.app, client=('127.0.0.1', 50000))
+        payload = {'label': 'DeepSeek 官方离线校验', 'provider': 'openai_compatible',
+                   'compatible_base_url': 'https://api.deepseek.com/v1', 'api_key': 'offline-api-secret'}
+        created = client.post('/api/model-connections', json=payload)
+        assert created.status_code == 201, created.text
+        record = created.json()
+        assert record['key_present'] and 'offline-api-secret' not in created.text
+        store.delete(record['id'])
+        rejected = client.post('/api/model-connections', json={**payload, 'compatible_base_url': 'https://api.deepseek.com.evil.invalid/v1'})
+        assert rejected.status_code == 422
+        assert rejected.json()['detail']['problems'][0]['field'] == 'compatible_base_url'
         config.stages.text.connection_id = config.stages.vision.connection_id = replacement['id']
         incoming = config.public_dict()
         # 已保存的预置、设计样本必须变成参考音频引用；选择和验证不能再次调用生成接口。

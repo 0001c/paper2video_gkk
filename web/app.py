@@ -2489,7 +2489,7 @@ class ModelConfigurationRequest(model_settings.StrictModel):
 
 
 class ConnectionRebindRequest(model_settings.StrictModel):
-    bindings: dict[model_settings.ConnectionID, model_settings.ConnectionID] = Field(min_length=1, max_length=7)
+    bindings: dict[model_settings.ConnectionID, model_settings.ConnectionID] = Field(min_length=1, max_length=8)
 
 
 @app.get('/api/model-connections')

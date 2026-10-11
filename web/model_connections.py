@@ -12,6 +12,10 @@ from pydantic import Field, SecretStr, field_validator
 from web.model_config import ConfigurationError, ConnectionID, StrictModel
 
 
+# 官方 OpenAI 兼容端点；精确匹配，不能放行相似域名或任意子域。
+OFFICIAL_COMPATIBLE_HOSTS = frozenset({'api.deepseek.com'})
+
+
 class ConnectionCreate(StrictModel):
     label: str = Field(min_length=1, max_length=80)
     provider: Literal['bailian', 'openai_compatible']
@@ -62,11 +66,15 @@ def checked_url(value, provider, protocols=("http", "https"), local_networks=())
             raise ValueError("百炼连接只允许认可的HTTPS/WSS阿里云主机")
     else:
         allowed_hosts = {name.strip().lower() for name in os.environ.get("PAPER2VIDEO_MODEL_HOSTS", "").split(",") if name.strip()}
+        if host in OFFICIAL_COMPATIBLE_HOSTS:
+            if parsed.scheme != 'https' or port not in (None, 443):
+                raise ValueError('DeepSeek 官方连接必须使用 HTTPS 默认端口，例如 https://api.deepseek.com')
+            allowed_hosts.update(OFFICIAL_COMPATIBLE_HOSTS)
         if host != "localhost" and host not in allowed_hosts:
             try:
                 address = ipaddress.ip_address(host)
             except ValueError:
-                raise ValueError("兼容模型主机未在服务端白名单中") from None
+                raise ValueError("兼容模型主机未在服务端白名单中；DeepSeek 官方请填写 https://api.deepseek.com，其他云端主机需配置 PAPER2VIDEO_MODEL_HOSTS") from None
             networks = [ipaddress.ip_network(network.strip(), strict=False) for network in local_networks]
             if not address.is_loopback and not any(address in network for network in networks):
                 raise ValueError("本地模型地址不在服务端允许的私网范围中")

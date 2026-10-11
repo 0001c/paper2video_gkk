@@ -79,6 +79,7 @@ test("移除历史浏览器Key，强制禁止记住，v2草稿只持久化白名
   assert.equal(memory.has(storage.KEYS.apiKey), false);
   const config = models.presetConfig("bailian_api", "connection", false);
   config.api_key = "root-secret"; config.stages.tts.parameters.api_key = "nested-secret";
+  config.evaluation.api_key = "evaluation-secret";
   storage.saveDraft({ preset: "zh", scriptPrompt: "保留提示词", slideCount: 16, model_config: config, api_key: "draft-secret" });
   const saved = memory.get(storage.KEYS.draft);
   assert.equal(saved.includes("secret"), false);
@@ -87,6 +88,31 @@ test("移除历史浏览器Key，强制禁止记住，v2草稿只持久化白名
   assert.equal(JSON.parse(saved).schema_version, 2);
   config.avatar.enabled = "false";
   assert.equal(models.readModelConfig(config), undefined);
+});
+
+test("问答独立选型、阈值迁移与本地音轨识别，默认关闭数字人", () => {
+  const config = models.presetConfig('bailian_api', 'current-connection');
+  assert.equal(config.avatar.enabled, false);
+  assert.equal(config.evaluation.enabled, true);
+  assert.equal(config.stages.asr.mode, 'local');
+  assert.equal(config.stages.asr.model, 'qwen3-asr');
+  const changed = models.setTextParameter(config, 'qa', 'temperature', 0.2);
+  assert.equal(changed.stages.qa.parameters.temperature, 0.2);
+  assert.equal(changed.stages.vision.parameters.temperature, undefined);
+  delete config.stages.qa;
+  delete config.evaluation;
+  const migrated = models.readModelConfig(config);
+  assert.deepEqual(migrated.stages.qa, config.stages.vision);
+  assert.deepEqual(migrated.evaluation, models.defaultEvaluation);
+  migrated.evaluation = { enabled: false, script_threshold: 90, minimum_threshold: 90, standard_threshold: 75,
+    question_count: -1, max_auto_retries: 200, secret: 'secret' };
+  const safe = models.readModelConfig(migrated);
+  assert.equal(safe.evaluation.enabled, false);
+  assert.equal(safe.evaluation.script_threshold, 90);
+  assert.equal(safe.evaluation.minimum_threshold, 75);
+  assert.equal(safe.evaluation.question_count, 20);
+  assert.equal(safe.evaluation.max_auto_retries, 2);
+  assert.equal(safe.evaluation.secret, undefined);
 });
 
 test("结构化422保留字段路径且不把服务端input当作错误文本", async () => {

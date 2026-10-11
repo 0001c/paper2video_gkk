@@ -45,7 +45,8 @@ export function ReviewPanel({ jobId, apiKey, apiBase, modelConfig, modelOrigin, 
     const { data } = action === "save" ? await api.put(`/api/jobs/${jobId}/review`, body)
       : await api.post(`/api/jobs/${jobId}/review/run`, { ...body, action, page_ids: action === "regenerate" ? [selected] : [],
         ...taskModelPayload({ model_config: modelConfig, model_config_origin: modelOrigin, voice }, apiKey, apiBase),
-        refresh_prompt: refreshPrompt, script_concurrency: concurrency, cursor_style: style, cursor_scale: scale, subtitle_style: subtitleStyle });
+        refresh_prompt: refreshPrompt, script_concurrency: concurrency, cursor_style: style, cursor_scale: scale, subtitle_style: subtitleStyle,
+        qa_override: action === 'render' && !!modelConfig?.evaluation?.enabled && accepted });
     if (action === "save") { setReview(data); setPages(data.pages); setAccepted(false); setSuccess("讲稿已保存，历史版本可回溯。修改页的旧音频将在下次生成时更新。"); onSaved(); }
     else onJob(data.job_id);
   }, (e) => setError(errorMessage(e)));
@@ -77,9 +78,9 @@ export function ReviewPanel({ jobId, apiKey, apiBase, modelConfig, modelOrigin, 
         </div>
       </div>
       <label className="checkrow"><input type="checkbox" checked={refreshPrompt} disabled={!review.editable || busy} onChange={(e) => setRefreshPrompt(e.target.checked)} />重写时使用当前内容类型的最新讲稿模板（替换任务旧提示词）</label>
-      <div className="actions"><Button variant="outline" disabled={!review.editable || busy} onClick={() => apply("save")}>保存全部讲稿修改</Button><Button variant="outline" disabled={!review.editable || busy || !apiKey.trim()} onClick={() => apply("regenerate")}>调用模型重写本页</Button></div>
+      <div className="actions"><Button variant="outline" disabled={!review.editable || busy} onClick={() => apply("save")}>保存全部讲稿修改</Button><Button variant="outline" disabled={!review.editable || busy || (modelOrigin !== 'v2' && !apiKey.trim())} onClick={() => apply("regenerate")}>调用模型重写本页</Button></div>
       <CursorPicker options={cursors} style={style} scale={scale} disabled={!review.editable || busy} onStyle={(value) => { setStyle(value); setAccepted(false); }} onScale={(value) => { setScale(value); setAccepted(false); }} />
-      <label className="checkrow"><input type="checkbox" checked={accepted} disabled={!review.editable || busy} onChange={(e) => setAccepted(e.target.checked)} />已核对所有课件和讲稿，确认开始配音与合片</label>
+      <label className="checkrow"><input type="checkbox" checked={accepted} disabled={!review.editable || busy} onChange={(e) => setAccepted(e.target.checked)} />{modelConfig?.evaluation?.enabled ? '已核对全部内容，手动确认继续（问答未通过时也继续）' : '已核对所有课件和讲稿，确认开始配音与合片'}</label>
       {teachingNeedsSave && <p className="hint">讲稿已修改，请先保存，重新核验例题与时长预算。</p>}
       <div className="actions"><Button theme="primary" loading={busy} disabled={!review.editable || !accepted || busy || teachingNeedsSave || review.teaching?.passed === false} onClick={() => apply("render")}>确认并生成配音视频</Button></div>
       {!review.editable && <p className="hint">有任务正在使用这份产物，暂不能编辑。结束后可重新读取。</p>}

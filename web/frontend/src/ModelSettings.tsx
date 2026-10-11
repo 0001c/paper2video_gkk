@@ -3,11 +3,13 @@ import { Button, Select } from "tdesign-react";
 import { api, errorMessage, runExclusive } from "./flow";
 import { ModelConnections } from "./ModelConnections";
 import { Section } from "./Section";
+import { EvaluationSettings } from './EvaluationSettings';
+import { AvatarCostDialog } from './AvatarToggle';
 import { ModelPrice, ModelPriceProvider, type CatalogModel } from './ModelPrice';
 import { presetConfig, replaceStage, setTextParameter, roleLabels, roles, roleStage, bailianSpeechModels, type Connection, type ModelConfig, type ModelOptions, type Role, type Stage } from "./modelConfig";
 
 type Catalog = { items: CatalogModel[]; next_cursor: string | null; source: string; catalog_time: string | null; total: number; warnings: string[] };
-export function ModelSettings({ value, options, concurrency, onChange, onConcurrency, voice = { kind: "default" }, portraitPath, preparePortrait, portraitKey, concurrencyEditable = true, onConnectionsChange }: {
+export function ModelSettings({ value, options, concurrency, onChange: publishChange, onConcurrency, voice = { kind: "default" }, portraitPath, preparePortrait, portraitKey, concurrencyEditable = true, onConnectionsChange }: {
   value: ModelConfig; options?: ModelOptions; concurrency: number; onChange: (value: ModelConfig) => void; onConcurrency: (value: number) => void;
   voice?: unknown; portraitPath?: string;
   preparePortrait?: () => Promise<string | undefined>; portraitKey?: unknown;
@@ -15,6 +17,12 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
   onConnectionsChange?: (items: Connection[]) => void;
 }) {
   const prefix = useId();
+  const [pendingAvatar, setPendingAvatar] = useState<ModelConfig>();
+  const onChange = (next: ModelConfig) => {
+    if (next.avatar.enabled && next.avatar.mode === 'api' && (value.avatar.mode !== 'api' || !value.avatar.enabled)) setPendingAvatar(next);
+    else publishChange(next);
+  };
+  const activeRoles = roles.filter((item) => (item !== 'avatar' || value.avatar.enabled) && (item !== 'qa' || value.evaluation?.enabled));
   const [connections, setConnections] = useState<Connection[]>([]);
   const [drawer, setDrawer] = useState(false);
   const [message, setMessage] = useState("");
@@ -58,15 +66,15 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
     if (preset === "custom") { onChange({ ...value, preset }); return; }
     const connection = connections.find((entry) => entry.id === value.stages.text.connection_id && entry.provider === "bailian")
       ?? connections.find((entry) => entry.provider === "bailian");
-    onChange(presetConfig(preset, connection?.id ?? "", value.avatar.enabled, options));
+    onChange({ ...presetConfig(preset, connection?.id ?? "", value.avatar.enabled, options), evaluation: value.evaluation });
   };
   const changeMode = (target: Role, mode: Stage["mode"]) => {
     const current = roleStage(value, target);
     const defaults = presetConfig(mode === "api" ? "bailian_api" : "local_existing", "", value.avatar.enabled, options);
     let next = roleStage(defaults, target);
-    if (mode === "local" && (target === "text" || target === "vision")) next = { mode, provider: "openai_compatible", model: current.model, parameters: {} };
+    if (mode === "local" && (target === "text" || target === "vision" || target === 'qa')) next = { mode, provider: "openai_compatible", model: current.model, parameters: {} };
     const connection = connections.find((entry) => entry.provider === next.provider);
-    onChange(replaceStage(value, target, { ...next, ...(mode === "api" || target === "text" || target === "vision" ? { connection_id: connection?.id } : {}) }));
+    onChange(replaceStage(value, target, { ...next, ...(mode === "api" || target === "text" || target === "vision" || target === 'qa' ? { connection_id: connection?.id } : {}) }));
   };
   const check = (full = false) => {
     if (lock.current) return;
@@ -74,9 +82,9 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
     return runExclusive(lock, setChecking, async () => {
     setCheckingFull(full);
     setCheckFailed(false); setCheckMessage(`正在检查${full ? "全链路" : "准备阶段"}配置…`);
-    const problems = roles.filter((item) => item !== "avatar" || value.avatar.enabled).flatMap((item) => {
+    const problems = activeRoles.flatMap((item) => {
       const selected = roleStage(value, item);
-      if (selected.mode !== "api" && item !== "text" && item !== "vision") return [];
+      if (selected.mode !== "api" && item !== "text" && item !== "vision" && item !== 'qa') return [];
       const connection = connections.find((entry) => entry.id === selected.connection_id);
       return !connection ? [`${roleLabels[item]}：请选择有效连接`] : selected.mode === "api" && !connection.key_present ? [`${roleLabels[item]}：请补充连接密钥`] : [];
     });
@@ -91,10 +99,10 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
     if (current === checkVersion.current) setCheckMessage(`${full ? "全链路" : "准备阶段"}配置检查通过：${data.required_roles.map((item: Role) => roleLabels[item]).join("、")}。此检查不调用模型，调用权限、余额和效果需实际运行确认。`);
     }, (error) => { if (current === checkVersion.current) { setCheckFailed(true); setCheckMessage(errorMessage(error)); } });
   };
-  const connectedRoles = roles.filter((item) => roleStage(value, item).connection_id);
+  const connectedRoles = activeRoles.filter((item) => roleStage(value, item).connection_id);
   return <ModelPriceProvider><div className="model-settings">
     <div className="actions model-presets" aria-label="模型预设">
-      {([["bailian_api", "百炼全 API"], ["local_existing", "保留现有本地推理"], ["custom", "自定义组合"]] as const).map(([preset, label]) =>
+      {([["bailian_api", "百炼 API 方案"], ["local_existing", "保留现有本地推理"], ["custom", "自定义组合"]] as const).map(([preset, label]) =>
         <Button key={preset} variant={value.preset === preset ? "base" : "outline"} theme={value.preset === preset ? "primary" : "default"}
           aria-pressed={value.preset === preset} onClick={() => applyPreset(preset)}>{label}</Button>)}
     </div>
@@ -109,16 +117,16 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
     {checkMessage && <p className={`notice ${checkFailed ? "warn" : "info"}`} role="status" aria-live="polite">{checkMessage}</p>}
     {connectedRoles.some((item) => !connections.some((entry) => entry.id === roleStage(value, item).connection_id)) && <p className="notice warn">部分连接尚未配置或已失效。请在下表重新选择；历史任务请使用独立的重新绑定入口，不会借用草稿密钥。</p>}
     <div className="model-role-list">
-      {roles.filter((item) => item !== "avatar" || value.avatar.enabled).map((item) => {
+      {activeRoles.map((item) => {
         const selected = roleStage(value, item);
-        const needsConnection = selected.mode === "api" || item === "text" || item === "vision";
-        const implemented = item === "text" || item === "vision" ? options?.implemented.compatible_text_vision
+        const needsConnection = selected.mode === "api" || item === "text" || item === "vision" || item === 'qa';
+        const implemented = item === "text" || item === "vision" || item === 'qa' ? options?.implemented.compatible_text_vision
           : item === 'tts' && selected.mode === 'api' ? options?.implemented.bailian_speech
           : item === 'grounding' && selected.mode === 'api' ? options?.implemented.bailian_grounding
           : item === 'avatar' ? selected.mode === 'api' ? options?.implemented.bailian_avatar : options?.implemented.avatar_segmentation
           : selected.mode === "local" && options?.implemented.local_tts_asr_grounding;
         const connectionCatalog = catalogs[selected.connection_id ?? ''];
-        const allCandidates = selected.mode === 'api' || item === 'text' || item === 'vision'
+        const allCandidates = selected.mode === 'api' || item === 'text' || item === 'vision' || item === 'qa'
           ? (connectionCatalog?.items ?? []).filter((candidate) => candidate.roles.includes(item)).map((candidate) => ({ ...candidate, ...candidate.role_support[item] })) : [];
         const candidates = allCandidates.filter((candidate) => includeRetiring || candidate.status === 'active');
         const currentCandidate = allCandidates.find((candidate) => candidate.id === selected.model);
@@ -135,15 +143,15 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
         return <Section title={roleLabels[item]} key={item} compact defaultOpen={false}
           summary={`${selected.mode === "api" ? "API" : "本地"} · ${selected.model} · ${needsConnection ? connectionLabel : "无需连接"}`}>
           <div className="model-role-row">
-          <div><strong>{roleLabels[item]}</strong><span className="hint">{item === "asr" ? "缺参考文本时按需使用" : item === "text" || item === "vision" ? "准备阶段使用" : "审核后使用"}</span></div>
-          <div className="field"><label htmlFor={`${prefix}-mode-${item}`}>运行方式</label><select id={`${prefix}-mode-${item}`} value={selected.mode} onChange={(event) => changeMode(item, event.target.value as Stage["mode"])}><option value="api">调用 API</option><option value="local">本地{item === "text" || item === "vision" ? "兼容服务" : "推理"}</option></select></div>
+          <div><strong>{roleLabels[item]}</strong><span className="hint">{item === 'qa' ? '讲稿与成片两轮评价' : item === "asr" ? "成片音轨与参考录音" : item === "text" || item === "vision" ? "准备阶段使用" : "审核后使用"}</span></div>
+          <div className="field"><label htmlFor={`${prefix}-mode-${item}`}>运行方式</label><select id={`${prefix}-mode-${item}`} value={selected.mode} onChange={(event) => changeMode(item, event.target.value as Stage["mode"])}><option value="api">调用 API</option><option value="local">本地{item === "text" || item === "vision" || item === 'qa' ? "兼容服务" : "推理"}</option></select></div>
           <div className="field"><label htmlFor={`${prefix}-connection-${item}`}>连接</label>{needsConnection ? <select id={`${prefix}-connection-${item}`} value={selected.connection_id ?? ""} onChange={(event) => {
             const connection = connections.find((entry) => entry.id === event.target.value);
             onChange(replaceStage(value, item, { ...selected, connection_id: event.target.value, provider: connection?.provider ?? selected.provider }));
-          }}><option value="">请选择连接</option>{connections.filter((entry) => selected.mode === "local" ? entry.provider === "openai_compatible" : item === "text" || item === "vision" || entry.provider === "bailian")
+          }}><option value="">请选择连接</option>{connections.filter((entry) => selected.mode === "local" ? entry.provider === "openai_compatible" : item === "text" || item === "vision" || item === 'qa' || entry.provider === "bailian")
             .map((entry) => <option value={entry.id} key={entry.id}>{entry.label}</option>)}</select> : <span className="hint">无需云连接</span>}</div>
           <div className="field" ref={(element) => element?.querySelector('input')?.setAttribute('id', `${prefix}-model-${item}`)}><label htmlFor={`${prefix}-model-${item}`}>型号 · {candidates.filter((candidate) => candidate.selectable).length} 个可选</label>
-            <Select value={selected.model} filterable creatable={item === "text" || item === "vision"} options={choices}
+            <Select value={selected.model} filterable creatable={item === "text" || item === "vision" || item === 'qa'} options={choices}
             onPopupVisibleChange={(visible) => setOpenPicker(visible ? item : undefined)}
             popupProps={{ overlayStyle: { maxWidth: "calc(100vw - 32px)" } }}
             onChange={(model) => onChange(replaceStage(value, item, { ...selected, model: String(model) }))}
@@ -154,7 +162,7 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
           {needsConnection && !currentCandidate && <p className="hint model-role-parameters">{busy ? '正在查询当前连接的目录。' : '此型号未在当前连接的对应环节目录中匹配；可刷新目录核对。'}配置检查通过也不代表已获得调用权限。</p>}
           {item === 'tts' && selected.mode === 'api' && <div className="field"><label htmlFor={`${prefix}-rate`}>配音语速（0.5～2）</label><input id={`${prefix}-rate`} type="number" min={0.5} max={2} step={0.1} value={selected.parameters.speech_rate ?? 1} onChange={(event) => onChange(replaceStage(value, item, { ...selected, parameters: { speech_rate: event.target.valueAsNumber } }))} /></div>}
           {item === 'avatar' && selected.mode === 'api' && <div className="field"><label htmlFor={`${prefix}-resolution`}>数字人输出分辨率</label><select id={`${prefix}-resolution`} value={selected.parameters.resolution ?? '480P'} onChange={(event) => onChange(replaceStage(value, item, { ...selected, parameters: { resolution: event.target.value as '480P' | '720P' } }))}><option value="480P">480P</option><option value="720P">720P</option></select><span className="hint">按生成视频时长与此分辨率估算费用；云端片段串行提交。</span></div>}
-          {(item === "text" || item === "vision") && <details className="model-role-parameters"><summary>请求参数 · {selected.parameters.max_output_tokens == null && selected.parameters.temperature == null ? "未覆盖" : "已自定义"}</summary>
+          {(item === "text" || item === "vision" || item === 'qa') && <details className="model-role-parameters"><summary>请求参数 · {selected.parameters.max_output_tokens == null && selected.parameters.temperature == null ? "未覆盖" : "已自定义"}</summary>
             <div className="model-parameter-fields">
               <div className="field"><label htmlFor={`${prefix}-tokens-${item}`}>最大输出 tokens</label><input id={`${prefix}-tokens-${item}`} type="number" min={1} max={Math.min(131072, currentCandidate?.model_info?.max_output_tokens ?? 131072)} step={1} placeholder="不覆盖服务默认值" disabled={!options?.implemented.role_model_parameters} value={selected.parameters.max_output_tokens ?? ""}
                 onChange={(event) => onChange(setTextParameter(value, item, "max_output_tokens", event.target.value === "" ? undefined : event.target.valueAsNumber))} /></div>
@@ -167,6 +175,8 @@ export function ModelSettings({ value, options, concurrency, onChange, onConcurr
         </Section>;
       })}
     </div>
+    <EvaluationSettings value={value} onChange={onChange} />
+    {pendingAvatar && <AvatarCostDialog value={pendingAvatar} onCancel={() => setPendingAvatar(undefined)} onConfirm={(next) => { publishChange(next); setPendingAvatar(undefined); }} />}
     <details><summary>运行说明 · {value.timing.source === "tts_timestamp" ? "云端时间轴" : "本地时间轴"}{value.avatar.enabled ? " · 数字人自动分段" : ""}</summary>
       <p className="hint">时间轴：{value.timing.source === "tts_timestamp" ? "随 API 配音返回，不加载本地对齐器" : "本地 ForcedAligner"}。文字 / 视觉的本地模式需要自行部署兼容服务，不自动加载权重。{options?.implemented.independent_text_vision_connections ? "文字和视觉可分别选择本地/API连接，任务按角色独立调用。" : "当前后端仍要求文字和视觉共用连接，请重载至P3版本。"}</p>
       <p className={value.avatar.enabled ? "notice warn" : "hint"}>{value.avatar.enabled

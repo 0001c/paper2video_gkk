@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "tdesign-react";
 import { api, errorMessage, runExclusive } from "./flow";
 import { ModelSettings } from "./ModelSettings";
+import { AvatarToggle } from './AvatarToggle';
 import { CloudVoicePanel, type CloudVoice } from './CloudVoicePanel';
 import { roleLabels, roles, roleStage, type Connection, type ModelConfig, type ModelOptions } from "./modelConfig";
 
@@ -51,7 +52,7 @@ export function TaskModelSettings({ jobId, portraitPath, snapshot, value, connec
         <Button variant="outline" loading={busy} disabled={busy} onClick={rebind}>重新绑定（不执行）</Button>
       </details>
       <details><summary>修改此任务下一次执行的模型组合</summary>
-        <label className="checkline"><input type="checkbox" checked={value.avatar.enabled} onChange={(event) => onChange({ ...value, avatar: { ...value.avatar, enabled: event.target.checked } })} />启用数字人（单段严格小于20秒）</label>
+        <AvatarToggle value={value} onChange={onChange} />
         <ModelSettings value={value} options={options} concurrency={concurrency} concurrencyEditable={false} onChange={onChange} onConcurrency={() => {}} voice={voice} portraitPath={portraitPath} />
         {value.stages.tts.mode === 'api' ? <CloudVoicePanel stage={value.stages.tts} value={voiceResource} onChange={onVoice} />
           : <Button variant="outline" onClick={() => onVoice(undefined)}>此任务改用本地默认参考音色</Button>}

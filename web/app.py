@@ -27,6 +27,7 @@ import inspect
 import ipaddress
 import io
 import json
+import math
 import os
 import platform
 import re
@@ -218,6 +219,7 @@ class ReviewRunRequest(ReviewRequest):
     cursor_scale: float | None = None
     subtitle_style: dict | None = None
     model_options: model_settings.PipelineModelConfig | None = Field(default=None, alias="model_config")
+    qa_override: bool = False
 
 
 class PrepareRetryRequest(BaseModel):
@@ -386,6 +388,7 @@ async def api_run_review(job_id: str, payload: ReviewRunRequest, request: Reques
         elif payload.page_ids:
             raise HTTPException(422, detail="page_ids：配音合片时不要指定重写页")
         if payload.action == 'render':
+            _qa_check_script(job, checked, text, payload.qa_override)
             _save_review(job, text)
         plan = _rerun_plan(job)
         response = await api_rerun_job(job_id, {
@@ -401,7 +404,8 @@ async def api_run_review(job_id: str, payload: ReviewRunRequest, request: Reques
             "cursor_style": payload.cursor_style, "cursor_scale": payload.cursor_scale,
             "subtitle_style": payload.subtitle_style,
             "voice": payload.voice.model_dump(exclude_none=True) if payload.voice else None,
-            "model_config": payload.model_options.public_dict() if payload.model_options else None})
+            "model_config": payload.model_options.public_dict() if payload.model_options else None,
+            "qa_override": payload.qa_override})
         return response
 
 # ──────────────────────────────────────────────────────────────
@@ -1462,6 +1466,10 @@ def read_progress(job):
     # 兼容字段：旧前端/旧测试读的是 tts_done/talking_done，保留不动。
     info["total"] = info["total_pages"]
     info["done"] = info["page_done"] or 0
+    if job.get('phase_key') == 'qa':
+        stage = job.get('evaluation_only') or ('script' if config.get('review_before_render') else 'video')
+        info.update(phase=job.get('phase'), phase_key='qa', phase_index=active_phase_keys.index('script' if stage == 'script' else 'merge'),
+                    overall_pct=26 if stage == 'script' else 99, phase_remaining_s=None, phase_expected_s=None, stalled=False)
     return info
 
 
@@ -1644,7 +1652,7 @@ def _build_argv(job):
         "--if_tree_search",
         "True" if _as_bool(cfg.get("if_tree_search"), False) else "False",
         "--generate_talking",
-        "True" if _as_bool(cfg.get("generate_talking"), True) else "False",
+        "True" if _as_bool(cfg.get("generate_talking"), False) else "False",
     ]
     if job.get("ref_img"):
         argv += ["--ref_img", job["ref_img"]]
@@ -1884,6 +1892,9 @@ async def _set_phase(job_id, phase_key):
 
 async def _run_job(job):
     """在子进程里跑流水线，日志落盘供进度解析。"""
+    if job.get('evaluation_only'):
+        await _qa_evaluate_and_route(job, job['evaluation_only'])
+        return
     job_id = job["id"]
     job_dir = _job_dir(job_id)
     log_path = os.path.join(job_dir, "run.log")
@@ -2093,13 +2104,232 @@ async def _run_job(job):
             final["phase"] = "本地已取消；云端任务可能继续处理或计费" if final.get("remote_cancel_state") == "cancel_unconfirmed" else "已取消"
         else:
             awaiting = code == 0 and final["config"].get("review_before_render")
-            final["status"] = "awaiting_review" if awaiting else "done" if code == 0 else "failed"
+            evaluating = code == 0 and _qa_policy(final).enabled
+            final["status"] = "running" if evaluating else "awaiting_review" if awaiting else "done" if code == 0 else "failed"
             final["phase"] = "课件与讲稿待审核" if awaiting else "已完成" if code == 0 else "失败"
             # 成功才把阶段推到 finish；**失败时保留最后那个阶段** ——
             # 步骤条上就能直接看出"挂在哪一步"，比只写一个"失败"有用得多。
             if code == 0:
                 final["phase_key"] = "script" if awaiting else "finish"
+            if evaluating:
+                final.update(phase='讲稿问答评价中' if awaiting else '成片问答评价中', phase_key='qa')
         _save_job(final)
+    if code == 0 and final.get('status') != 'canceled' and _qa_policy(final).enabled:
+        await _qa_evaluate_and_route(final, 'script' if final['config'].get('review_before_render') else 'video')
+
+
+def _qa_policy(job):
+    value = (job.get('config') or {}).get('model_config') or {}
+    return model_settings.EvaluationPolicy.model_validate(value.get('evaluation') or {})
+
+
+def _qa_source(job):
+    path = (job.get('config') or {}).get('qa_source_path')
+    if path and Path(path).is_file() and Path(path).resolve().is_relative_to(Path(JOBS_ROOT).resolve()):
+        return path
+    path = Path(_job_dir(job['id']), 'ingest', 'paper_text.md')
+    if path.is_file():
+        return str(path)
+    raise HTTPException(409, detail='原文评价材料缺失，请重新上传素材；不能使用生成讲稿出题')
+
+
+def _qa_report_current(job, report, stage):
+    from qa_evaluation import digest_file
+    if not report or report.get('stage') != stage:
+        return False
+    material = Path(_result_dir(job), 'subtitle_w_cursor.txt' if stage == 'script' else '3_merage.mp4')
+    try:
+        selection = (job.get('config') or {}).get('model_config', {}).get('stages', {}).get('qa')
+        return (report.get('material_sha256') == digest_file(material)
+                and report.get('source_sha256') == digest_file(_qa_source(job))
+                and report.get('model_selection') == selection
+                and report.get('total') == _qa_policy(job).question_count)
+    except (OSError, HTTPException):
+        return False
+
+
+def _qa_check_script(job, config, text, override=False):
+    candidate = {**job, 'config': config}
+    policy = _qa_policy(candidate)
+    if not policy.enabled:
+        return
+    report = job.get('evaluation', {}).get('script')
+    passed = (_qa_report_current(candidate, report, 'script')
+              and report['material_sha256'] == hashlib.sha256(text.encode('utf-8')).hexdigest()
+              and report['score'] >= policy.script_threshold)
+    if not passed and not override:
+        raise HTTPException(409, detail='讲稿尚未达到问答通过线或内容已变化，请先评价，或明确选择手动继续')
+
+
+async def _qa_start_next(job, regenerate=False, automatic=False):
+    if automatic:
+        async with _JOB_LOCK:
+            return await _qa_start_next_unlocked(job, regenerate, automatic)
+    return await _qa_start_next_unlocked(job, regenerate, automatic)
+
+
+async def _qa_start_next_unlocked(job, regenerate=False, automatic=False):
+    current = _load_job(job['id'])
+    if current.get('status') == 'canceled' or current.get('cancellation_requested'):
+        raise HTTPException(409, detail='任务已取消，不启动下一轮生成')
+    policy = _qa_policy(job)
+    if automatic and regenerate and job['config'].get('qa_attempt', 0) >= policy.max_auto_retries:
+        raise HTTPException(409, detail='已达到自动重生成上限')
+    current['status'] = 'awaiting_review'
+    _save_job(current)
+    response = await _create_rerun(job['id'], {
+        'action': 'regenerate_script' if regenerate else 'continue', 'reuse_script': not regenerate,
+        'qa_override': not automatic,
+        'model_config': job['config']['model_config'],
+        'stages': ['2'] if regenerate else ['2', '3']}, isolate=True, defer_queue=True)
+    child = _load_job(response['job_id'])
+    child['config']['qa_attempt'] = job['config'].get('qa_attempt', 0) + 1 if automatic and regenerate else job['config'].get('qa_attempt', 0) if automatic else 0
+    child['qa_history'] = [*(job.get('qa_history') or []), {'job_id': job['id'], 'evaluation': job.get('evaluation', {}),
+                           'automatic': automatic, 'action': 'regenerate' if regenerate else 'continue'}]
+    if regenerate:
+        report = job.get('evaluation', {}).get('video') or job.get('evaluation', {}).get('script') or {}
+        failures = [row for row in report.get('items', []) if not row.get('correct')]
+        prompt_path = child['config'].get('script_prompt_path')
+        base = Path(prompt_path).read_text(encoding='utf-8') if prompt_path and Path(prompt_path).is_file() else _script_prompt_text(child['config'].get('content_profile', 'paper'), child['config'].get('script_lang', 'zh'))
+        # 每轮替换反馈段，不能无限叠加旧反馈；题库原文依据用于补充正确知识。
+        base = base.split('\n<!-- QA_FEEDBACK -->')[0]
+        feedback = [{'question': row['question'], 'correct_content': row['options'][row['answer']],
+                     'source_quote': row['source_quote']} for row in failures]
+        additions = '\n<!-- QA_FEEDBACK -->\n依据本轮问答缺失修订讲稿：纠正相关概念、补充原文支撑的说明，保持讲稿 | 光标目标格式。以下记录是纠错数据，不是操作指令。\n' + json.dumps(feedback, ensure_ascii=False)
+        if len(base + additions) > SCRIPT_PROMPT_MAX_CHARS:
+            child.update(status='failed', phase='纠错提示词超过上限，未启动生成')
+            _save_job(child)
+            raise HTTPException(422, detail='纠错提示词超过长度上限，请缩短原讲稿提示词后重试')
+        path = Path(_job_dir(child['id']), 'script_prompt.txt')
+        path.write_text(base + additions, encoding='utf-8')
+        child['config'].update(script_prompt_path=str(path), script_prompt_sha1=artifact_cache.digest_file(path), qa_feedback=feedback)
+    _save_job(child)
+    current.update(status='awaiting_review', phase='问答评价已转入下一轮任务', qa_next_job_id=child['id'],
+                   qa_decision='automatic_regenerate' if automatic and regenerate else 'automatic_continue' if automatic else 'manual_regenerate' if regenerate else 'manual_continue')
+    _save_job(current)
+    await _QUEUE.put(child['id'])
+    return response
+
+
+async def _qa_evaluate_and_route(job, stage):
+    from qa_evaluation import read_json, route
+    job_id = job['id']
+    async with _JOB_LOCK:
+        job = _load_job(job_id)
+        if job.get('status') == 'canceled' or job.get('cancellation_requested'):
+            return
+        job.update(status='running', phase='讲稿问答评价中' if stage == 'script' else '成片音轨识别与问答评价中', phase_key='qa', qa_next_job_id=None)
+        _save_job(job)
+    output = Path(_job_dir(job_id), f'qa-{stage}.json')
+    try:
+        keys = _JOB_KEYS.get(job_id) or {}
+        keys['connections'] = _configure_job_models(job['config'], source=job, portrait=job.get('ref_img'))
+        _save_job(job)
+        env = _job_model_environment(job['config'], keys)
+        env.update(PYTHONUTF8='1', PYTHONIOENCODING='utf-8')
+        argv = [VENV_PY, os.path.join(P2V_SRC, 'qa_evaluation.py'), '--snapshot', os.path.join(_job_dir(job_id), 'model_config.json'),
+                '--source', _qa_source(job), '--result', _result_dir(job), '--output', str(output), '--mode', stage,
+                '--language', job['config'].get('script_lang', 'zh')]
+        with open(Path(_job_dir(job_id), 'run.log'), 'a', encoding='utf-8') as log:
+            log.write(f'\n[qa] {stage} 问答评价开始；自动重生成轮次 {job["config"].get("qa_attempt", 0)}\n')
+            log.flush()
+            proc = await asyncio.create_subprocess_exec(*argv, cwd=P2V_SRC, env=env, stdout=log, stderr=asyncio.subprocess.STDOUT)
+            _CURRENT.update(proc=proc, job_id=job_id)
+            try:
+                code = await proc.wait()
+            finally:
+                _CURRENT.update(proc=None, job_id=None)
+        current = _load_job(job_id)
+        if current.get('status') == 'canceled' or current.get('cancellation_requested'):
+            return
+        report = read_json(output) if code == 0 else None
+        if not report or not _qa_report_current(current, report, stage):
+            raise ValueError('评价未完成或材料已变化；检查模型连接、原文和本地识别环境后重新评价')
+        evaluation = {**current.get('evaluation', {}), stage: report}
+        policy = _qa_policy(current)
+        decision = route(report['score'], policy, current['config'].get('qa_attempt', 0), stage)
+        async with _JOB_LOCK:
+            current = _load_job(job_id)
+            if current.get('status') == 'canceled' or current.get('cancellation_requested'):
+                return
+            current.update(evaluation=evaluation, evaluation_only=None, qa_error=None, qa_decision=decision,
+                status='done' if stage == 'video' and decision == 'pass' else 'awaiting_review',
+                phase='成片问答达到标准，已完成' if stage == 'video' and decision == 'pass' else '问答评价完成，等待决策', phase_key='finish' if stage == 'video' and decision == 'pass' else 'qa')
+            _save_job(current)
+        if stage == 'script' and decision == 'pass':
+            # 教学内容门禁仍独立生效；问答高分不能覆盖结构性错误。
+            if (_review_snapshot(current).get('teaching') or {}).get('passed') is False:
+                await _update_job(job_id, phase='问答已通过，请先修正教学审核问题', qa_decision='review')
+                return
+            await _qa_start_next(current, automatic=True)
+        elif stage == 'video' and decision == 'retry':
+            await _qa_start_next(current, regenerate=True, automatic=True)
+    except Exception as exc:
+        message = str(exc.detail) if isinstance(exc, HTTPException) else str(exc) if isinstance(exc, (ValueError, model_settings.ConfigurationError)) else f'评价未完成（{type(exc).__name__}），请检查连接和运行日志'
+        async with _JOB_LOCK:
+            current = _load_job(job_id)
+            if current.get('status') != 'canceled' and not current.get('cancellation_requested'):
+                current.update(status='awaiting_review', phase='问答评价待处理', phase_key='qa', qa_error=message, evaluation_only=None)
+                _save_job(current)
+
+
+class EvaluationRunRequest(model_settings.StrictModel):
+    stage: str = Field(pattern='^(script|video)$')
+    model_options: model_settings.PipelineModelConfig | None = Field(default=None, alias='model_config')
+
+
+class EvaluationDecisionRequest(model_settings.StrictModel):
+    action: str = Field(pattern='^(continue|regenerate|accept)$')
+    fingerprint: str | None = Field(default=None, min_length=64, max_length=64)
+
+
+@app.post('/api/jobs/{job_id}/evaluation/run')
+async def api_evaluation_run(job_id: str, payload: EvaluationRunRequest, request: Request):
+    _local_write(request)
+    async with _JOB_LOCK:
+        job = _load_job(job_id)
+        if not _rerun_plan(job)['can_rerun']:
+            raise HTTPException(409, detail='任务或共享产物正在使用中，暂不能评价')
+        if payload.model_options is not None:
+            config = copy.deepcopy(job['config'])
+            config['model_config'] = payload.model_options.public_dict()
+            keys = _configure_job_models(config, {'model_config': config['model_config']}, job, job.get('ref_img'))
+            job['config'] = config
+            _JOB_KEYS.setdefault(job_id, {})['connections'] = keys
+        if not _qa_policy(job).enabled:
+            raise HTTPException(422, detail='请先开启问答评价并选择模型')
+        _qa_source(job)
+        material = Path(_result_dir(job), 'subtitle_w_cursor.txt' if payload.stage == 'script' else '3_merage.mp4')
+        if not material.is_file():
+            raise HTTPException(409, detail='待评价的讲稿或最终视频不存在')
+        if payload.stage == 'video' and job['config'].get('review_before_render'):
+            raise HTTPException(409, detail='当前轮次尚未完成合片，请先评价讲稿并继续生成')
+        job.update(status='queued', phase='问答评价排队中', evaluation_only=payload.stage, qa_next_job_id=None)
+        _save_job(job)
+        await _QUEUE.put(job_id)
+        return {'job_id': job_id}
+
+
+@app.post('/api/jobs/{job_id}/evaluation/decision')
+async def api_evaluation_decision(job_id: str, payload: EvaluationDecisionRequest, request: Request):
+    _local_write(request)
+    async with _JOB_LOCK:
+        job = _load_job(job_id)
+        if not _rerun_plan(job)['can_rerun'] or not _qa_policy(job).enabled:
+            raise HTTPException(409, detail='任务或共享产物正在使用中，或问答评价尚未开启')
+        stage = 'script' if payload.action == 'continue' else 'video'
+        report = job.get('evaluation', {}).get(stage)
+        if payload.fingerprint != (report or {}).get('fingerprint') or (report and not _qa_report_current(job, report, stage)):
+            raise HTTPException(409, detail='评价材料已变化，请重新评价后决策')
+        if payload.action == 'accept':
+            if not report:
+                raise HTTPException(409, detail='请先完成成片评价')
+            job.update(status='done', phase='用户接受当前成片', qa_decision='manual_accept')
+            _save_job(job)
+            return {'job_id': job_id}
+        if payload.action == 'continue' and (_review_snapshot(job).get('teaching') or {}).get('passed') is False:
+            raise HTTPException(409, detail='请先修正教学审核问题')
+        return await _qa_start_next(job, regenerate=payload.action == 'regenerate')
 
 
 async def _worker_loop():
@@ -2887,7 +3117,7 @@ async def api_create_job(payload: dict):
     # stage 3 仍会继续做“幻灯片 + 音频 + 光标 + 字幕”的完整合片。
     portrait = payload.get("portrait_path")
     portrait = portrait if portrait and os.path.isfile(portrait) else None
-    generate_talking = _as_bool(config.get("generate_talking"), bool(portrait))
+    generate_talking = _as_bool(config.get("generate_talking"), False)
     if generate_talking and not portrait:
         generate_talking = False
         talking_note = "未上传有效人像，已自动跳过数字人；仍会生成无数字人的完整讲解视频"
@@ -2925,11 +3155,27 @@ async def api_create_job(payload: dict):
     config.pop("course_plan_path", None)
     connection_keys = _configure_job_models(config, payload, portrait=portrait)
 
+    qa_source = None
+    config.pop('qa_source_path', None)
+    config['qa_attempt'] = 0
+    if _qa_policy({'config': config}).enabled:
+        qa_source = selected_text if selected_text is not None else _course_source(work)
+        if not qa_source.strip() or len(qa_source) > 240000:
+            raise HTTPException(422, detail='原文为空或超过24万字符，请选择章节后开启问答评价')
+        if _qa_policy({'config': config}).question_count < math.ceil(len(qa_source) / 16000):
+            raise HTTPException(422, detail='题目数量不足以覆盖原文，请增加题目数量或缩小章节范围')
+
     job_id = "job_" + time.strftime("%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:4]
     _remember_keys(job_id, payload)          # 凭据跟着任务走，不是全局一份
     _JOB_KEYS[job_id]['connections'] = connection_keys
     job_dir = _job_dir(job_id)
     os.makedirs(job_dir, exist_ok=True)
+
+    if qa_source is not None:
+        target = Path(job_dir, 'ingest', 'qa_source.md')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(qa_source, encoding='utf-8')
+        config['qa_source_path'] = str(target)
 
     # 讲稿提示词按任务落成独立 UTF-8 文件，避免把上万字符塞进 Windows 命令行；
     # job.json 只记路径与哈希，缓存与追溯都以这份不可混淆的任务快照为准。
@@ -3081,8 +3327,7 @@ async def api_rerun_plan(job_id: str):
     return _rerun_plan(_load_job(job_id))
 
 
-@app.post("/api/jobs/{job_id}/rerun")
-async def api_rerun_job(job_id: str, payload: dict):
+async def _create_rerun(job_id: str, payload: dict, isolate=False, defer_queue=False):
     """续跑复用讲稿与有效配音；显式重写使用独立产物目录，保留原任务。"""
     src_job = _load_job(job_id)
     reuse_script = _as_bool(payload.get("reuse_script"), True)
@@ -3117,6 +3362,8 @@ async def api_rerun_job(job_id: str, payload: dict):
         if payload.get(field) is not None:
             config[field] = payload[field]
     _normalize_models(config)
+    if reuse_script:
+        _qa_check_script(src_job, config, Path(src_result, 'subtitle_w_cursor.txt').read_text(encoding='utf-8'), payload.get('qa_override') is True)
     if payload.get('api_base'):
         config['model_api_base'] = _model_base(payload['api_base'])
     portrait = payload.get("portrait_path") or src_job.get("ref_img")
@@ -3157,7 +3404,7 @@ async def api_rerun_job(job_id: str, payload: dict):
     _JOB_KEYS[new_id]['connections'] = connection_keys
     new_dir = _job_dir(new_id)
     os.makedirs(new_dir, exist_ok=True)
-    if not reuse_script:
+    if not reuse_script or isolate:
         # 重写可能改变每一页的配音指纹；不能覆盖已经完成配音的历史任务。
         target = os.path.join(new_dir, 'result')
         shutil.copytree(src_result, target)
@@ -3190,13 +3437,24 @@ async def api_rerun_job(job_id: str, payload: dict):
         "source_path": src_job.get("source_path"),
         "source_name": src_job.get("source_name"),
         "resumed_from": job_id,
+        "evaluation": {'script': src_job['evaluation']['script']} if reuse_script and src_job.get('evaluation', {}).get('script') else {},
+        "qa_history": src_job.get('qa_history', []),
     }
     _save_job(job)
-    await _QUEUE.put(new_id)
+    if payload.get('qa_override') is True:
+        job['qa_decision'] = 'manual_override'
+        _save_job(job)
+    if not defer_queue:
+        await _QUEUE.put(new_id)
     return {"ok": True, "job_id": new_id, "resumed_from": job_id,
             "stages": config["stages"], "reuse_script": config["reuse_script"],
             "generate_talking": generate_talking,
             "queue_ahead": _QUEUE.qsize()}
+
+
+@app.post("/api/jobs/{job_id}/rerun")
+async def api_rerun_job(job_id: str, payload: dict):
+    return await _create_rerun(job_id, payload)
 
 
 @app.get("/api/jobs")
@@ -3277,6 +3535,11 @@ def _sse_frames(job_id, is_disconnected, keepalive):
                 "status": job.get("status"),
                 "phase": job.get("phase"),
                 "phase_key": job.get("phase_key"),
+                "ref_img": job.get('ref_img'),
+                "evaluation": job.get('evaluation'),
+                "qa_error": job.get('qa_error'),
+                "qa_decision": job.get('qa_decision'),
+                "qa_next_job_id": job.get('qa_next_job_id'),
                 "progress": read_progress(job),
                 "exit_code": job.get("exit_code"),
                 "elapsed_min": job.get("elapsed_min"),
@@ -3289,7 +3552,8 @@ def _sse_frames(job_id, is_disconnected, keepalive):
                 "resumed_from": job.get("resumed_from"),
                 "config": {key: (job.get("config") or {}).get(key) for key in (
                     "generate_talking", "content_profile", "slide_lang", "script_lang",
-                    "slide_count", "voice_note", "talking_note", "review_before_render", "target_minutes", "subtitle_style")},
+                    "slide_count", "voice_note", "talking_note", "review_before_render", "target_minutes", "subtitle_style",
+                    "model_config", "model_config_origin", "model_connections", "voice", "voice_resource", "script_concurrency", "cursor_style", "cursor_scale", "qa_attempt")},
             }
             body = json.dumps(payload, ensure_ascii=False)
             if body != last:                       # 只在变化时推，减少噪音

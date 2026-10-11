@@ -22,7 +22,7 @@ CHAR_PRICES = {'cosyvoice-v3.5-plus': '1.5', 'cosyvoice-v3.5-flash': '0.8',
                'cosyvoice-v3-plus': '2', 'cosyvoice-v3-flash': '1', 'cosyvoice-v2': '2'}
 AVATAR_VIDEO_PRICES = {480: '0.5', 720: '0.9'}
 INTEGER_USAGE = ('prompt_tokens', 'completion_tokens', 'total_tokens', 'characters', 'cached_tokens')
-ROLES = ('text', 'vision', 'tts', 'asr', 'grounding', 'avatar', 'voice')
+ROLES = ('text', 'vision', 'tts', 'asr', 'grounding', 'avatar', 'voice', 'qa')
 
 
 def write_record(directory, record):

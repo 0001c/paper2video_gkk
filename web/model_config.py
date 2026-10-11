@@ -59,6 +59,22 @@ class Stages(StrictModel):
     tts: SpeechStage
     asr: ASRStage
     grounding: GroundingStage
+    qa: TextStage | None = None
+
+
+class EvaluationPolicy(StrictModel):
+    enabled: bool = False
+    script_threshold: int = Field(default=80, ge=0, le=100)
+    minimum_threshold: int = Field(default=60, ge=0, le=100)
+    standard_threshold: int = Field(default=80, ge=0, le=100)
+    question_count: int = Field(default=20, ge=4, le=40)
+    max_auto_retries: int = Field(default=2, ge=0, le=3)
+
+    @model_validator(mode='after')
+    def ordered_thresholds(self):
+        if self.minimum_threshold > self.standard_threshold:
+            raise ConfigurationError('evaluation.minimum_threshold', '最低通过线不能高于标准通过线')
+        return self
 
 
 class Timing(StrictModel):
@@ -83,7 +99,7 @@ class AvatarParameters(StrictModel):
 class Avatar(Stage):
     parameters: EmptyParameters | AvatarParameters = Field(default_factory=EmptyParameters)
     provider: Literal['bailian', 'musetalk']
-    enabled: bool
+    enabled: bool = False
 
 
 class PipelineModelConfig(StrictModel):
@@ -92,14 +108,15 @@ class PipelineModelConfig(StrictModel):
     stages: Stages
     timing: Timing
     avatar: Avatar
+    evaluation: EvaluationPolicy = Field(default_factory=EvaluationPolicy)
 
     @model_validator(mode="after")
     def check_combinations(self):
-        providers = {"text": "openai_compatible", "vision": "openai_compatible",
+        providers = {"text": "openai_compatible", "vision": "openai_compatible", "qa": "openai_compatible",
                      "tts": "qwen3", "asr": "qwen3", "grounding": "gui_owl", "avatar": "musetalk"}
         for role, stage in self.roles().items():
             field = 'avatar' if role == 'avatar' else f'stages.{role}'
-            allowed = {"bailian", "openai_compatible"} if role in ("text", "vision") else {"bailian", providers[role]}
+            allowed = {"bailian", "openai_compatible"} if role in ("text", "vision", "qa") else {"bailian", providers[role]}
             if stage.provider not in allowed:
                 raise ConfigurationError(field + '.provider', '该环节不支持此提供方')
             if stage.provider == "bailian" and stage.mode != "api":
@@ -109,7 +126,7 @@ class PipelineModelConfig(StrictModel):
                 raise ConfigurationError(field + '.connection_id', '此环节需要连接引用')
             if not needs_connection and stage.connection_id is not None:
                 raise ConfigurationError(field + '.connection_id', '本地权重不使用API连接')
-            if role not in ("text", "vision") and stage.mode == "api" and stage.provider != "bailian":
+            if role not in ("text", "vision", "qa") and stage.mode == "api" and stage.provider != "bailian":
                 raise ConfigurationError(field + '.provider', '仅百炼提供此API路径')
         if self.avatar.mode == "local" and isinstance(self.avatar.parameters, AvatarParameters):
             raise ConfigurationError("avatar.parameters.resolution", "分辨率仅适用于百炼Wan数字人")
@@ -117,10 +134,14 @@ class PipelineModelConfig(StrictModel):
             self.avatar.parameters = AvatarParameters()
         if self.timing.source == "tts_timestamp" and self.stages.tts.mode != "api":
             raise ConfigurationError('timing.source', '本地TTS不能提供API合成时间戳')
+        if self.evaluation.enabled and self.stages.qa is None:
+            raise ConfigurationError('stages.qa', '开启问答评价后必须选择评价模型')
+        if self.evaluation.enabled and (self.stages.asr.mode != 'local' or self.stages.asr.model != 'qwen3-asr'):
+            raise ConfigurationError('stages.asr', '成片问答当前使用本地Qwen3-ASR识别实际音轨，请选择本地识别模型')
         return self
 
     def roles(self):
-        return {**{role: getattr(self.stages, role) for role in Stages.model_fields}, "avatar": self.avatar}
+        return {**{role: getattr(self.stages, role) for role in Stages.model_fields if getattr(self.stages, role) is not None}, "avatar": self.avatar}
 
     def public_dict(self):
         return self.model_dump(exclude_none=True)
@@ -174,6 +195,10 @@ def required_roles(config, pipeline_config):
                 roles.add("asr")
     if "3" in selected and config.avatar.enabled:
         roles.add("avatar")
+    if config.evaluation.enabled:
+        roles.add('qa')
+        if not pipeline_config.get('review_before_render'):
+            roles.add('asr')
     return sorted(roles)
 
 
@@ -185,7 +210,7 @@ def ensure_implemented(config, roles):
             'cosyvoice-v3.5-plus', 'cosyvoice-v3.5-flash', 'cosyvoice-v3-plus', 'cosyvoice-v3-flash', 'cosyvoice-v2')
         cloud_avatar = role == 'avatar' and stage.mode == 'api' and stage.model == 'wan2.2-s2v'
         cloud_grounding = role == 'grounding' and stage.mode == 'api' and stage.model == 'qwen3-vl-plus'
-        if role not in ("text", "vision") and not cloud_tts and not cloud_grounding and not cloud_avatar and (stage.mode != "local" or stage.model != LOCAL_MODELS[role]):
+        if role not in ("text", "vision", "qa") and not cloud_tts and not cloud_grounding and not cloud_avatar and (stage.mode != "local" or stage.model != LOCAL_MODELS[role]):
             raise ConfigurationError(field, "该模型适配器尚未实现，不允许回退本地", "adapter_not_implemented")
         if role == "tts" and stage.mode == 'local' and stage.parameters.speech_rate != 1.0:
             raise ConfigurationError(field + ".parameters.speech_rate", "当前本地TTS仅支持默认语速", "adapter_not_implemented")
@@ -200,7 +225,7 @@ def capabilities():
             "implemented": {"compatible_text_vision": True, "local_tts_asr_grounding": True,
                             "independent_text_vision_connections": True, "role_model_parameters": True,
                             "cloud_voices": True, "tts_timestamps": True, "bailian_speech": True,
-                            "bailian_grounding": True, "bailian_avatar": True, "avatar_segmentation": True}}
+                            "bailian_grounding": True, "bailian_avatar": True, "avatar_segmentation": True, "qa_evaluation": True}}
 
 
 def effective_mode(config, roles):

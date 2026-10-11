@@ -5,6 +5,8 @@ import { loadCredentials, loadDraft, loadJobId, loadView, saveDraft, saveJobId, 
 import { api, applyTemplate, errorMessage, runExclusive } from "./flow";
 import { CoursePanel, defaultCourse, type CourseSettings, type CoursePlan } from "./CoursePanel";
 import { ReviewPanel } from "./ReviewPanel";
+import { AvatarToggle } from './AvatarToggle';
+import { EvaluationPanel, type EvaluationReport } from './EvaluationPanel';
 import { ThemeToggle } from "./ThemeToggle";
 import { AccessControls } from './AccessGate';
 import { ModelSettings } from "./ModelSettings";
@@ -188,6 +190,10 @@ type Job = {
   ref_img?: string;
   status: string;
   phase: string;
+  evaluation?: { script?: EvaluationReport; video?: EvaluationReport };
+  qa_error?: string;
+  qa_decision?: string;
+  qa_next_job_id?: string;
   phase_key?: string;
   remote_tasks?: RemoteTaskDetails;
   remote_cancel_state?: string;
@@ -203,7 +209,7 @@ type Job = {
     script_lang?: string; slide_count?: number; voice_note?: string; talking_note?: string;
     review_before_render?: boolean; target_minutes?: number | null; text_model?: string; vision_model?: string; script_concurrency?: number;
     cursor_style?: string; cursor_scale?: number; subtitle_style?: SubtitleStyle; model_config?: ModelConfig; model_config_origin?: string;
-    voice?: VoiceSpec; voice_resource?: CloudVoice;
+    voice?: VoiceSpec; voice_resource?: CloudVoice; qa_attempt?: number;
     model_connections?: Record<string, { label?: string; scope_id: string; provider: string; compatible_base_url: string; catalog_time?: string; catalog_source?: string }>; portrait_path?: string };
 };
 
@@ -235,7 +241,7 @@ type StreamState = "idle" | "connecting" | "live" | "retrying";
    那个触发条件再也不会到来 —— 表现为"跑完了但产物区一直不出现"。
    EventSource 本来自带重连，但原代码在 onerror 里 `close()` 把它关掉了。
    这里改成指数退避（1s → 2s → 5s，封顶 10s），并把连接状态暴露给界面。 */
-function useJobStream(jobId: string | null) {
+function useJobStream(jobId: string | null, revision = 0) {
   const [job, setJob] = useState<Job | null>(null);
   const [streamState, setStreamState] = useState<StreamState>("idle");
   const [streamError, setStreamError] = useState("");
@@ -319,7 +325,7 @@ function useJobStream(jobId: string | null) {
       if (timer) window.clearTimeout(timer);
       es?.close();
     };
-  }, [jobId]);
+  }, [jobId, revision]);
 
   return { job: job?.id === jobId ? job : null, streamState, streamError };
 }
@@ -451,12 +457,13 @@ export default function App() {
     catch { return defaultCourse; }
   });
   const [coursePlan, setCoursePlan] = useState<CoursePlan | null>(null);
-  const [modelConfig, setModelConfig] = useState<ModelConfig>(() => initialDraft.model_config
-    ?? (initialDraft.textModel || initialDraft.visionModel
-      ? migratedConfig(initialDraft.textModel || "deepseek-flash", initialDraft.visionModel || "deepseek-flash", initialDraft.generateTalking ?? true)
-      : presetConfig("bailian_api", "", initialDraft.generateTalking ?? true)));
+  const [modelConfig, setModelConfig] = useState<ModelConfig>(() => {
+    const initial = initialDraft.model_config ?? (initialDraft.textModel || initialDraft.visionModel
+      ? migratedConfig(initialDraft.textModel || "deepseek-flash", initialDraft.visionModel || "deepseek-flash", false)
+      : presetConfig("bailian_api", "", false));
+    return { ...initial, avatar: { ...initial.avatar, enabled: false } };
+  });
   const generateTalking = modelConfig.avatar.enabled;
-  const setGenerateTalking = (enabled: boolean) => setModelConfig((value) => ({ ...value, avatar: { ...value.avatar, enabled } }));
   const [taskOverride, setTaskOverride] = useState<{ jobId: string; value: ModelConfig } | null>(null);
   const [modelConnections, setModelConnections] = useState<Connection[] | null>(null);
   /* 幻灯片布局微调（树搜索）—— 默认关，与后端 `_build_argv` 的默认值一致。
@@ -483,6 +490,7 @@ export default function App() {
   // jobId 也持久化：刷新页面（或误关标签）后自动回到原来那个任务 ——
   // 否则每次都要回任务列表重新点一次"查看"，长任务里这很烦。
   const [jobId, setJobId] = useState<string | null>(loadJobId());
+  const [streamRevision, setStreamRevision] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [artifacts, setArtifacts] = useState<any[]>([]);
   // P1：任务记录 + 逐页素材
@@ -508,7 +516,7 @@ export default function App() {
   voiceContextRef.current = voiceContext;
   useEffect(() => { setPreview(null); }, [voiceContext]);
 
-  const { job, streamState, streamError } = useJobStream(jobId);
+  const { job, streamState, streamError } = useJobStream(jobId, streamRevision);
   const taskModels = taskOverride && taskOverride.jobId === job?.id ? taskOverride.value : job?.config?.model_config;
   const [taskVoiceOverride, setTaskVoiceOverride] = useState<{ jobId: string; voice: VoiceSpec; resource?: CloudVoice }>();
   const taskVoice = taskVoiceOverride && taskVoiceOverride.jobId === job?.id ? taskVoiceOverride.voice : job?.config?.voice;
@@ -520,8 +528,17 @@ export default function App() {
 
   const selectJob = useCallback((id: string) => {
     setJobId(id);
+    setStreamRevision((value) => value + 1);
     setView("detail");
   }, []);
+  const followedRunningJob = useRef<string>();
+  useEffect(() => {
+    if (job && ['running', 'queued'].includes(job.status)) followedRunningJob.current = job.id;
+    if (job?.qa_next_job_id && followedRunningJob.current === job.id) {
+      followedRunningJob.current = job.qa_next_job_id;
+      selectJob(job.qa_next_job_id);
+    }
+  }, [job?.id, job?.status, job?.qa_next_job_id, selectJob]);
   useEffect(() => {
     if (view === "detail") detailRef.current?.scrollIntoView({
       behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start",
@@ -964,13 +981,15 @@ export default function App() {
   if (!ingest || ingest.error) missing.push("选择内容文件并完成提取预览");
   if (courseEnabled && !coursePlan) missing.push("预览并确认教案和时间分配");
   for (const role of roles) {
+    if ((role === 'avatar' && !modelConfig.avatar.enabled) || (role === 'qa' && !modelConfig.evaluation?.enabled)) continue;
     const stage = roleStage(modelConfig, role);
-    if ((stage.mode === "api" || role === "text" || role === "vision") && !stage.connection_id) {
+    if ((stage.mode === "api" || role === "text" || role === "vision" || role === 'qa') && !stage.connection_id) {
       missing.push(`选择${role}连接（可重新应用预设填充）`);
     }
   }
-  for (const role of ["text", "vision"] as const) {
-    const stage = modelConfig.stages[role];
+  for (const role of ["text", "vision", "qa"] as const) {
+    if (role === 'qa' && !modelConfig.evaluation?.enabled) continue;
+    const stage = roleStage(modelConfig, role);
     const connection = modelConnections?.find((entry) => entry.id === stage.connection_id);
     if (!connection || (stage.mode === "api" && !connection.key_present)) missing.push(`${role}连接失效或缺密钥`);
   }
@@ -1013,8 +1032,8 @@ export default function App() {
           <div><p className="eyebrow">CONTENT / VOICE / VIDEO</p><h1>内容讲解工作台</h1><p className="sub">选好素材与声音，让内容成为讲解视频。</p></div>
           <ol className="workflow-overview" aria-label="制作流程">
             <li><span>01</span><div><strong>编排内容</strong><small>素材、语言与声音</small></div></li>
-            <li><span>02</span><div><strong>审核课件</strong><small>先校对课件与讲稿</small></div></li>
-            <li><span>03</span><div><strong>生成视频</strong><small>确认后配音与合片</small></div></li>
+            <li><span>02</span><div><strong>讲稿检查</strong><small>问答通过或手动确认</small></div></li>
+            <li><span>03</span><div><strong>视频验收</strong><small>配音合片与问答评价</small></div></li>
           </ol>
         </div>
         <details className="system-details">
@@ -1138,14 +1157,7 @@ export default function App() {
           <div className="material-panel">
             <div className="material-heading">
               <span>数字人小窗</span>
-              <label className="checkline material-toggle">
-                <input
-                  type="checkbox"
-                  checked={generateTalking}
-                  onChange={(e) => setGenerateTalking(e.target.checked)}
-                />
-                启用
-              </label>
+              <AvatarToggle value={modelConfig} onChange={setModelConfig} disabled={submitting} />
             </div>
             {generateTalking ? (
               <Dropzone
@@ -1380,7 +1392,7 @@ export default function App() {
         slideCount={slideCount} scriptLang={scriptLang} onPlan={setCoursePlan} />}
 
       {/* 模型决定音色路径：本地复用参考音频，API 选择独立云音色。 */}
-      <Section anchor="credentials" number="04" title="模型配置" defaultOpen={false} summary={modelConfig.preset === 'bailian_api' ? '百炼全 API' : modelConfig.preset === 'local_existing' ? '保留现有本地推理' : '自定义组合'} important>
+      <Section anchor="credentials" number="04" title="模型配置" defaultOpen={false} summary={modelConfig.preset === 'bailian_api' ? '百炼 API 方案' : modelConfig.preset === 'local_existing' ? '保留现有本地推理' : '自定义组合'} important>
         {!initialDraft.model_config && (initialDraft.textModel || initialDraft.visionModel) && <p className="notice warn">已保留旧草稿的型号与本地路线，未沿用浏览器密钥。请添加兼容连接并重新选择；不会自动改成百炼默认。</p>}
         <ModelSettings value={modelConfig} options={opts?.model_configuration} concurrency={scriptConcurrency} onChange={setModelConfig} onConcurrency={setScriptConcurrency} voice={voiceSpecNow()} preparePortrait={preparePortrait} portraitKey={portraitFile} onConnectionsChange={setModelConnections} />
       </Section>
@@ -1541,7 +1553,8 @@ export default function App() {
 
       </fieldset>
       <Section anchor="prepare" number="07" title="生成与审核" defaultOpen={false} label="创建新任务" summary={missing.length ? '待完善设置' : '准备就绪'} important help={<>
-        <p>所有讲解类型都先生成课件与讲稿并暂停审核；明确确认后才配音和合片。</p>
+        <p>先生成课件与讲稿。开启问答评价时，讲稿达到通过线后自动配音合片，否则等待你复核或手动继续；关闭问答评价时保持人工审核流程。</p>
+        <p>成片达到标准线后完成；低于最低线时按错题反馈自动重生成，最多按设置次数执行；介于两条线之间时由你决定。自动重生成会新增模型费用。</p>
         <p>生成等待时间与成片播放时长分别计算。长课程尚无完整耗时标定；讲稿阶段动态估计剩余等待时间，配音合片以实际进度为准。新任务按队列串行执行。</p>
       </>}>
         {courseEnabled && <p>成片目标：{coursePlan ? `约 ${coursePlan.planned_minutes} 分钟` : "请先确认教案"}。</p>}
@@ -1551,6 +1564,7 @@ export default function App() {
           {` · 音色：${voiceMode === "default" ? "内置默认" : voiceMode === "preset" ? presetPick?.label || "未选择" : voiceMode === "design" ? "描述生成" : "上传参考音频"}`}
         </p>
         {generateTalking && !portraitFile && <p className="notice warn">开启数字人时肖像必填；上传肖像或关闭数字人后再创建任务。</p>}
+        {modelConfig.evaluation?.enabled && <p className="notice info"><strong>问答门禁已开启</strong> · 讲稿 {modelConfig.evaluation.script_threshold}% · 成片最低 {modelConfig.evaluation.minimum_threshold}% / 标准 {modelConfig.evaluation.standard_threshold}% · 自动重生成最多 {modelConfig.evaluation.max_auto_retries} 次</p>}
         <p className="hint">
           {!courseEnabled && est ? `本地配音与合片参考 ${est.lo}～${est.hi} 分钟（${est.slides} 页） · ` : ''}
           {`${activeCount} 个任务执行中 · ${queuedCount} 个排队中`}
@@ -1604,7 +1618,7 @@ export default function App() {
         {job && <SubtitleSettings value={taskSubtitleStyle} disabled={!!running} onChange={(value) => setTaskSubtitleOverride({ jobId: job.id, value })} />}
         {job && !running && <p className="hint">字幕样式修改将用于下一次审核合片或续跑，不会立即改变已有视频。</p>}
         {job?.status === 'failed' && job.phase_key === 'struct' && <div className="notice warn source-failure"><p>正文结构化未完成。若日志提示缺失字形，请对照源页修正，再以新素材创建任务。</p><SourceReview key={job.id} ingestId={job.id} onSaved={useCorrectedSource} /></div>}
-        {job?.config?.model_config_origin === "v2" && job.config.model_config && taskModels && <TaskModelSettings key={job.id}
+        {job?.config?.model_config_origin === "v2" && job.config.model_config && taskModels && <TaskModelSettings key={`models-${job.id}`}
           jobId={job.id} portraitPath={job.ref_img} snapshot={job.config.model_config} value={taskModels} connections={job.config.model_connections} options={opts?.model_configuration}
           voice={taskVoice} voiceResource={taskVoiceResource} onVoice={(resource) => setTaskVoiceOverride({ jobId: job.id, voice: resource ? { kind: 'cloud', resource_id: resource.resource_id } : { kind: 'default' }, resource })}
           concurrency={job.config.script_concurrency ?? 3} disabled={!!running} onChange={(value) => setTaskOverride({ jobId: job.id, value })} />}
@@ -1614,8 +1628,12 @@ export default function App() {
             <div className="field"><label htmlFor="legacy-base">旧任务 API Base</label><input id="legacy-base" value={apiBase} onChange={(event) => setApiBase(event.target.value)} /></div></div>
           <Button variant="text" onClick={() => { setApiKey(""); setApiBase(""); }}>清空本次凭据</Button>
         </details>}
-        {job && !running && visiblePages?.pages?.length > 0 && <ReviewPanel key={job.id} jobId={job.id} apiKey={apiKey} apiBase={apiBase}
+        {job && !running && visiblePages?.pages?.length > 0 && <ReviewPanel key={`review-${job.id}`} jobId={job.id} apiKey={apiKey} apiBase={apiBase}
           modelConfig={taskModels} modelOrigin={job.config?.model_config_origin} voice={taskVoice} subtitleStyle={taskSubtitleStyle} concurrency={job.config?.script_concurrency ?? 3} cursors={opts?.cursors ?? []} cursorStyle={job.config?.cursor_style ?? 'classic-red'} cursorScale={job.config?.cursor_scale ?? 1} onJob={selectJob} onSaved={() => setFilesVersion((v) => v + 1)} />}
+
+        {job && taskModels && (visiblePages?.pages?.length > 0 || job.phase_key === 'qa' || job.evaluation) && <EvaluationPanel key={`qa-${job.id}`}
+          jobId={job.id} evaluation={job.evaluation} error={job.qa_error} decision={job.qa_decision} nextJobId={job.qa_next_job_id}
+          attempt={job.config?.qa_attempt} value={taskModels} busy={!!running} hasVideo={!job.config?.review_before_render && visibleArtifacts.some((item) => item.name === '3_merage.mp4')} onJob={selectJob} />}
 
         {job && (
           <div style={{ marginTop: 18 }}>

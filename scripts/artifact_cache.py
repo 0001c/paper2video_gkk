@@ -177,6 +177,11 @@ def lookup_struct(facts, key=None):
     directory = cache_dir("struct", key or struct_key(facts))
     main_tex = os.path.join(directory, "main.tex")
     if os.path.isfile(main_tex):
+        binding = os.path.join(directory, 'source_binding.json')
+        if os.path.isfile(binding):
+            from paper_struct import verified_source_binding
+            if not verified_source_binding(main_tex):
+                return None, directory, '结构化缓存未通过编译或原文绑定校验'
         man = read_manifest(directory) or {}
         return main_tex, directory, "同名正文与论文类型已结构化过（%s）" % (
             man.get("created_at") or "时间未知")
@@ -199,16 +204,30 @@ def publish_struct(facts, main_tex_path, job_id=None, key=None):
     key = key or struct_key(facts)
     directory = cache_dir("struct", key)
     try:
+        binding = os.path.join(os.path.dirname(main_tex_path), 'source_binding.json')
+        if os.path.isfile(binding):
+            from paper_struct import verified_source_binding
+            if not verified_source_binding(main_tex_path):
+                print('[cache] 提示：不写入结构化缓存 —— 编译或原文绑定校验未通过')
+                return None
         os.makedirs(directory, exist_ok=True)
         shutil.copy2(main_tex_path, os.path.join(directory, "main.tex"))
         binding = os.path.join(os.path.dirname(main_tex_path), 'source_binding.json')
         if os.path.isfile(binding):
             shutil.copy2(binding, os.path.join(directory, 'source_binding.json'))
             with io.open(binding, encoding='utf-8') as handle:
-                images = json.load(handle).get('glyph_images', {})
+                source_binding = json.load(handle)
+                images = source_binding.get('glyph_images', {})
             for name in images:
                 if not re.fullmatch(r'figures/source_p\d{4}_\d{2}\.png', name):
                     raise ValueError('非法原文字形图路径')
+                target = os.path.join(directory, name)
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                shutil.copy2(os.path.join(os.path.dirname(main_tex_path), name), target)
+            from paper_struct import FONT_ASSET_NAMES
+            for name in source_binding.get('font_assets', {}):
+                if name not in FONT_ASSET_NAMES:
+                    raise ValueError('非法原文字体路径')
                 target = os.path.join(directory, name)
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 shutil.copy2(os.path.join(os.path.dirname(main_tex_path), name), target)

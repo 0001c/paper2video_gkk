@@ -26,6 +26,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -356,6 +357,33 @@ def _continue_tex(tex, info, model, max_tokens, max_rounds=3, model_snapshot=Non
     return tex, info
 
 
+FONT_ASSET_NAMES = ('figures/source_latin.ttc', 'figures/source_cjk.ttf')
+
+
+def prepare_source_fonts(tex, tex_dir):
+    """随工程携带 Windows 字体，覆盖原文中的希腊字母、集合符号和生僻汉字。
+
+    Tectonic 在 Windows 上不能可靠打开绝对字体路径，因此使用相对路径。
+    放在 figures 下也能沿用现有工程、缓存的资源复制流程。
+    """
+    font_dir = Path(os.environ.get('WINDIR', 'C:/Windows')) / 'Fonts'
+    sources = (font_dir / 'cambria.ttc', font_dir / 'simfang.ttf')
+    if not all(source.is_file() for source in sources):
+        return tex, {}
+    assets = {}
+    for source, name in zip(sources, FONT_ASSET_NAMES):
+        target = Path(tex_dir) / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        assets[name] = hashlib.sha256(target.read_bytes()).hexdigest()
+    setup = ('% source-fonts: portable native glyph coverage\n'
+             '\\setmainfont[Path={figures/},FontIndex=0]{source_latin.ttc}\n'
+             '\\setCJKmainfont[Path={figures/}]{source_cjk.ttf}\n'
+             '\\setCJKsansfont[Path={figures/}]{source_cjk.ttf}\n'
+             '\\setCJKmonofont[Path={figures/}]{source_cjk.ttf}\n')
+    return tex.replace('\\begin{document}', setup + '\\begin{document}', 1), assets
+
+
 def verified_source_binding(tex_path, source=None, text_path=None):
     try:
         target = Path(tex_path)
@@ -373,6 +401,12 @@ def verified_source_binding(tex_path, source=None, text_path=None):
                 return False
             image = target.parent / name
             if not image.is_file() or hashlib.sha256(image.read_bytes()).hexdigest() != digest:
+                return False
+        for name, digest in binding.get('font_assets', {}).items():
+            if name not in FONT_ASSET_NAMES:
+                return False
+            font = target.parent / name
+            if not font.is_file() or hashlib.sha256(font.read_bytes()).hexdigest() != digest:
                 return False
         return True
     except (OSError, ValueError, AttributeError):
@@ -478,6 +512,7 @@ def structurize(source, out_dir, model=None, max_tokens=None,
 
     tex_dir = os.path.join(out_dir, "latex_proj")
     os.makedirs(tex_dir, exist_ok=True)
+    tex, font_assets = prepare_source_fonts(tex, tex_dir)
     tex_path = os.path.join(tex_dir, "main.tex")
     with io.open(tex_path, "w", encoding="utf-8", newline="") as handle:
         handle.write(tex)
@@ -488,6 +523,7 @@ def structurize(source, out_dir, model=None, max_tokens=None,
         "source_chars": len(text),
         "tex_path": os.path.abspath(tex_path),
         "tex_chars": len(tex),
+        "font_assets": font_assets,
         "sections": len(re.findall(r"\\section\{", tex)),
         "subsections": len(re.findall(r"\\subsection\{", tex)),
         "has_ctex": "\\usepackage{ctex}" in tex,
@@ -508,6 +544,7 @@ def structurize(source, out_dir, model=None, max_tokens=None,
     if do_compile:
         print("[3/3] tectonic 编译验证 ...")
         ok, log = compile_tex(tex_path)
+        Path(out_dir, 'struct_compile.log').write_text(log, encoding='utf-8')
         report["compile_ok"] = ok
         tail = [ln for ln in log.splitlines() if ln.strip()][-12:]
         report["compile_log_tail"] = tail
@@ -525,6 +562,7 @@ def structurize(source, out_dir, model=None, max_tokens=None,
                    'source_file_sha256': hashlib.sha256(Path(source).read_bytes()).hexdigest() if Path(source).is_file() else None,
                    'source_sha256': report['fidelity']['source_sha256'], 'literal_fallback': fallback,
                    'glyph_images': {'figures/' + image['name']: hashlib.sha256(Path(tex_dir, 'figures', image['name']).read_bytes()).hexdigest() for image in glyph_images},
+                   'font_assets': font_assets,
                    'paragraphs': [{'index': index, 'text': paragraph, 'sha256': hashlib.sha256(paragraph.encode()).hexdigest()}
                                   for index, paragraph in enumerate(paragraphs)]}, handle, ensure_ascii=False, indent=2)
     if do_compile and not report.get('compile_ok'):

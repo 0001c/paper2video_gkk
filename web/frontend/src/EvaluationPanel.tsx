@@ -13,6 +13,8 @@ export function EvaluationPanel({ jobId, evaluation, error, decision, nextJobId,
   nextJobId?: string; attempt?: number; value: ModelConfig; busy: boolean; hasVideo: boolean; onJob: (id: string) => void;
 }) {
   const policy = value.evaluation ?? { ...defaultEvaluation, enabled: false };
+  const latestReport = evaluation?.video ?? evaluation?.script;
+  const legacyReport = !!latestReport && !latestReport.independent_models;
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [pending, setPending] = useState<'continue' | 'regenerate' | 'accept'>();
@@ -49,14 +51,14 @@ export function EvaluationPanel({ jobId, evaluation, error, decision, nextJobId,
         </div>;
       })}
     </div>
-    <div className="qa-decision"><strong>{running ? '正在生成或评价，请等待' : nextJobId ? '已进入下一轮任务' : decision === 'manual_accept' ? '已接受当前成片' : evaluation?.video && evaluation.video.score >= policy.standard_threshold ? '达到标准通过线' : evaluation?.video && evaluation.video.score < policy.minimum_threshold && attempt >= policy.max_auto_retries ? '已达自动重生成上限，请人工决策' : evaluation?.video ? '成片待决策' : '讲稿通过或手动继续后，开始配音合片'}</strong>
+    <div className="qa-decision"><strong>{running ? '正在生成或评价，请等待' : nextJobId ? '已进入下一轮任务' : decision === 'manual_accept' ? '已接受当前成片' : legacyReport ? '历史评分需要独立模型重新评价' : evaluation?.video && evaluation.video.score >= policy.standard_threshold ? '达到标准通过线' : evaluation?.video && evaluation.video.score < policy.minimum_threshold && attempt >= policy.max_auto_retries ? '已达自动重生成上限，请人工决策' : evaluation?.video ? '成片待决策' : '讲稿通过或手动继续后，开始配音合片'}</strong>
       <span>自动重生成 {attempt} / {policy.max_auto_retries} 次</span></div>
     {error && <p className="notice warn" role="alert">{error}<br /><strong>已设置门槛：讲稿 {policy.script_threshold}% · 成片最低 {policy.minimum_threshold}% / 标准 {policy.standard_threshold}%</strong><br />评价请求失败时不会产生本轮得分，也不会触发自动重生成。</p>}
     {message && <p className="notice err" role="alert">{message}</p>}
     {nextJobId ? <Button theme="primary" onClick={() => onJob(nextJobId)}>查看下一轮任务</Button> : !running && policy.enabled && <div className="actions">
       {!evaluation?.video && <Button theme="primary" disabled={busy} onClick={() => setPending('continue')}>手动继续配音合片</Button>}
-      {evaluation?.video && <><Button theme="primary" disabled={busy} onClick={() => setPending('regenerate')}>按评价反馈重新生成</Button>
-        <Button variant="outline" disabled={busy} onClick={() => setPending('accept')}>接受当前成片</Button></>}
+      {evaluation?.video && <><Button tag="button" theme="primary" disabled={busy || legacyReport} onClick={() => setPending('regenerate')}>按评价反馈重新生成</Button>
+        <Button tag="button" variant="outline" disabled={busy || legacyReport} onClick={() => setPending('accept')}>接受当前成片</Button></>}
     </div>}
     {(['script', 'video'] as const).map((stage) => evaluation?.[stage] && <details className="qa-details" key={stage}>
       <summary>{stage === 'script' ? '讲稿' : '成片'}答题明细 · {evaluation[stage]!.total - evaluation[stage]!.correct} 题待改进</summary>

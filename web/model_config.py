@@ -163,12 +163,18 @@ class ConfigurationError(ValueError):
 LOCAL_MODELS = {"tts": "qwen3tts", "asr": "qwen3-asr", "grounding": "gui-owl", "avatar": "musetalk"}
 
 
+def evaluation_model_identity(model):
+    identity = model.casefold()
+    # 官方接入文档：旧 Flash 名称由当前 Flash 型号承接，不能视作独立模型。
+    return 'deepseek-flash' if identity in ('deepseek-v4-flash', 'deepseek-v4-flash-vision-exp') else identity
+
+
 def validate_evaluation_models(config):
     if config.stages.quiz is None:
         raise ConfigurationError('stages.quiz', '请分别选择出题模型和答题模型；旧任务需补选独立模型')
     if config.stages.qa is None:
         raise ConfigurationError('stages.qa', '请选择答题评价模型')
-    if config.stages.quiz.model.casefold() == config.stages.qa.model.casefold():
+    if evaluation_model_identity(config.stages.quiz.model) == evaluation_model_identity(config.stages.qa.model):
         raise ConfigurationError('stages.qa.model', '出题与答题必须使用不同型号；更换连接或密钥不能替代更换模型')
 
 

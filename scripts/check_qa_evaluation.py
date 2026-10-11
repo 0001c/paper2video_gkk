@@ -224,6 +224,14 @@ class FlowChecks(unittest.TestCase):
             PipelineModelConfig.model_validate(config)
         self.assertIn('不同型号', str(caught.exception))
 
+    def test_known_deepseek_aliases_are_the_same_model(self):
+        config = copy.deepcopy(self.config)
+        config['stages']['quiz']['model'] = 'deepseek-flash'
+        for alias in ('deepseek-v4-flash', 'DEEPSEEK-V4-FLASH-VISION-EXP'):
+            config['stages']['qa']['model'] = alias
+            with self.assertRaises(ValidationError):
+                PipelineModelConfig.model_validate(config)
+
     def test_old_snapshot_readable_but_execution_requires_independent_roles(self):
         config = copy.deepcopy(self.config)
         del config['stages']['quiz']

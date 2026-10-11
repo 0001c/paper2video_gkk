@@ -32,6 +32,11 @@ test('出题与答题独立选择，同型号不同连接仍拦截；旧草稿�
   const split = models.replaceStage(old, 'qa', { ...old.stages.qa, model: 'independent-answer-model' });
   assert.equal(split.stages.quiz.model, 'MiniMax/MiniMax-M3');
   assert.equal(models.evaluationModelProblem(split), undefined);
+  split.stages.quiz.model = 'deepseek-flash';
+  for (const alias of ['deepseek-v4-flash', 'DEEPSEEK-V4-FLASH-VISION-EXP']) {
+    split.stages.qa.model = alias;
+    assert.match(models.evaluationModelProblem(split), /不同型号/);
+  }
 });
 
 test("配音端点使用同一工作空间，拒绝相似域名和携带凭据的地址", () => {

@@ -120,9 +120,14 @@ export function readModelConfig(value: unknown): ModelConfig | undefined {
   return { schema_version: 2, preset: raw.preset, stages: rest, timing: { source: raw.timing.source }, avatar: { ...avatar, enabled: raw.avatar.enabled }, evaluation };
 }
 
+export function evaluationModelIdentity(model: string): string {
+  const identity = model.toLowerCase();
+  return ['deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'].includes(identity) ? 'deepseek-flash' : identity;
+}
+
 export function evaluationModelProblem(config: ModelConfig): string | undefined {
   if (!config.evaluation?.enabled) return;
   if (!config.stages.quiz || !config.stages.qa) return '请分别选择出题模型和答题模型。';
-  if (config.stages.quiz.model.toLowerCase() === config.stages.qa.model.toLowerCase())
+  if (evaluationModelIdentity(config.stages.quiz.model) === evaluationModelIdentity(config.stages.qa.model))
     return '出题与答题必须使用不同型号，请修改其中一个模型；更换连接或密钥不能替代更换模型。';
 }

@@ -2160,7 +2160,7 @@ def _qa_report_current(job, report, stage):
     try:
         stages = (job.get('config') or {}).get('model_config', {}).get('stages', {})
         selection, generator = stages.get('qa'), stages.get('quiz')
-        if not selection or not generator or selection['model'].casefold() == generator['model'].casefold():
+        if not selection or not generator or model_settings.evaluation_model_identity(selection['model']) == model_settings.evaluation_model_identity(generator['model']):
             return False
         return (report.get('material_sha256') == digest_file(material)
                 and report.get('source_sha256') == digest_file(_qa_source(job))

@@ -8,7 +8,7 @@ export type EvaluationPolicy = { enabled: boolean; script_threshold: number; min
 export const defaultEvaluation: EvaluationPolicy = { enabled: true, script_threshold: 80, minimum_threshold: 60, standard_threshold: 80, question_count: 20, max_auto_retries: 2 };
 export type ModelConfig = { schema_version: 2; preset: "bailian_api" | "local_existing" | "custom";
   stages: Record<Exclude<Role, "avatar" | "qa" | "quiz">, Stage> & { qa?: Stage; quiz?: Stage }; timing: { source: "tts_timestamp" | "local_forced_aligner" }; avatar: Stage & { enabled: boolean }; evaluation?: EvaluationPolicy };
-export type Connection = { id: string; label: string; provider: "bailian" | "openai_compatible"; key_present: boolean;
+export type Connection = { id: string; label: string; provider: "bailian" | "openai_compatible"; key_present: boolean; persist_key?: boolean;
   compatible_base_url: string; native_http_base_url?: string | null; websocket_url?: string | null; scope_id: string; source: "memory" | "env" };
 export type ModelOptions = { implemented: Record<string, boolean>; recommended_models: Record<Role, string>;
   local_models: Partial<Record<Role, { provider: Stage["provider"]; model: string; implemented: boolean }>> };

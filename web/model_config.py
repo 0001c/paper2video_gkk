@@ -248,7 +248,7 @@ def capabilities():
                             "independent_text_vision_connections": True, "role_model_parameters": True,
                             "cloud_voices": True, "tts_timestamps": True, "bailian_speech": True,
                             "bailian_grounding": True, "bailian_avatar": True, "avatar_segmentation": True, "qa_evaluation": True,
-                            "independent_quiz_answer_models": True}}
+                            "independent_quiz_answer_models": True, "local_key_storage": os.name == 'nt'}}
 
 
 def effective_mode(config, roles):

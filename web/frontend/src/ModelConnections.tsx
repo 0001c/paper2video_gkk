@@ -5,8 +5,9 @@ import { bailianEndpoints, type Connection } from "./modelConfig";
 import { Help } from './Section';
 
 const defaultBase = "https://llm-3p2iijyqd4hu17zi.cn-beijing.maas.aliyuncs.com/compatible-mode/v1";
-export function ModelConnections({ visible, connections, onClose, onReload }: {
+export function ModelConnections({ visible, connections, localKeyStorageAvailable = false, storageError, onClose, onReload }: {
   visible: boolean; connections: Connection[]; onClose: () => void; onReload: () => Promise<void>;
+  localKeyStorageAvailable?: boolean; storageError?: string;
 }) {
   const prefix = useId();
   const [editing, setEditing] = useState("");
@@ -17,6 +18,7 @@ export function ModelConnections({ visible, connections, onClose, onReload }: {
   const [ws, setWs] = useState("");
   const [scope, setScope] = useState("");
   const [key, setKey] = useState("");
+  const [persistKey, setPersistKey] = useState(true);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const lock = useRef(false);
@@ -30,20 +32,21 @@ export function ModelConnections({ visible, connections, onClose, onReload }: {
     setEditing(entry?.id ?? ""); setLabel(entry?.label ?? "北京百炼工作空间"); setProvider(entry?.provider ?? "bailian");
     setBase(entry?.compatible_base_url ?? defaultBase); setNativeBase(entry?.native_http_base_url ?? "");
     setWs(entry?.websocket_url ?? ""); setScope(entry?.scope_id ?? ""); setKey(""); setMessage("");
+    setPersistKey(entry ? !!entry.persist_key : true);
   };
   const save = () => runExclusive(lock, setBusy, async () => {
     setMessage("");
     if (!label.trim() || !base.trim()) throw new Error("请填写连接名称和兼容端点");
     if (!editing && provider === "bailian" && !key.trim()) throw new Error("百炼连接需要 API Key");
-    if (editing) await api.patch(`/api/model-connections/${editing}`, { label: label.trim(), ...(key ? { api_key: key.trim() } : {}) });
+    if (editing) await api.patch(`/api/model-connections/${editing}`, { label: label.trim(), persist_key: localKeyStorageAvailable && persistKey, ...(key ? { api_key: key.trim() } : {}) });
     else {
-      const { data } = await api.post("/api/model-connections", { label: label.trim(), provider, compatible_base_url: base.trim(),
+      const { data } = await api.post("/api/model-connections", { label: label.trim(), provider, compatible_base_url: base.trim(), persist_key: localKeyStorageAvailable && persistKey,
       ...(provider === "bailian" && nativeBase.trim() ? { native_http_base_url: nativeBase.trim() } : {}),
       ...(provider === "bailian" && ws.trim() ? { websocket_url: ws.trim() } : {}),
         ...(scope.trim() ? { scope_id: scope.trim() } : {}), ...(key.trim() ? { api_key: key.trim() } : {}) });
       setEditing(data.id); setScope(data.scope_id);
     }
-    setKey(""); await onReload(); setMessage("连接已保存，仅检查配置；未调用任何推理接口。");
+    setKey(""); await onReload(); setMessage(localKeyStorageAvailable && persistKey ? "连接已加密保存到本机，重启后自动恢复；未调用推理接口。" : "连接仅在本次服务内存中保存；未调用推理接口。");
   }, (error) => setMessage(errorMessage(error)));
   const remove = (entry: Connection) => runExclusive(lock, setBusy, async () => {
     if (!window.confirm(`删除连接「${entry.label}」？草稿和旧任务中的引用不会自动替换。`)) return;
@@ -53,12 +56,13 @@ export function ModelConnections({ visible, connections, onClose, onReload }: {
   }, (error) => setMessage(errorMessage(error)));
   return <Drawer visible={visible} header="模型连接" size="min(480px, 100vw)" footer={false}
     closeOnOverlayClick={!busy} onClose={() => { if (!busy) { setKey(""); onClose(); } }}>
-    <p className="hint">连接与密钥仅存在服务进程内存，重启后需重建/重绑。此工作台只适合本机或受信内网，不是多租户账号隔离。</p>
+    <div className="field-title"><span className="hint">选择本机保存后，服务重启可自动恢复连接。</span><Help title="本机保存说明">密钥使用当前 Windows 账户加密，保存至服务端本机，不保存在浏览器草稿中，也不会回显。通常需在同一电脑、同一 Windows 账户下恢复。取消保存会移除本机加密副本，当前内存连接仍可使用。此工作台面向本机或受信内网，连接属于服务端当前账户。</Help></div>
+    {storageError && <p className="notice err" role="alert">{storageError}</p>}
     <p className="hint">轮换密钥不改写已冻结任务的凭据；旧任务需要明确重新绑定，可选择同一连接重新冻结。</p>
     <div className="connection-list">
       {connections.length === 0 && <p>尚未配置连接。请先添加百炼或本地兼容服务连接。</p>}
       {connections.map((entry) => <div className="connection-item" key={entry.id}>
-        <strong>{entry.label}</strong><span className="hint">{entry.provider} · {entry.key_present ? "密钥已配置" : "无密钥"} · {entry.source === "env" ? "环境变量" : "临时连接"}</span>
+        <strong>{entry.label}</strong><span className="hint">{entry.provider} · {entry.key_present ? "密钥已配置" : "无密钥"} · {entry.source === "env" ? "环境变量" : entry.persist_key ? "本机加密保存" : "临时连接"}</span>
         <code>{entry.compatible_base_url}</code><span className="hint">范围：{entry.scope_id}</span>
         {entry.source === "memory" && <div className="actions"><Button variant="text" disabled={busy} onClick={() => edit(entry)}>编辑 / 轮换密钥</Button>
           <Button theme="danger" variant="text" disabled={busy} onClick={() => remove(entry)}>删除</Button></div>}
@@ -80,6 +84,8 @@ export function ModelConnections({ visible, connections, onClose, onReload }: {
         <div className="field"><label htmlFor={`${prefix}-scope`}>资源范围标识（可选）</label><input id={`${prefix}-scope`} readOnly={!!editing} value={scope} placeholder="新连接默认生成；同账号恢复时填原范围" onChange={(event) => setScope(event.target.value)} /></div>
         <p className="hint">范围标识是受信管理员的声明，不是平台账号验证。端点/范围需要改变时请添加新连接、填入完整地址，再在模型配置中重新选择。</p>
         <div className="field"><label htmlFor={`${prefix}-key`}>API Key{editing ? "（留空保留原密钥）" : ""}</label><input id={`${prefix}-key`} type="password" autoComplete="off" value={key} maxLength={2000} onChange={(event) => setKey(event.target.value)} /></div>
+        <label className="checkline"><input type="checkbox" checked={localKeyStorageAvailable && persistKey} disabled={!localKeyStorageAvailable || !!storageError} onChange={(event) => setPersistKey(event.target.checked)} />将密钥加密保存到本机（重启后恢复）</label>
+        {!localKeyStorageAvailable && <p className="hint">本地保存需加载支持 Windows 账户加密的后端。</p>}
         <Button type="submit" loading={busy} theme="primary">{editing ? "保存 / 轮换" : "保存连接"}</Button>
       </fieldset>
     </form>

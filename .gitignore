@@ -225,6 +225,7 @@ web/static/
 jobs/
 
 .local/public-access/
+.local/credentials/
 
 # TypeScript 增量构建缓存（vite build 顺带产生的）
 web/frontend/*.tsbuildinfo

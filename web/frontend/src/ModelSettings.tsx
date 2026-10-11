@@ -24,6 +24,7 @@ export function ModelSettings({ value, options, concurrency, onChange: publishCh
   };
   const activeRoles = roles.filter((item) => (item !== 'avatar' || value.avatar.enabled) && (!['qa', 'quiz'].includes(item) || value.evaluation?.enabled));
   const [connections, setConnections] = useState<Connection[]>([]);
+  const [localKeyStorage, setLocalKeyStorage] = useState<{ available: boolean; error?: string }>();
   const [drawer, setDrawer] = useState(false);
   const [message, setMessage] = useState("");
   const [catalogs, setCatalogs] = useState<Record<string, Catalog>>({});
@@ -41,7 +42,7 @@ export function ModelSettings({ value, options, concurrency, onChange: publishCh
   const voiceKey = JSON.stringify(voice);
   const loadConnections = useCallback(async () => {
     const data = await api.get("/api/model-connections"); setConnections(data.items); onConnectionsChange?.(data.items);
-    setCatalogs({}); setMessage("");
+    setLocalKeyStorage(data.local_storage); setCatalogs({}); setMessage(data.local_storage?.error ?? "");
   }, [onConnectionsChange]);
   useEffect(() => { void loadConnections().catch((error) => setMessage(errorMessage(error))); }, [loadConnections]);
   useEffect(() => { checkVersion.current++; setCheckMessage(""); return () => { checkVersion.current++; }; }, [value, voiceKey, portraitPath, portraitKey, connections]);
@@ -198,6 +199,6 @@ export function ModelSettings({ value, options, concurrency, onChange: publishCh
     </details>
     {message && <p className="notice info" role="status">{message}</p>}
     <div className="field"><label htmlFor={`${prefix}-concurrency`}>讲稿并发请求数（1～8，不控制本地 GPU / 数字人）</label><input id={`${prefix}-concurrency`} type="number" min={1} max={8} step={1} value={concurrency} readOnly={!concurrencyEditable} onChange={(event) => onConcurrency(Number(event.target.value))} /></div>
-    <ModelConnections visible={drawer} connections={connections} onClose={() => setDrawer(false)} onReload={loadConnections} />
+    <ModelConnections visible={drawer} connections={connections} localKeyStorageAvailable={localKeyStorage?.available ?? !!options?.implemented.local_key_storage} storageError={localKeyStorage?.error} onClose={() => setDrawer(false)} onReload={loadConnections} />
   </div></ModelPriceProvider>;
 }

@@ -1,4 +1,4 @@
-"""受信模型连接；秘密只保存于服务进程内存。"""
+"""受信模型连接；密钥可选择保存至 Windows 账户加密文件。"""
 
 import copy
 import ipaddress
@@ -7,9 +7,10 @@ import uuid
 from urllib.parse import urlsplit, urlunsplit
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, TypeAdapter, field_validator
 
 from web.model_config import ConfigurationError, ConnectionID, StrictModel
+from web.credential_storage import CredentialFile
 
 
 # 官方 OpenAI 兼容端点；精确匹配，不能放行相似域名或任意子域。
@@ -24,6 +25,7 @@ class ConnectionCreate(StrictModel):
     websocket_url: str | None = Field(default=None, max_length=2000)
     api_key: SecretStr | None = None
     scope_id: ConnectionID | None = None
+    persist_key: bool = False
 
     @field_validator("api_key")
     @classmethod
@@ -38,6 +40,7 @@ class ConnectionCreate(StrictModel):
 class ConnectionUpdate(StrictModel):
     label: str | None = Field(default=None, min_length=1, max_length=80)
     api_key: SecretStr | None = None
+    persist_key: bool = False
 
     _key_length = field_validator("api_key")(ConnectionCreate.key_length.__func__)
 
@@ -87,8 +90,52 @@ def checked_url(value, provider, protocols=("http", "https"), local_networks=())
 
 
 class ConnectionStore:
-    def __init__(self):
+    def __init__(self, storage_path=None):
         self._entries = {}
+        self._storage = CredentialFile(storage_path) if storage_path is not None else None
+        self._storage_error = None
+
+    def storage_status(self):
+        return {'available': self._storage is not None and os.name == 'nt', 'error': self._storage_error}
+
+    def restore(self, local_networks=()):
+        if self._storage is None:
+            return
+        try:
+            restored = {}
+            for record in self._storage.load():
+                if not isinstance(record, dict) or set(record) - {'id', 'label', 'provider', 'compatible_base_url', 'native_http_base_url', 'websocket_url', 'scope_id', 'api_key', 'persist_key'}:
+                    raise ValueError('本地连接字段异常')
+                identity = TypeAdapter(ConnectionID).validate_python(record['id'])
+                fields = {key: value for key, value in record.items() if key != 'id'}
+                fields['api_key'] = fields.get('api_key') or None
+                payload = ConnectionCreate.model_validate(fields)
+                if not payload.persist_key or identity in restored:
+                    raise ValueError('本地连接记录异常')
+                values = self._values(payload, local_networks)
+                values.update(id=identity, source='memory', api_key=payload.api_key.get_secret_value().strip() if payload.api_key else '')
+                restored[identity] = values
+            self._entries.update(restored)
+            self._storage_error = None
+        except (OSError, ValueError, KeyError):
+            self._storage_error = '本地保存的连接无法恢复，请检查 Windows 账户或备份后移除损坏文件；原文件未被覆盖。'
+
+    def _commit(self, entries):
+        saved = [entry for entry in entries.values() if entry.get('persist_key')]
+        previously_saved = any(entry.get('persist_key') for entry in self._entries.values())
+        if saved or previously_saved:
+            if self._storage is None or os.name != 'nt':
+                raise ConfigurationError('persist_key', '当前服务不支持本地加密保存，请使用 Windows 后端或取消本地保存', status=503)
+            if self._storage_error:
+                raise ConfigurationError('persist_key', self._storage_error, status=503)
+            if any(entry['provider'] == 'bailian' and not entry.get('api_key') for entry in saved):
+                raise ConfigurationError('api_key', '请先填写此百炼连接的 API Key，再保存到本机')
+            records = [{key: value for key, value in entry.items() if key != 'source'} for entry in saved]
+            try:
+                self._storage.save(records)
+            except (OSError, ValueError):
+                raise ConfigurationError('persist_key', '本地加密保存失败，连接未修改；请检查目录权限或取消本地保存后重试', status=503) from None
+        self._entries = entries
 
     def _entry(self, connection_id):
         if connection_id == "bailian-default":
@@ -110,6 +157,7 @@ class ConnectionStore:
     def public(entry):
         result = {key: value for key, value in entry.items() if key != "api_key"}
         result["key_present"] = bool(entry.get("api_key"))
+        result['persist_key'] = bool(entry.get('persist_key'))
         result["readiness"] = "configuration_only"
         return result
 
@@ -119,7 +167,8 @@ class ConnectionStore:
             entries.insert(0, self.public(self._entry("bailian-default")))
         return entries
 
-    def create(self, payload, local_networks=()):
+    @staticmethod
+    def _values(payload, local_networks=()):
         values = payload.model_dump(exclude={"api_key"})
         for field in ("compatible_base_url", "native_http_base_url", "websocket_url"):
             if values.get(field):
@@ -131,9 +180,13 @@ class ConnectionStore:
             raise ConfigurationError("provider", "兼容连接不使用百炼原生/WS配置")
         if payload.provider == "bailian" and payload.api_key is None:
             raise ConfigurationError("api_key", "百炼连接需要API Key")
+        return values
+
+    def create(self, payload, local_networks=()):
+        values = self._values(payload, local_networks)
         values.update(id="conn_" + uuid.uuid4().hex, source="memory", scope_id=payload.scope_id or "scope_" + uuid.uuid4().hex,
                       api_key=payload.api_key.get_secret_value().strip() if payload.api_key else "")
-        self._entries[values["id"]] = values
+        self._commit({**self._entries, values['id']: values})
         return self.public(values)
 
     def update(self, connection_id, payload):
@@ -146,13 +199,15 @@ class ConnectionStore:
             if payload.api_key is None and entry["provider"] == "bailian":
                 raise ConfigurationError("api_key", "不能清空百炼Key")
             entry["api_key"] = payload.api_key.get_secret_value().strip() if payload.api_key else ""
-        self._entries[connection_id] = entry
+        if 'persist_key' in payload.model_fields_set:
+            entry['persist_key'] = payload.persist_key
+        self._commit({**self._entries, connection_id: entry})
         return self.public(entry)
 
     def delete(self, connection_id):
         if self._entry(connection_id)["source"] != "memory":
             raise ConfigurationError("connection_id", "环境连接不可通过API删除", status=409)
-        del self._entries[connection_id]
+        self._commit({identity: value for identity, value in self._entries.items() if identity != connection_id})
 
     def freeze(self, config, roles, previous=None, credentials=None):
         snapshots, keys, entries = {}, {}, {}

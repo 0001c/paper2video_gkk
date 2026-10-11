@@ -78,7 +78,7 @@ from script_validation import validate_script_output      # noqa: E402
 os.makedirs(JOBS_ROOT, exist_ok=True)
 app = FastAPI(title="Paper2Video Web", version="0.1.0")
 app.state.lan_networks = ()
-_MODEL_CONNECTIONS = ConnectionStore()
+_MODEL_CONNECTIONS = ConnectionStore(Path(REPO_ROOT, '.local', 'credentials', 'model-connections.dpapi'))
 _MODEL_CATALOG = model_catalog.CatalogStore()
 
 
@@ -2389,6 +2389,7 @@ async def _worker_loop():
 @app.on_event("startup")
 async def _startup():
     global _QUEUE, _WORKER
+    _MODEL_CONNECTIONS.restore([str(network) for network in app.state.lan_networks])
     _QUEUE = asyncio.Queue()
     _WORKER = asyncio.create_task(_worker_loop())
 
@@ -2494,7 +2495,7 @@ class ConnectionRebindRequest(model_settings.StrictModel):
 
 @app.get('/api/model-connections')
 async def api_model_connections():
-    return {'items': _MODEL_CONNECTIONS.list()}
+    return {'items': _MODEL_CONNECTIONS.list(), 'local_storage': _MODEL_CONNECTIONS.storage_status()}
 
 
 @app.get('/api/cloud-voices')

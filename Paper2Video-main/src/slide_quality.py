@@ -5,6 +5,8 @@ import hashlib
 from pathlib import Path
 from spoken_text import plain_text
 
+QUALITY_VERSION = 5
+
 LAYOUT_PROMPT = ('\n[Slide quality requirements] One idea per slide; at most five short bullet points. '
                  'Split dense content into separate frames before reducing image size. '
                  'Never hide overflow with clipping, resizebox or tiny fonts. '
@@ -51,7 +53,21 @@ def _sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
 
 
+def normalize_source_bindings(code):
+    """只迁移紧邻 figure 前的现有标记，不推断或改写图号。"""
+    return re.sub(
+        r'(?m)^([ \t]*)(%[ \t]*source-(?:figure|page):[^\r\n]*)\r?\n'
+        r'[ \t]*(\\begin\{figure\}(?:\[[^\]\r\n]*\])?)',
+        lambda match: match[1] + match[3] + '\n' + match[1] + match[2], code)
+
+
+def _caption_numbers(text):
+    return [re.sub(r'\s+', '', value).replace('–', '-').replace('－', '-')
+            for value in re.findall(r'(?:图|Fig(?:ure)?\.?)\s*(\d+(?:\s*[-–－]\s*\d+)?)', text, re.I)]
+
+
 def quality_errors(code, feedback='', figures=None, expected_count=None):
+    code = normalize_source_bindings(code)
     errors = ['版面裁切：'+line.strip() for line in feedback.splitlines() if re.search(r'Overfull \\[hv]box',line,re.I)]
     errors += ['字体缺字：'+line.strip() for line in feedback.splitlines()
                if 'could not represent character' in line and '"nullfont"' not in line]
@@ -80,10 +96,12 @@ def quality_errors(code, feedback='', figures=None, expected_count=None):
                 if fid:
                     number = fid[1:]
                     captions = re.findall(r'\\caption(?:\[[^\]]*\])?\{([^{}]*)\}',context)
-                    labels = re.findall(r'(?:图|Fig(?:ure)?\.?)\s*(\d+(?:\s*[-–－]\s*\d+)?)',' '.join(captions),re.I)
-                    labels = [re.sub(r'\s+','',x).replace('–','-').replace('－','-') for x in labels]
-                    if not re.search(r'%\s*source-figure:\s*'+re.escape(fid)+r'(?![\d-])',context) or number not in labels or any(label != number for label in labels):
-                        errors.append('第{}帧 {} 必须绑定 {} 并保留对应原图号，禁止图号错配'.format(frame_no,name,fid))
+                    labels = _caption_numbers(' '.join(captions))
+                    source_labels = _caption_numbers(fig.get('caption', ''))
+                    bindings = re.findall(r'%[ \t]*source-figure:[ \t]*(F\d+(?:-\d+)?)(?=[ \t\r\n]|$)', context)
+                    if bindings != [fid] or number not in labels or labels != source_labels:
+                        errors.append('第{}帧 {} 必须在 figure 内绑定 {}，原图号应为 {}，实际图号为 {}，绑定为 {}；禁止图号错配'.format(
+                            frame_no, name, fid, '/'.join(source_labels), '/'.join(labels) or '未找到', '/'.join(bindings) or '未找到'))
                     if not any(plain_text(re.sub(r'\\[A-Za-z]+','',caption)) == plain_text(fig['caption']) for caption in captions):
                         errors.append('第{}帧 {} 图注与原文不一致；必须保留完整原图注 {}'.format(frame_no,name,fig['caption']))
                 elif fig.get('page') is not None and not re.search(r'%\s*source-page:\s*'+str(fig['page'])+r'\b',context):
@@ -102,7 +120,7 @@ def record_quality(tex_path, feedback, compile_ok, expected_count=None):
         with pymupdf.open(target.with_suffix('.pdf')) as pdf:
             if len(pdf) != expected_count:
                 errors.append('页数不符：要求{}页，渲染PDF实际{}页；移除额外逐步展开或合并主题'.format(expected_count, len(pdf)))
-    report = {'version':4,'tex_sha256':_sha(target),'figures_sha256':_sha(index),'pdf_sha256':_sha(target.with_suffix('.pdf')),
+    report = {'version':QUALITY_VERSION,'tex_sha256':_sha(target),'figures_sha256':_sha(index),'pdf_sha256':_sha(target.with_suffix('.pdf')),
               'expected_slide_count':expected_count,
               'compile_ok':compile_ok,'passed':compile_ok and not errors,'errors':errors}
     target.with_suffix('.quality.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
@@ -118,7 +136,7 @@ def require_quality(project_root):
         return
     report_path = tex.with_suffix('.quality.json')
     report = json.loads(report_path.read_text(encoding='utf-8')) if report_path.is_file() else {}
-    if report.get('version') != 4 or report.get('tex_sha256') != _sha(tex) or report.get('figures_sha256') != _sha(root/'figures/index.json') or report.get('pdf_sha256') != _sha(tex.with_suffix('.pdf')):
+    if report.get('version') != QUALITY_VERSION or report.get('tex_sha256') != _sha(tex) or report.get('figures_sha256') != _sha(root/'figures/index.json') or report.get('pdf_sha256') != _sha(tex.with_suffix('.pdf')):
         from slide_code_gen_select_improvement import compile_tex
         expected = report.get('expected_slide_count')
         ok, feedback = compile_tex(tex, **({'expected_count': expected} if expected is not None else {}))

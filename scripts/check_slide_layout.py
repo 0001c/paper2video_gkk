@@ -38,6 +38,57 @@ class LayoutChecks(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn('要求1页，实际2帧', errors[0])
 
+    def source_frame(self, caption='图1 概念模型', fid='F1'):
+        return ('\\begin{frame}{研究方法}\n% source-figure: ' + fid + '\n'
+                '\\begin{figure}\n\\includegraphics{figures/research.png}\n'
+                '\\caption{\\tiny ' + caption + '}\n\\end{figure}\n\\end{frame}')
+
+    def test_adjacent_source_marker_is_moved_without_guessing(self):
+        frame = self.source_frame()
+        normalized = slide_quality.normalize_source_bindings(frame)
+        self.assertIn('\\begin{figure}\n% source-figure: F1', normalized)
+        self.assertEqual(slide_quality.normalize_source_bindings(normalized), normalized)
+        figure = {'rel': 'figures/research.png', 'figure_id': 'F1', 'caption': '图1 概念模型'}
+        self.assertEqual(slide_quality.quality_errors(frame, figures=[figure]), [])
+        self.assertTrue(slide_quality.quality_errors(frame.replace('F1', 'F2'), figures=[figure]))
+        self.assertTrue(slide_quality.quality_errors(frame.replace('% source-figure: F1\n', ''), figures=[figure]))
+        distant = frame.replace('F1\n', 'F1\n\\item 不同内容\n')
+        self.assertEqual(slide_quality.normalize_source_bindings(distant), distant)
+        self.assertTrue(slide_quality.quality_errors(distant, figures=[figure]))
+
+    def test_composite_source_preserves_all_original_numbers(self):
+        caption = '图5 内容真实性灵敏度分析 图6 内容准确性灵敏度分析'
+        figure = {'rel': 'figures/research.png', 'figure_id': 'F5', 'caption': caption}
+        frame = self.source_frame(caption.replace(' 图6', '; 图6'), 'F5')
+        self.assertEqual(slide_quality.quality_errors(frame, figures=[figure]), [])
+        for bad in (frame.replace('图6', '图7'), frame.replace('; 图6 内容准确性灵敏度分析', ''),
+                    frame.replace('内容真实性', '制度规范'), frame.replace('F5', 'F6'),
+                    frame.replace('F5\n', 'F5\n% source-figure: F6\n')):
+            with self.subTest(code=bad):
+                self.assertTrue(slide_quality.quality_errors(bad, figures=[figure]))
+
+    def test_caption_finder_does_not_bind_body_mentions(self):
+        body = (0, 101, 100, 111, '响较为显著，如图9 和图10 所示。', 0, 0)
+        caption = (0, 75, 100, 85, '图5 内容真实性 图6 内容准确性', 0, 0)
+        self.assertIsNone(paper_figures.figure_id(body[4]))
+        self.assertEqual(paper_figures.figure_id(' Figure 2-15 Research network'), 'F2-15')
+        self.assertEqual(paper_figures._caption_for(None, (0, 90, 100, 100), [body, caption]), caption[4])
+        self.assertEqual(paper_figures._caption_for(None, (0, 90, 100, 100), [body]), '')
+
+    def test_legacy_quality_report_is_rechecked(self):
+        import json
+        target = self.root / 'slides.tex'
+        target.write_text(r'\documentclass{beamer}', encoding='utf-8')
+        target.with_suffix('.pdf').write_bytes(b'fixture')
+        slide_quality.record_quality(target, '', True)
+        report_path = target.with_suffix('.quality.json')
+        report = json.loads(report_path.read_text(encoding='utf-8'))
+        report['version'] = 4
+        report_path.write_text(json.dumps(report), encoding='utf-8')
+        with patch.object(slides, 'compile_tex', return_value=(True, '')) as compiler:
+            slide_quality.require_quality(self.root)
+            compiler.assert_called_once_with(target)
+
     def test_rendered_page_count_detects_overlays(self):
         import pymupdf
         target = self.root / 'slides.tex'

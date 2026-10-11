@@ -30,6 +30,13 @@ class SubtitleChecks(unittest.TestCase):
         self.assertEqual(subtitle_style.normalize(), subtitle_style.DEFAULTS)
         self.assertEqual(subtitle_style.normalize({'font_size': 48})['background_opacity'], 0.55)
 
+    def test_font_must_be_a_name_instead_of_endpoint(self):
+        for font in ('https://api.deepseek.com/v1', 'file:///fonts/Arial.ttf', '/fonts/Arial.ttf', 'C:/fonts/Arial.ttf'):
+            with self.subTest(font=font), self.assertRaisesRegex(ValueError, 'subtitle_style.font_name'):
+                subtitle_style.normalize({'font_name': font})
+        for font in ('', '微软雅黑', 'Microsoft YaHei', 'Noto Sans CJK SC'):
+            self.assertEqual(subtitle_style.normalize({'font_name': font})['font_name'], font)
+
     def test_invalid_values_and_ass_injection(self):
         invalid = [{'enabled': 'false'}, {'font_name': 'Arial,Injected'}, {'font_name': 'Font\nDialogue: 1'},
                    {'font_name': '{\\pos(0,0)}'}, {'text_color': 'red'}, {'background_color': '#000000FF'},

@@ -49,7 +49,7 @@ from pathlib import Path
 
 # 改提取逻辑（阈值、命名、筛选）必须 +1 —— 它进 deck 指纹，
 # 不 +1 就会命中"用旧逻辑提的图"生成的那批幻灯片，且不报错。
-FIGURES_VERSION = "4"
+FIGURES_VERSION = "5"
 
 FIGURES_DIRNAME = "figures"
 INDEX_NAME = "index.json"
@@ -86,7 +86,7 @@ def _clean_caption(text, limit=160):
 
 
 def figure_id(text):
-    match = re.search(r'(?:图|Fig(?:ure)?\.?)\s*(\d+(?:\s*[-–－]\s*\d+)?)', text, re.I)
+    match = re.match(r'\s*(?:图|Fig(?:ure)?\.?)\s*(\d+(?:\s*[-–－]\s*\d+)?)', text, re.I)
     return 'F' + re.sub(r'\s+', '', match[1]).replace('–','-').replace('－','-') if match else None
 
 
@@ -161,7 +161,8 @@ def _h_overlap_ratio(x0, x1, bx0, bx1):
 def _caption_for(page, bbox, blocks):
     """在图片上下找图题。
 
-    优先"带图/表编号"的那种（`图 3 …` / `Figure 3 …`），否则取最近的一块短文本。
+    仅取以图/表编号开头的图题（`图 3 …` / `Figure 3 …`）。
+    正文中的“如图9所示”不能作为图注，也不能抢占另一侧的真实图注。
     找不到返回空串 —— **不编造**。
     """
     below, above = [], []
@@ -170,7 +171,7 @@ def _caption_for(page, bbox, blocks):
         if len(b) > 6 and b[6] != 0:       # 非文本块
             continue
         text = _clean_caption(b[4] if len(b) > 4 else "")
-        if not text:
+        if not text or not _CAPTION_LABEL.match(text):
             continue
         bx0, by0, bx1, by1 = b[0], b[1], b[2], b[3]
         h_overlap = _h_overlap_ratio(bx0, bx1, x0, x1)
@@ -182,7 +183,7 @@ def _caption_for(page, bbox, blocks):
         if not bucket:
             continue
         labeled = [x for x in bucket if x[1]]
-        pick = min(labeled or bucket, key=lambda x: x[0])
+        pick = min(labeled, key=lambda x: x[0])
         return pick[2]
     return ""
 

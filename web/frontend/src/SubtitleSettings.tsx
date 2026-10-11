@@ -23,8 +23,8 @@ export function SubtitleSettings({ value, onChange, disabled = false }: {
       <div className="subtitle-settings-layout">
         <div className="subtitle-controls">
           <div className="field"><label htmlFor={id + '-font'}>字体</label>
-            <input id={id + '-font'} list={id + '-fonts'} maxLength={80} value={value.font_name} disabled={!value.enabled} placeholder="自动 · 跟随讲稿语言" onChange={(event) => {
-              if (!/[\x00-\x1f,\\{}]/.test(event.target.value)) update({ font_name: event.target.value });
+            <input id={id + '-font'} list={id + '-fonts'} autoComplete="off" maxLength={80} value={value.font_name} disabled={!value.enabled} placeholder="自动 · 跟随讲稿语言" onChange={(event) => {
+              if (!/[\x00-\x1f,\\{}\/]|^[a-z][a-z0-9+.-]*:/i.test(event.target.value.trim())) update({ font_name: event.target.value });
             }} />
             <datalist id={id + '-fonts'}>{["Microsoft YaHei", "SimHei", "SimSun", "Noto Sans CJK SC", "Arial", "DejaVu Sans"].map((font) => <option key={font} value={font} />)}</datalist>
           </div>

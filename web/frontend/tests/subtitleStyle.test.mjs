@@ -23,6 +23,17 @@ test('字幕背景颜色转换与透明度', () => {
   assert.equal(styles.subtitleBackground({ ...styles.defaultSubtitleStyle, background_color: '#123456', background_opacity: 0.5 }), 'rgba(18, 52, 86, 0.5)');
 });
 
+test('误填为接口地址的旧字体配置恢复自动选择并保留其他样式', () => {
+  for (const font_name of ['https://api.deepseek.com/v1', 'file:///fonts/Arial.ttf', '/fonts/Arial.ttf', 'C:/fonts/Arial.ttf']) {
+    const value = styles.readSubtitleStyle({ font_name, font_size: 31, background_opacity: 0, margin_bottom: 6 });
+    assert.equal(value.font_name, '');
+    assert.equal(value.font_size, 31);
+    assert.equal(value.background_opacity, 0);
+    assert.equal(value.margin_bottom, 6);
+  }
+  assert.equal(styles.readSubtitleStyle({ font_name: 'Microsoft YaHei' }).font_name, 'Microsoft YaHei');
+});
+
 test('字幕草稿刷新恢复且不保留无效设置', () => {
   const saved = new Map();
   globalThis.window = { localStorage: { getItem: (key) => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value), removeItem: (key) => saved.delete(key) } };

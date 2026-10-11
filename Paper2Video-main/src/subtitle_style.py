@@ -24,6 +24,8 @@ def normalize(value=None):
     font = style['font_name']
     if not isinstance(font, str) or len(font) > 80 or any(ord(char) < 32 or char in ',\\{}' for char in font):
         raise ValueError('subtitle_style.font_name：字体名最多80字，不能包含控制字符或ASS分隔符')
+    if '/' in font or re.match(r'^[a-z][a-z0-9+.-]*:', font.strip(), re.I):
+        raise ValueError('subtitle_style.font_name：请填写字体名称或留空自动选择，不能填写模型接口URL或文件路径')
     style['font_name'] = font.strip()
     for field in ('text_color', 'background_color'):
         if not isinstance(style[field], str) or not re.fullmatch(r'#[0-9a-fA-F]{6}', style[field]):

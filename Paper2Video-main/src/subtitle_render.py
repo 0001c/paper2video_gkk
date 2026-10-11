@@ -236,10 +236,7 @@ def add_subtitles(video_path, output_path, font_size=None,
 
     width, height = _probe_resolution(video_path)
     font_size = max(1, round(style['font_size'] * height / 1080)) if configured or font_size is None else font_size
-    # 在课件下方增加独立字幕区域，不缩小/遮挡源画面的公式与图注。
-    ratio = style['margin_bottom'] / 100
-    band = math.ceil(max(height*0.18, (font_size*(1.4 + style['line_spacing']) + 2*height*ratio)/(1-2*ratio)))
-    output_height = (height + band + 1)//2*2
+    # 与样式预览共用原画面的坐标：距底部百分比指视频内部，不额外加高画布。
     font_name = style['font_name'] or font_name or DEFAULT_FONT
     print("[subtitle_render] 视频 {}x{}，字幕 {} 条，字号 {}".format(
         width, height, len(segments), font_size))
@@ -254,13 +251,13 @@ def add_subtitles(video_path, output_path, font_size=None,
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         "-i", str(os.path.abspath(video_path)),
-        "-vf", "pad=iw:{}:0:0:color=0x101827,ass={}".format(output_height, os.path.basename(ass_path)),
+        "-vf", "ass={}".format(os.path.basename(ass_path)),
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast", "-crf", "23",
         "-c:a", "copy",
         str(os.path.abspath(output_path)),
     ]
     try:
-        _write_ass(segments, ass_path, width, output_height, font_size, font_name, style)
+        _write_ass(segments, ass_path, width, height, font_size, font_name, style)
         result = subprocess.run(cmd, cwd=render_dir, capture_output=True, text=True)
     finally:
         os.remove(ass_path)

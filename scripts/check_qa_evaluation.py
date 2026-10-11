@@ -27,6 +27,44 @@ def questions(count=4):
 
 
 class ScoringChecks(unittest.TestCase):
+    def test_option_variants_preserve_labels_and_answers(self):
+        expected = dict(A='原文知识', B='乙', C='丙', D='丁')
+        variants = [
+            ['原文知识', '乙', '丙', '丁'],
+            ['D. 丁', 'Ａ：原文知识', '(C) 丙', 'b、乙'],
+            {'ｄ': '丁', 'Ａ': '原文知识', 'b.': '乙', '(C)': '丙'},
+            [{'label': label, 'text': expected[label]} for label in 'DCBA'],
+        ]
+        for variant in variants:
+            with self.subTest(variant=variant):
+                rows = questions(1)
+                rows[0].update(options=variant, answer=' ａ． ')
+                normalized = qa.validate_questions(rows, '原文知识', 1)
+                self.assertEqual(normalized[0]['options'], expected)
+                self.assertEqual(normalized[0]['answer'], 'A')
+                self.assertEqual(normalized[0]['source_quote'], '原文知识')
+
+    def test_invalid_options_and_ambiguous_answers_remain_blocked(self):
+        invalid = [None, 'A.原文知识 B.乙 C.丙 D.丁', ['原文知识', '乙', '丙'],
+            {'A': '原文知识', 'B': '乙', 'C': '丙'},
+            {'A': '原文知识', 'B': '乙', 'C': '丙', 'D': ''},
+            ['A.原文知识', 'A.乙', 'C.丙', 'D.丁'],
+            ['A.', 'B.乙', 'C.丙', 'D.丁'],
+            ['A.原文知识', '乙', '丙', '丁'],
+            ['原文知识', '乙', '丙', '丙'],
+            [{'label': 'A', 'text': '原文知识', 'explanation': '不能擅自消除字段歧义'}] * 4,
+        ]
+        for variant in invalid:
+            with self.subTest(variant=variant):
+                rows = questions(1)
+                rows[0]['options'] = variant
+                with self.assertRaisesRegex(ValueError, '第1题的options'):
+                    qa.validate_questions(rows, '原文知识', 1)
+        rows = questions(1)
+        rows[0]['answer'] = 'A或B'
+        with self.assertRaises(ValueError):
+            qa.validate_questions(rows, '原文知识', 1)
+
     def test_activation_error_has_chinese_actionable_message(self):
         details = {'http_status': 400, 'code': 'invalid_parameter_error',
             'provider_message': 'The product is not activated, please confirm that you have activated products and try again after activation.'}
@@ -396,6 +434,41 @@ class FlowChecks(unittest.TestCase):
             new = qa.evaluate('script', snapshot, source, self.result, output, request=request)
             self.assertEqual(len(calls), 3)
             self.assertNotEqual(new['fingerprint'], report['fingerprint'])
+
+    def test_invalid_question_response_is_preserved_before_validation(self):
+        source = self.root / 'original/ingest/paper_text.md'
+        settings = {'model_type': 'fixture'}
+        response = {'questions': questions()}
+        response['questions'][2]['options'] = {'A': '原文知识', 'B': '乙', 'C': '丙'}
+        request = MagicMock(return_value=copy.deepcopy(response))
+        root = self.result / 'evaluation'
+        root.mkdir()
+        with self.assertRaisesRegex(ValueError, '第3题.*缺少D'):
+            qa.question_bank(source, root, settings, 4, request)
+        request.assert_called_once()
+        saved = qa.read_json(next(root.glob('*.response.json')))
+        self.assertEqual(saved, response)
+        self.assertEqual(list(root.glob('*-part-0.json')), [])
+        self.assertEqual(list(root.glob('report-*.json')), [])
+
+    def test_preserved_response_recovers_without_paid_request(self):
+        source = self.root / 'original/ingest/paper_text.md'
+        settings = {'model_type': 'fixture'}
+        root = self.result / 'evaluation'
+        root.mkdir()
+        key = qa.digest({'source': source.read_text(encoding='utf-8').strip(), 'count': 4, 'settings': settings, 'version': 1})
+        response = {'questions': questions()}
+        for row in response['questions']:
+            row['options'] = list(row['options'].values())
+        qa.write_json(root / f'questions-{key}-part-0.response.json', response)
+        request = MagicMock(side_effect=AssertionError('不应重新付费请求'))
+        bank = qa.question_bank(source, root, settings, 4, request)
+        self.assertEqual(bank['id'], key)
+        self.assertEqual(bank['questions'][0]['options']['A'], '原文知识')
+        self.assertEqual(qa.read_json(root / f'questions-{key}-part-0.response.json'), response)
+        self.assertIsNotNone(qa.read_json(root / f'questions-{key}-part-0.json'))
+        self.assertEqual(qa.question_bank(source, root, settings, 4, request), bank)
+        request.assert_not_called()
 
     def test_media_evidence_decodes_actual_video_and_caches_transcription(self):
         video = self.root / 'fixture.mp4'

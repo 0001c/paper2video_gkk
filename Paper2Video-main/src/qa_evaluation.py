@@ -122,6 +122,50 @@ def model_request(settings, content, directory):
         client.close()
 
 
+def option_label(value):
+    """仅归一化明确的字母标签，不从解释文本猜测答案。"""
+    if not isinstance(value, str):
+        return None
+    value = value.strip().translate(str.maketrans('ＡＢＣＤａｂｃｄ', 'ABCDabcd')).upper()
+    matched = re.fullmatch(r'[（(]?([ABCD])[）).．、:：]?', value)
+    return matched.group(1) if matched else None
+
+
+def normalize_options(value):
+    """兼容字典、有序文本数组与显式标签数组，保留选项含义。"""
+    if isinstance(value, dict):
+        pairs = list(value.items())
+    elif isinstance(value, list) and len(value) == 4:
+        if all(isinstance(entry, str) for entry in value):
+            labeled = [re.fullmatch(r'\s*[（(]?([A-Da-dＡ-Ｄａ-ｄ])[.．、:：)）]\s*(.*)', entry, re.S) for entry in value]
+            if any(labeled) and not all(labeled):
+                raise ValueError('选项数组混用了带标签和无标签格式')
+            pairs = [(match[1], match[2]) for match in labeled] if all(labeled) else list(zip('ABCD', value))
+        elif all(isinstance(entry, dict) and set(entry) == {'label', 'text'} for entry in value):
+            pairs = [(entry['label'], entry['text']) for entry in value]
+        else:
+            raise ValueError('选项数组应为四个文本，或四个含label/text的对象')
+    else:
+        size = len(value) if isinstance(value, (dict, list)) else '未知'
+        raise ValueError(f'选项格式为{type(value).__name__}，数量{size}；需要四个有效选项')
+    result = {}
+    for label, text in pairs:
+        label = option_label(label)
+        if label is None:
+            raise ValueError('选项标签必须明确对应A/B/C/D')
+        if label in result:
+            raise ValueError(f'选项标签{label}重复')
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError(f'选项{label}为空或不是文本')
+        result[label] = text.strip()
+    if set(result) != set('ABCD'):
+        missing = '/'.join(label for label in 'ABCD' if label not in result)
+        raise ValueError(f'缺少{missing}选项；需要A/B/C/D四个有效选项')
+    if len(set(result.values())) != 4:
+        raise ValueError('存在内容重复的选项，无法作为有效四选一题')
+    return {label: result[label] for label in 'ABCD'}
+
+
 def validate_questions(items, source, count):
     if not isinstance(items, list) or len(items) != count:
         raise ValueError('题库数量与配置不一致；未继续生成')
@@ -132,16 +176,19 @@ def validate_questions(items, source, count):
         if item['question'] in seen:
             raise ValueError('题库存在重复问题')
         seen.add(item['question'])
-        if not isinstance(item.get('options'), dict) or set(item['options']) != set('ABCD') or any(not isinstance(v, str) or not v.strip() for v in item['options'].values()):
-            raise ValueError('每道题需要四个有效选项')
-        if item.get('answer') not in ('A', 'B', 'C', 'D'):
-            raise ValueError('题库答案必须为A/B/C/D')
+        try:
+            options = normalize_options(item.get('options'))
+        except ValueError as exc:
+            raise ValueError(f'第{index + 1}题的options不合规：{exc}') from exc
+        answer = option_label(item.get('answer'))
+        if answer is None:
+            raise ValueError(f'第{index + 1}题的答案必须为A/B/C/D，不能猜测或补写答案')
         quote = item.get('source_quote')
         if not isinstance(quote, str) or len(quote.strip()) < 4 or quote not in source:
             raise ValueError('题库依据无法在原文中验证')
         if item.get('kind') not in ('detail', 'understanding'):
             raise ValueError('题库缺少细节/理解分类')
-        item['id'] = str(index + 1)
+        items[index] = {**item, 'options': options, 'answer': answer, 'id': str(index + 1)}
     return items
 
 
@@ -153,7 +200,7 @@ def question_bank(source_path, root, settings, count, request=model_request):
     bank_path = root / f'questions-{key}.json'
     saved = read_json(bank_path)
     if saved:
-        validate_questions(saved['questions'], source, count)
+        saved['questions'] = validate_questions(saved['questions'], source, count)
         return saved
     # 全文分块，题目配额均匀分布，避免只评价开头；每块保留原文摘录。
     blocks = max(1, math.ceil(len(source) / 16000))
@@ -166,15 +213,35 @@ def question_bank(source_path, root, settings, count, request=model_request):
         chunk = source[index * width:(index + 1) * width]
         prompt = (f'根据以下原文第{index + 1}/{blocks}部分生成{amount}道四选一题，兼有细节和理解题。'
                   '正确答案必须能由原文直接验证，不问原文未覆盖的常识。'
+                  '每题options必须是JSON对象，键严格为A、B、C、D，值为四个非空且不同的字符串；'
+                  '不要用数组、数字键或省略任何选项。answer只能为一个大写字母A/B/C/D。'
+                  'kind只能为detail或understanding。返回前逐题检查选项数量、答案和原文摘录。'
                   '输出{"questions":[{"question":"问题","options":{"A":"选项","B":"选项","C":"选项","D":"选项"},'
                   '"answer":"A","kind":"detail或understanding","source_quote":"逐字摘录原文依据"}]}。\n原文：\n' + chunk)
         part_path = root / f'questions-{key}-part-{index}.json'
+        response_path = root / f'questions-{key}-part-{index}.response.json'
         result = read_json(part_path)
         if result is None:
-            print(f'[qa] 生成原文题库 {index + 1}/{blocks}，本部分 {amount} 题；模型 {settings["model_type"]}', flush=True)
-            result = request(settings, prompt, root.parent)
+            # 新增兼容规则后可直接恢复已落盘的有效回答，不重复计费。
+            result = read_json(response_path)
+            if result is not None:
+                try:
+                    if not isinstance(result, dict):
+                        raise ValueError('题库回答必须为JSON对象')
+                    validate_questions(result.get('questions'), chunk, amount)
+                except ValueError:
+                    result = None
+            if result is None:
+                print(f'[qa] 生成原文题库 {index + 1}/{blocks}，本部分 {amount} 题；模型 {settings["model_type"]}', flush=True)
+                result = request(settings, prompt, root.parent)
+                # 校验前保存，避免已收费回答因字段错误而丢失；不进入运行日志。
+                write_json(response_path, result)
+            if not isinstance(result, dict):
+                raise ValueError('题库回答必须为JSON对象')
             validate_questions(result.get('questions'), chunk, amount)
             write_json(part_path, result)
+        if not isinstance(result, dict):
+            raise ValueError('题库缓存必须为JSON对象')
         part = validate_questions(result.get('questions'), chunk, amount)
         items.extend(part)
     bank = {'id': key, 'source_sha256': digest_file(source_path), 'questions': validate_questions(items, source, count)}

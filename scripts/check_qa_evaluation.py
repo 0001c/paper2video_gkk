@@ -487,6 +487,62 @@ class FlowChecks(unittest.TestCase):
         self.assertEqual(qa.question_bank(source, root, settings, 4, request), bank)
         request.assert_not_called()
 
+    def test_partial_bank_retries_only_invalid_question_and_keeps_valid_ones(self):
+        source = self.root / 'original/ingest/paper_text.md'
+        settings = {'model_type': 'fixture'}
+        root = self.result / 'evaluation'
+        root.mkdir()
+        original = questions()
+        original[2]['options'].pop('C')
+        first = MagicMock(return_value={'questions': copy.deepcopy(original)})
+        with self.assertRaisesRegex(ValueError, '已保留3题，待修复1题.*第3题.*缺少C'):
+            qa.question_bank(source, root, settings, 4, first)
+        first.assert_called_once()
+        raw = next(root.glob('*-part-0.response.json'))
+        raw_hash = qa.digest_file(raw)
+        fixed = questions(1)[0]
+        fixed['question'] = '修复后的第三道题'
+        second = MagicMock(return_value={'questions': [fixed]})
+        bank = qa.question_bank(source, root, settings, 4, second)
+        second.assert_called_once()
+        self.assertIn('重新生成1道', second.call_args.args[1])
+        self.assertEqual([q['question'] for q in bank['questions']], ['问题1', '问题2', '修复后的第三道题', '问题4'])
+        self.assertEqual(qa.digest_file(raw), raw_hash)
+        self.assertEqual(list(root.glob('*.pending.json')), [])
+        third = MagicMock(side_effect=AssertionError('完整题库不能重复请求'))
+        self.assertEqual(qa.question_bank(source, root, settings, 4, third), bank)
+        third.assert_not_called()
+
+    def test_bad_replacement_preserves_valid_slots_and_does_not_loop(self):
+        source = self.root / 'original/ingest/paper_text.md'
+        settings = {'model_type': 'fixture'}
+        root = self.result / 'evaluation'
+        root.mkdir()
+        key = qa.digest({'source': source.read_text(encoding='utf-8').strip(), 'count': 4, 'settings': settings, 'version': 1})
+        original = questions()
+        original[2]['options'].pop('C')
+        qa.write_json(root / f'questions-{key}-part-0.response.json', {'questions': original})
+        bad = questions(1)[0]
+        bad['question'] = '问题1'
+        request = MagicMock(return_value={'questions': [bad]})
+        with self.assertRaisesRegex(ValueError, '已保留3题，待修复1题.*重复'):
+            qa.question_bank(source, root, settings, 4, request)
+        request.assert_called_once()
+        pending = qa.read_json(root / f'questions-{key}-part-0.pending.json')
+        self.assertEqual(pending['questions'][0]['question'], '问题1')
+        self.assertEqual(pending['questions'][3]['question'], '问题4')
+        self.assertFalse((root / f'questions-{key}.json').exists())
+
+    def test_slot_validation_collects_errors_without_altering_original(self):
+        original = questions()
+        original[0]['options'].pop('C')
+        original[2]['source_quote'] = '不存在的原文'
+        snapshot = copy.deepcopy(original)
+        checked, errors = qa.question_slots(original, '原文知识', 4)
+        self.assertEqual(set(errors), {0, 2})
+        self.assertEqual(checked[1]['question'], '问题2')
+        self.assertEqual(original, snapshot)
+
     def test_media_evidence_decodes_actual_video_and_caches_transcription(self):
         video = self.root / 'fixture.mp4'
         subprocess.run(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=white:s=320x180:r=16',

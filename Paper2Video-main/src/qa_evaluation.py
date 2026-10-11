@@ -1,6 +1,7 @@
 """源文题库与双阶段问答。答案不进入答题请求；成片证据来自实际音轨和抽帧。"""
 import argparse
 import base64
+import copy
 import hashlib
 import json
 import math
@@ -226,6 +227,26 @@ def validate_questions(items, source, count):
     return items
 
 
+def question_slots(items, source, count, previous=()):
+    """逐题保留合格内容，缺项题只在下一次人工重评时重新出题。"""
+    if not isinstance(items, list) or len(items) != count:
+        raise ValueError('题库数量与配置不一致；未继续生成')
+    result, errors = copy.deepcopy(items), {}
+    seen = {item['question'] for item in previous}
+    for index, item in enumerate(items):
+        try:
+            checked = validate_questions([copy.deepcopy(item)], source, 1)[0]
+            if checked['question'] in seen:
+                raise ValueError('问题与已保存的有效题目重复')
+            seen.add(checked['question'])
+            checked['id'] = str(index + 1)
+            result[index] = checked
+        except ValueError as exc:
+            reason = str(exc)
+            errors[index] = reason.replace('第1题', f'第{index + 1}题', 1) if reason.startswith('第1题') else f'第{index + 1}题：{reason}'
+    return result, errors
+
+
 def question_bank(source_path, root, settings, count, request=model_request):
     source = Path(source_path).read_text(encoding='utf-8').strip()
     if not source or len(source) > 240000:
@@ -249,34 +270,54 @@ def question_bank(source_path, root, settings, count, request=model_request):
                   '正确答案必须能由原文直接验证，不问原文未覆盖的常识。'
                   '每题options必须是JSON对象，键严格为A、B、C、D，值为四个非空且不同的字符串；'
                   '不要用数组、数字键或省略任何选项。answer只能为一个大写字母A/B/C/D。'
+                  '正确答案对应的选项键必须真实存在，不能只填写answer却漏写该选项。'
                   'kind只能为detail或understanding。返回前逐题检查选项数量、答案和原文摘录。'
                   '输出{"questions":[{"question":"问题","options":{"A":"选项","B":"选项","C":"选项","D":"选项"},'
                   '"answer":"A","kind":"detail或understanding","source_quote":"逐字摘录原文依据"}]}。\n原文：\n' + chunk)
         part_path = root / f'questions-{key}-part-{index}.json'
         response_path = root / f'questions-{key}-part-{index}.response.json'
-        result = read_json(part_path)
+        pending_path = root / f'questions-{key}-part-{index}.pending.json'
+        result = next((value for path in (part_path, pending_path, response_path)
+                       if (value := read_json(path)) is not None), None)
         if result is None:
-            # 新增兼容规则后可直接恢复已落盘的有效回答，不重复计费。
-            result = read_json(response_path)
-            if result is not None:
-                try:
-                    if not isinstance(result, dict):
-                        raise ValueError('题库回答必须为JSON对象')
-                    validate_questions(result.get('questions'), chunk, amount)
-                except ValueError:
-                    result = None
-            if result is None:
-                print(f'[qa] 生成原文题库 {index + 1}/{blocks}，本部分 {amount} 题；模型 {settings["model_type"]}', flush=True)
-                result = request(settings, prompt, root.parent)
-                # 校验前保存，避免已收费回答因字段错误而丢失；不进入运行日志。
-                write_json(response_path, result)
+            print(f'[qa] 生成原文题库 {index + 1}/{blocks}，本部分 {amount} 题；模型 {settings["model_type"]}', flush=True)
+            result = request(settings, prompt, root.parent)
+            write_json(response_path, result)
             if not isinstance(result, dict):
                 raise ValueError('题库回答必须为JSON对象')
-            validate_questions(result.get('questions'), chunk, amount)
-            write_json(part_path, result)
-        if not isinstance(result, dict):
-            raise ValueError('题库缓存必须为JSON对象')
-        part = validate_questions(result.get('questions'), chunk, amount)
+            part, errors = question_slots(result.get('questions'), chunk, amount, items)
+        else:
+            if not isinstance(result, dict):
+                raise ValueError('题库缓存必须为JSON对象')
+            part, errors = question_slots(result.get('questions'), chunk, amount, items)
+            if errors:
+                # 保留合格题及失败位置；这次用户重评只请求缺失的完整题目。
+                write_json(pending_path, {'questions': part, 'errors': errors})
+                invalid = list(errors)
+                kept = [q['question'] for slot, q in enumerate(part) if slot not in errors]
+                repair_prompt = (f'原文第{index + 1}/{blocks}部分需重新生成{len(invalid)}道完整四选一题，'
+                    '只返回这些新题，不返回其他已经保留的题目。'
+                    '每题必须包含question、options（四个非空不同选项A/B/C/D）、answer（单个字母）、'
+                    'kind（detail或understanding）与source_quote（原文逐字摘录）。'
+                    '原题不完整时重新出一道有明确原文依据的题，不猜补缺失选项。'
+                    '输出JSON对象{"questions":[...]}。\n以下问题已保留，请避免重复：\n'
+                    + json.dumps([q['question'] for q in items] + kept, ensure_ascii=False)
+                    + '\n原文：\n' + chunk)
+                print(f'[qa] 原文第{index + 1}/{blocks}部分保留{amount - len(invalid)}题，仅重出{len(invalid)}题；模型 {settings["model_type"]}', flush=True)
+                replacement = request(settings, repair_prompt, root.parent)
+                write_json(root / f'questions-{key}-part-{index}.repair-response.json', replacement)
+                if (not isinstance(replacement, dict) or not isinstance(replacement.get('questions'), list)
+                        or len(replacement['questions']) != len(invalid)):
+                    raise ValueError('补充题目数量与待修复数量不一致；已保留有效题目')
+                for slot, question in zip(invalid, replacement['questions']):
+                    part[slot] = question
+                part, errors = question_slots(part, chunk, amount, items)
+        if errors:
+            write_json(pending_path, {'questions': part, 'errors': errors})
+            raise ValueError(f'原文第{index + 1}/{blocks}部分已保留{amount - len(errors)}题，待修复{len(errors)}题：'
+                             + '；'.join(list(errors.values())[:3]))
+        write_json(part_path, {'questions': part})
+        pending_path.unlink(missing_ok=True)
         items.extend(part)
     bank = {'id': key, 'source_sha256': digest_file(source_path), 'questions': validate_questions(items, source, count)}
     write_json(bank_path, bank)

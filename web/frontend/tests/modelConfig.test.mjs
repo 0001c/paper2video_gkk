@@ -11,6 +11,29 @@ async function load(name) {
 const models = await load("modelConfig");
 const storage = await load("storage");
 
+test('出题与答题独立选择，同型号不同连接仍拦截；旧草稿保留题库模型', () => {
+  const config = models.presetConfig('bailian_api', 'connection');
+  assert.notEqual(config.stages.quiz.model, config.stages.qa.model);
+  assert.equal(models.evaluationModelProblem(config), undefined);
+  config.stages.qa = { ...config.stages.qa, model: config.stages.quiz.model.toUpperCase(), connection_id: 'other-connection' };
+  assert.match(models.evaluationModelProblem(config), /不同型号/);
+  config.evaluation.enabled = false;
+  assert.equal(models.evaluationModelProblem(config), undefined);
+  config.evaluation.enabled = true;
+  config.stages.qa.model = 'MiniMax/MiniMax-M3';
+  delete config.stages.quiz;
+  const changedRaw = models.replaceStage(config, 'qa', { ...config.stages.qa, model: 'new-answer' });
+  assert.equal(changedRaw.stages.quiz.model, 'MiniMax/MiniMax-M3');
+  assert.equal(changedRaw.stages.qa.model, 'new-answer');
+  const old = models.readModelConfig(config);
+  assert.equal(old.stages.quiz.model, 'MiniMax/MiniMax-M3');
+  assert.equal(old.stages.qa.model, 'MiniMax/MiniMax-M3');
+  assert.match(models.evaluationModelProblem(old), /不同型号/);
+  const split = models.replaceStage(old, 'qa', { ...old.stages.qa, model: 'independent-answer-model' });
+  assert.equal(split.stages.quiz.model, 'MiniMax/MiniMax-M3');
+  assert.equal(models.evaluationModelProblem(split), undefined);
+});
+
 test("配音端点使用同一工作空间，拒绝相似域名和携带凭据的地址", () => {
   assert.deepEqual(models.bailianEndpoints("https://llm-workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"), {
     native: "https://llm-workspace.cn-beijing.maas.aliyuncs.com/api/v1", websocket: "wss://llm-workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference",

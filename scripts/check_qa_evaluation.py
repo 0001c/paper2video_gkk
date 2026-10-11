@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / 'Paper2Video-main/src')]
 import qa_evaluation as qa
 from web import app as web
-from web.model_config import EvaluationPolicy, ConfigurationError, PipelineModelConfig, legacy_config, required_roles
+from web.model_config import EvaluationPolicy, ConfigurationError, PipelineModelConfig, legacy_config, required_roles, validate_evaluation_models
 from web.model_connections import ConnectionCreate, ConnectionStore
 
 REAL_QA_CONFIGURE = web._configure_qa_models
@@ -171,10 +171,11 @@ class ScoringChecks(unittest.TestCase):
         self.assertFalse(old.avatar.enabled)
         self.assertFalse(old.evaluation.enabled)
         value = old.public_dict()
-        value['stages']['qa'] = copy.deepcopy(value['stages']['vision'])
+        value['stages']['quiz'] = copy.deepcopy(value['stages']['vision'])
+        value['stages']['qa'] = {**value['stages']['vision'], 'model': 'answer-model'}
         value['evaluation'] = {'enabled': True}
         current = PipelineModelConfig.model_validate(value)
-        self.assertEqual(required_roles(current, {'stages': ['2'], 'review_before_render': True}), ['qa', 'vision'])
+        self.assertEqual(required_roles(current, {'stages': ['2'], 'review_before_render': True}), ['qa', 'quiz', 'vision'])
         self.assertIn('asr', required_roles(current, {'stages': ['2', '3'], 'reuse_script': True, 'require_reuse_script': True}))
 
 
@@ -202,7 +203,8 @@ class FlowChecks(unittest.TestCase):
         source.parent.mkdir()
         source.write_text('原文知识作为出题唯一源数据', encoding='utf-8')
         config = legacy_config({}, 'mock-connection').public_dict()
-        config['stages']['qa'] = copy.deepcopy(config['stages']['vision'])
+        config['stages']['quiz'] = copy.deepcopy(config['stages']['vision'])
+        config['stages']['qa'] = {**config['stages']['vision'], 'model': 'answer-model'}
         config['evaluation'] = EvaluationPolicy(enabled=True, question_count=4).model_dump()
         self.config = config
         self.job = {'id': 'original', 'status': 'awaiting_review', 'config': {'model_config': config, 'model_config_origin': 'v2',
@@ -213,7 +215,34 @@ class FlowChecks(unittest.TestCase):
         return {'stage': stage, 'language': 'zh', 'score': score, 'total': 4, 'correct': round(score / 25), 'fingerprint': 'a' * 64,
             'source_sha256': qa.digest_file(self.root / 'original/ingest/paper_text.md'),
             'material_sha256': qa.digest_file(self.result / ('subtitle_w_cursor.txt' if stage == 'script' else '3_merage.mp4')),
-            'model_selection': self.config['stages']['qa'], 'items': [{**row, 'correct': score == 100} for row in questions()]}
+            'model_selection': self.config['stages']['qa'], 'quiz_model_selection': self.config['stages']['quiz'], 'independent_models': True, 'items': [{**row, 'correct': score == 100} for row in questions()]}
+
+    def test_same_model_on_different_connections_rejected_before_requests(self):
+        config = copy.deepcopy(self.config)
+        config['stages']['qa'].update(model=config['stages']['quiz']['model'].upper(), connection_id='another-account')
+        with self.assertRaises(ValidationError) as caught:
+            PipelineModelConfig.model_validate(config)
+        self.assertIn('不同型号', str(caught.exception))
+
+    def test_old_snapshot_readable_but_execution_requires_independent_roles(self):
+        config = copy.deepcopy(self.config)
+        del config['stages']['quiz']
+        old = PipelineModelConfig.model_validate(config)
+        with self.assertRaises(ConfigurationError) as caught:
+            required_roles(old, {'stages': ['2'], 'review_before_render': True})
+        self.assertEqual(caught.exception.field, 'stages.quiz')
+        job = copy.deepcopy(self.job)
+        job['config']['model_config'] = config
+        self.assertFalse(web._qa_report_current(job, self.report(), 'script'))
+
+    def test_generator_change_invalidates_score_and_shared_model_history_rejected(self):
+        report = self.report()
+        self.assertTrue(web._qa_report_current(self.job, report, 'script'))
+        old = {**report, 'independent_models': False}
+        self.assertFalse(web._qa_report_current(self.job, old, 'script'))
+        job = copy.deepcopy(self.job)
+        job['config']['model_config']['stages']['quiz']['model'] = 'new-producer'
+        self.assertFalse(web._qa_report_current(job, report, 'script'))
 
     def test_stale_script_rejected_and_explicit_override_allowed(self):
         job = copy.deepcopy(self.job)
@@ -294,13 +323,14 @@ class FlowChecks(unittest.TestCase):
         job = copy.deepcopy(self.job)
         config = job['config']
         config['model_config']['stages']['qa'].update(provider='openai_compatible', connection_id=current['id'])
+        config['model_config']['stages']['quiz'].update(provider='openai_compatible', connection_id=current['id'])
         config['model_config']['stages']['tts'] = {'mode': 'api', 'provider': 'bailian', 'model': 'cosyvoice-v3-plus', 'connection_id': 'expired-tts', 'parameters': {}}
         config['model_config']['timing'] = {'source': 'tts_timestamp'}
         config['model_config']['avatar']['enabled'] = True
         config['voice'] = {'kind': 'cloud', 'resource_id': 'expired-cloud-voice'}
         with patch.object(web, '_MODEL_CONNECTIONS', store):
             keys = REAL_QA_CONFIGURE(config, job, 'video')
-        self.assertEqual(config['required_model_roles'], ['qa', 'asr'])
+        self.assertEqual(config['required_model_roles'], ['quiz', 'qa', 'asr'])
         self.assertEqual(keys[current['id']], 'qa-only-test-key')
         self.assertNotIn('expired-tts', keys)
 
@@ -417,7 +447,7 @@ class FlowChecks(unittest.TestCase):
             body={'error': {'code': 'InvalidParameter', 'message': '不支持当前型号'}})
         argv = [str(ROOT / 'Paper2Video-main/src/qa_evaluation.py'), '--snapshot', str(snapshot), '--source', str(source),
                 '--result', str(self.result), '--output', str(output), '--mode', 'script']
-        with patch('openai.OpenAI', return_value=client), patch.dict(os.environ, {'PAPER2VIDEO_ROLE_QA_API_KEY': 'mock-key'}), patch.object(sys, 'argv', argv):
+        with patch('openai.OpenAI', return_value=client), patch.dict(os.environ, {'PAPER2VIDEO_ROLE_QA_API_KEY': 'mock-answer-key', 'PAPER2VIDEO_ROLE_QUIZ_API_KEY': 'mock-quiz-key'}), patch.object(sys, 'argv', argv):
             with self.assertRaises(SystemExit) as exited:
                 runpy.run_path(argv[0], run_name='__main__')
         self.assertEqual(exited.exception.code, 1)
@@ -437,11 +467,17 @@ class FlowChecks(unittest.TestCase):
         def request(settings, content, directory):
             calls.append(content)
             if isinstance(content, str):
+                self.assertEqual(settings['role'], 'quiz')
+                self.assertEqual(settings['model_type'], self.config['stages']['quiz']['model'])
+                self.assertEqual(os.environ[settings['api_key_env']], 'mock-quiz-key')
                 return {'questions': questions()}
+            self.assertEqual(settings['role'], 'qa')
+            self.assertEqual(settings['model_type'], 'answer-model')
+            self.assertEqual(os.environ[settings['api_key_env']], 'mock-answer-key')
             self.assertNotIn('source_quote', json.dumps(content))
             self.assertNotIn('作为出题唯一源数据', json.dumps(content, ensure_ascii=False))
             return {'answers': [{'id': str(i + 1), 'answer': 'A', 'evidence': '原文知识'} for i in range(4)]}
-        with patch.dict(os.environ, {'PAPER2VIDEO_ROLE_QA_API_KEY': 'mock-key'}):
+        with patch.dict(os.environ, {'PAPER2VIDEO_ROLE_QA_API_KEY': 'mock-answer-key', 'PAPER2VIDEO_ROLE_QUIZ_API_KEY': 'mock-quiz-key'}):
             output = self.root / 'report.json'
             report = qa.evaluate('script', snapshot, source, self.result, output, request=request)
             self.assertEqual(report['score'], 100)
@@ -451,6 +487,51 @@ class FlowChecks(unittest.TestCase):
             new = qa.evaluate('script', snapshot, source, self.result, output, request=request)
             self.assertEqual(len(calls), 3)
             self.assertNotEqual(new['fingerprint'], report['fingerprint'])
+
+    def test_answer_model_change_reuses_bank_generator_change_rebuilds(self):
+        snapshot = self.root / 'snapshot.json'
+        value = {'model_config': self.config, 'model_config_origin': 'v2', 'model_connections': {
+            'mock-connection': {'compatible_base_url': 'http://localhost:1/v1', 'provider': 'openai_compatible'}}}
+        source = self.root / 'original/ingest/paper_text.md'
+        calls = []
+        def request(settings, content, directory):
+            calls.append(settings['role'])
+            if settings['role'] == 'quiz':
+                return {'questions': questions()}
+            return {'answers': [{'id': str(i + 1), 'answer': 'A', 'evidence': '原文知识'} for i in range(4)]}
+        with patch.dict(os.environ, {'PAPER2VIDEO_ROLE_QA_API_KEY': 'answer-key', 'PAPER2VIDEO_ROLE_QUIZ_API_KEY': 'producer-key'}):
+            output = self.root / 'report.json'
+            qa.write_json(snapshot, value)
+            first = qa.evaluate('script', snapshot, source, self.result, output, request=request)
+            value['model_config']['stages']['qa']['model'] = 'another-answer-model'
+            qa.write_json(snapshot, value)
+            second = qa.evaluate('script', snapshot, source, self.result, output, request=request)
+            self.assertEqual(first['bank_id'], second['bank_id'])
+            self.assertNotEqual(first['fingerprint'], second['fingerprint'])
+            self.assertEqual(calls, ['quiz', 'qa', 'qa'])
+            value['model_config']['stages']['quiz']['model'] = 'another-generator'
+            qa.write_json(snapshot, value)
+            third = qa.evaluate('script', snapshot, source, self.result, output, request=request)
+            self.assertNotEqual(second['bank_id'], third['bank_id'])
+            self.assertEqual(calls, ['quiz', 'qa', 'qa', 'quiz', 'qa'])
+
+    def test_split_migrates_verified_legacy_bank_without_model_call(self):
+        source = self.root / 'original/ingest/paper_text.md'
+        root = self.result / 'evaluation'
+        root.mkdir()
+        settings = {'role': 'quiz', 'api_key_env': 'PAPER2VIDEO_ROLE_QUIZ_API_KEY', 'model_type': 'original-generator', 'connection_id': 'original-connection'}
+        old_settings = {**settings, 'role': 'qa', 'api_key_env': 'PAPER2VIDEO_ROLE_QA_API_KEY'}
+        bank = qa.question_bank(source, root, old_settings, 4, MagicMock(return_value={'questions': questions()}))
+        bank['manual_repairs'] = [{'question': '3', 'reason': '已核对原文'}]
+        qa.write_json(root / f'questions-{bank["id"]}.json', bank)
+        request = MagicMock(side_effect=AssertionError('不能重复生成已付费题库'))
+        migrated = qa.question_bank(source, root, settings, 4, request)
+        self.assertEqual(migrated['id'], bank['id'])
+        self.assertEqual(migrated['questions'], bank['questions'])
+        self.assertEqual(migrated['manual_repairs'], bank['manual_repairs'])
+        self.assertEqual(migrated['generator'], settings)
+        self.assertEqual(qa.question_bank(source, root, settings, 4, request), migrated)
+        request.assert_not_called()
 
     def test_invalid_question_response_is_preserved_before_validation(self):
         source = self.root / 'original/ingest/paper_text.md'

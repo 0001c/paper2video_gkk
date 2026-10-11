@@ -104,7 +104,7 @@ def model_request(settings, content, directory):
     from openai import OpenAI
     client = OpenAI(base_url=settings['url'], api_key=os.environ[settings['api_key_env']],
                     timeout=180, max_retries=0)
-    ticket = model_costs.begin('qa', settings['model_type'], settings['url'], directory)
+    ticket = model_costs.begin(settings.get('role', 'qa'), settings['model_type'], settings['url'], directory)
     response = None
     try:
         response = client.chat.completions.create(model=settings['model_type'],
@@ -254,6 +254,16 @@ def question_bank(source_path, root, settings, count, request=model_request):
     key = digest({'source': source, 'count': count, 'settings': settings, 'version': 1})
     bank_path = root / f'questions-{key}.json'
     saved = read_json(bank_path)
+    if not saved and settings.get('role') == 'quiz':
+        # 角色拆分不重复购买已完成题库：只有同一出题型号、连接、参数与原文才可迁移。
+        previous = {**settings, 'role': 'qa', 'api_key_env': 'PAPER2VIDEO_ROLE_QA_API_KEY'}
+        previous_key = digest({'source': source, 'count': count, 'settings': previous, 'version': 1})
+        legacy = read_json(root / f'questions-{previous_key}.json')
+        if legacy and legacy.get('source_sha256') == digest_file(source_path):
+            legacy['questions'] = validate_questions(legacy['questions'], source, count)
+            saved = {**legacy, 'generator': settings, 'legacy_cache_id': previous_key}
+            write_json(bank_path, saved)
+            print(f'[qa] 复用已验证原文题库 {len(saved["questions"])} 题；出题模型 {settings["model_type"]}', flush=True)
     if saved:
         saved['questions'] = validate_questions(saved['questions'], source, count)
         return saved
@@ -319,7 +329,7 @@ def question_bank(source_path, root, settings, count, request=model_request):
         write_json(part_path, {'questions': part})
         pending_path.unlink(missing_ok=True)
         items.extend(part)
-    bank = {'id': key, 'source_sha256': digest_file(source_path), 'questions': validate_questions(items, source, count)}
+    bank = {'id': key, 'source_sha256': digest_file(source_path), 'generator': settings, 'questions': validate_questions(items, source, count)}
     write_json(bank_path, bank)
     return bank
 
@@ -407,14 +417,18 @@ def media_evidence(video, root, language, transcribe=None):
 
 def evaluate(mode, snapshot_path, source_path, result_dir, output, language='zh', request=model_request):
     snapshot, config = load_model_snapshot(snapshot_path)
+    from web.model_config import validate_evaluation_models
+    validate_evaluation_models(config)
+    generator = role_settings(snapshot, 'quiz')
     settings = role_settings(snapshot, 'qa')
     if not config.evaluation.enabled or not settings:
         raise ValueError('问答评价未启用或模型连接不可用')
     root = Path(result_dir) / 'evaluation'
     root.mkdir(parents=True, exist_ok=True)
-    bank = question_bank(source_path, root, settings, config.evaluation.question_count, request)
+    bank = question_bank(source_path, root, generator, config.evaluation.question_count, request)
     material = Path(result_dir) / ('subtitle_w_cursor.txt' if mode == 'script' else '3_merage.mp4')
-    identity = digest({'bank': bank['id'], 'material': digest_file(material), 'model': settings, 'mode': mode, 'language': language, 'v': 2})
+    identity = digest({'bank': bank['id'], 'material': digest_file(material), 'model': settings, 'generator': generator,
+                       'mode': mode, 'language': language, 'v': 3})
     cached = read_json(root / f'report-{identity}.json')
     if cached:
         write_json(output, cached)
@@ -447,6 +461,7 @@ def evaluate(mode, snapshot_path, source_path, result_dir, output, language='zh'
     report = {**grade(bank, result.get('answers'), text, [f['timestamp'] for f in frames]),
         'stage': mode, 'language': language, 'fingerprint': identity, 'material_sha256': digest_file(material), 'bank_id': bank['id'],
         'model': settings['model_type'], 'model_selection': config.stages.qa.model_dump(exclude_none=True), 'source_sha256': bank['source_sha256'],
+        'quiz_model': generator['model_type'], 'quiz_model_selection': config.stages.quiz.model_dump(exclude_none=True), 'independent_models': True,
         'evidence_mode': 'script' if mode == 'script' else 'actual_audio_asr_and_sampled_frames', 'sampled_frames': len(frames)}
     write_json(root / f'report-{identity}.json', report)
     write_json(output, report)

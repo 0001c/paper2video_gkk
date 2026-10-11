@@ -14,7 +14,7 @@ import { CloudVoicePanel, type CloudVoice } from "./CloudVoicePanel";
 import { TaskModelSettings } from "./TaskModelSettings";
 import { ModelCosts } from './ModelCosts';
 import { RemoteTasks, type RemoteTaskDetails } from './RemoteTasks';
-import { avatarConfigurationProblem, migratedConfig, presetConfig, roles, roleStage, taskModelPayload, type Connection, type ModelConfig, type ModelOptions } from "./modelConfig";
+import { splitEvaluationConfig, evaluationModelProblem, avatarConfigurationProblem, migratedConfig, presetConfig, roles, roleStage, taskModelPayload, type Connection, type ModelConfig, type ModelOptions } from "./modelConfig";
 import { CursorPicker, type CursorOption } from "./CursorPicker";
 import { SubtitleSettings } from "./SubtitleSettings";
 import { defaultSubtitleStyle, readSubtitleStyle, type SubtitleStyle } from "./subtitleStyle";
@@ -517,7 +517,8 @@ export default function App() {
   useEffect(() => { setPreview(null); }, [voiceContext]);
 
   const { job, streamState, streamError } = useJobStream(jobId, streamRevision);
-  const taskModels = taskOverride && taskOverride.jobId === job?.id ? taskOverride.value : job?.config?.model_config;
+  const savedTaskModels = useMemo(() => job?.config?.model_config ? splitEvaluationConfig(job.config.model_config) : undefined, [job?.config?.model_config]);
+  const taskModels = taskOverride && taskOverride.jobId === job?.id ? taskOverride.value : savedTaskModels;
   const [taskVoiceOverride, setTaskVoiceOverride] = useState<{ jobId: string; voice: VoiceSpec; resource?: CloudVoice }>();
   const taskVoice = taskVoiceOverride && taskVoiceOverride.jobId === job?.id ? taskVoiceOverride.voice : job?.config?.voice;
   const taskVoiceResource = taskVoiceOverride && taskVoiceOverride.jobId === job?.id ? taskVoiceOverride.resource : job?.config?.voice_resource;
@@ -741,7 +742,9 @@ export default function App() {
     if (ingestLock.current || voiceLock.current) throw new Error("请等待文件提取或音色准备完成");
     if (!ingest || ingest.error) return MessagePlugin.warning("请先上传内容文件并完成提取预览");
     if (courseEnabled && !coursePlan) return MessagePlugin.warning("请预览并确认教案和时间分配");
-    const avatarProblem = avatarConfigurationProblem(modelConfig, !!portraitFile, opts?.model_configuration);
+    const evaluationProblem = evaluationModelProblem(modelConfig);
+  if (evaluationProblem) missing.push(evaluationProblem);
+  const avatarProblem = avatarConfigurationProblem(modelConfig, !!portraitFile, opts?.model_configuration);
     if (avatarProblem) return MessagePlugin.warning(avatarProblem);
     if (modelConfig.stages.tts.mode === "local" && (voiceMode === "design" || (voiceMode === "preset" && (!presetPick?.sample_url || presetPick.spec.kind !== "upload")))) return MessagePlugin.warning("本地配音请选择默认、已保存音色或上传参考录音");
     if (!scriptPrompt.trim()) return MessagePlugin.warning("讲稿提示词不能为空");
@@ -981,20 +984,22 @@ export default function App() {
   if (!ingest || ingest.error) missing.push("选择内容文件并完成提取预览");
   if (courseEnabled && !coursePlan) missing.push("预览并确认教案和时间分配");
   for (const role of roles) {
-    if ((role === 'avatar' && !modelConfig.avatar.enabled) || (role === 'qa' && !modelConfig.evaluation?.enabled)) continue;
+    if ((role === 'avatar' && !modelConfig.avatar.enabled) || (['qa', 'quiz'].includes(role) && !modelConfig.evaluation?.enabled)) continue;
     const stage = roleStage(modelConfig, role);
-    if ((stage.mode === "api" || role === "text" || role === "vision" || role === 'qa') && !stage.connection_id) {
+    if ((stage.mode === "api" || role === "text" || role === "vision" || (role === 'qa' || role === 'quiz')) && !stage.connection_id) {
       missing.push(`选择${role}连接（可重新应用预设填充）`);
     }
   }
-  for (const role of ["text", "vision", "qa"] as const) {
-    if (role === 'qa' && !modelConfig.evaluation?.enabled) continue;
+  for (const role of ["text", "vision", "quiz", "qa"] as const) {
+    if (['qa', 'quiz'].includes(role) && !modelConfig.evaluation?.enabled) continue;
     const stage = roleStage(modelConfig, role);
     const connection = modelConnections?.find((entry) => entry.id === stage.connection_id);
     if (!connection || (stage.mode === "api" && !connection.key_present)) missing.push(`${role}连接失效或缺密钥`);
   }
   if (!opts?.model_configuration?.implemented.independent_text_vision_connections
     && modelConfig.stages.text.connection_id !== modelConfig.stages.vision.connection_id) missing.push("P3前文字/视觉需共用连接");
+  const evaluationProblem = evaluationModelProblem(modelConfig);
+  if (evaluationProblem) missing.push(evaluationProblem);
   const avatarProblem = avatarConfigurationProblem(modelConfig, !!portraitFile, opts?.model_configuration);
   if (avatarProblem) missing.push(avatarProblem);
   if (modelConfig.stages.tts.mode === "api" && (!cloudVoice || cloudVoice.target_model !== modelConfig.stages.tts.model || cloudVoice.status !== "OK" || cloudVoice.timestamp_status !== "supported")) missing.push("选择可用且支持时间戳的云音色");

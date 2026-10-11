@@ -2,10 +2,10 @@ import { useRef, useState } from 'react';
 import { Button, Dialog } from 'tdesign-react';
 import { api, errorMessage, runExclusive } from './flow';
 import { Help, Section } from './Section';
-import { defaultEvaluation, type ModelConfig } from './modelConfig';
+import { defaultEvaluation, evaluationModelProblem, type ModelConfig } from './modelConfig';
 
 export type EvaluationReport = { stage: 'script' | 'video'; score: number; correct: number; total: number; fingerprint: string;
-  model: string; sampled_frames: number; items: { id: string; question: string; answer: string; predicted: string | null; correct: boolean;
+  model: string; quiz_model?: string; independent_models?: boolean; sampled_frames: number; items: { id: string; question: string; answer: string; predicted: string | null; correct: boolean;
     supported: boolean; evidence: string; source_quote: string; options: Record<string, string>; kind: string; timestamp?: number }[] };
 
 export function EvaluationPanel({ jobId, evaluation, error, decision, nextJobId, attempt = 0, value, busy: running, hasVideo, onJob }: {
@@ -19,6 +19,8 @@ export function EvaluationPanel({ jobId, evaluation, error, decision, nextJobId,
   const lock = useRef(false);
   const evaluate = (stage: 'script' | 'video') => runExclusive(lock, setBusy, async () => {
     setMessage('');
+    const problem = evaluationModelProblem(value);
+    if (problem) throw new Error(problem);
     const { data } = await api.post(`/api/jobs/${jobId}/evaluation/run`, { stage, model_config: value });
     onJob(data.job_id);
   }, (e) => setMessage(errorMessage(e)));
@@ -40,9 +42,10 @@ export function EvaluationPanel({ jobId, evaluation, error, decision, nextJobId,
           <div className="field-title"><strong>{stage === 'script' ? '讲稿问答' : '成片问答'}</strong>
             <Help title={stage === 'script' ? '讲稿评分依据' : '成片评分依据'}>{stage === 'script' ? '读取讲稿口播内容，答对且提供可验证材料依据才计分。' : `识别成片完整音轨，并结合 ${report?.sampled_frames ?? '最多24'} 张实际画面。此评价不代表全程人工观看或音质、口型审核。`}</Help></div>
           <div className="qa-score">{report ? `${report.score}%` : '待评价'}</div>
-          <span className="hint">{report ? `${report.correct} / ${report.total} 题 · ${report.model}` : stage === 'script' ? '讲稿生成后自动评价' : '完整成片产出后自动评价'}</span>
+          <span className="hint">{report ? `${report.correct} / ${report.total} 题 · 答题 ${report.model}` : stage === 'script' ? '讲稿生成后自动评价' : '完整成片产出后自动评价'}</span>
+          {report && <span className="hint">{report.independent_models ? `出题 ${report.quiz_model}` : '历史评分采用同一模型出题与答题，请重新评价'}</span>}
           <span className="qa-threshold-label">{stage === 'script' ? `通过线 ${threshold}%` : `最低 ${policy.minimum_threshold}% · 标准 ${threshold}%`}</span>
-          <Button variant="outline" disabled={running || busy || !policy.enabled || (stage === 'video' && !hasVideo)} loading={busy} onClick={() => evaluate(stage)}>重新评价{stage === 'script' ? '讲稿' : '成片'}</Button>
+          <Button variant="outline" disabled={running || busy || !policy.enabled || !!evaluationModelProblem(value) || (stage === 'video' && !hasVideo)} loading={busy} onClick={() => evaluate(stage)}>重新评价{stage === 'script' ? '讲稿' : '成片'}</Button>
         </div>;
       })}
     </div>

@@ -3,7 +3,7 @@ import { api, errorMessage } from './flow';
 
 type CostSummary = { known_estimated_cny: number; unknown_requests: number; notice: string; price_version: string;
   stages: { role: string; requests: number; unknown_requests: number; estimated_usage_requests: number; estimated_cny: number; models: string[]; usage: Record<string, number> }[] };
-const labels: Record<string, string> = { text: '课件 / 结构化', vision: '讲稿 / 布局视觉', tts: '配音', asr: '转写', grounding: '光标定位', avatar: '数字人', voice: '音色管理 / 试听', qa: '问答评价' };
+const labels: Record<string, string> = { text: '课件 / 结构化', vision: '讲稿 / 布局视觉', tts: '配音', asr: '转写', grounding: '光标定位', avatar: '数字人', voice: '音色管理 / 试听', quiz: '原文出题', qa: '材料答题 / 评价' };
 
 export function ModelCosts({ url, title = '模型费用估算' }: { url: string; title?: string }) {
   const [data, setData] = useState<CostSummary>();

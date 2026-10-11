@@ -2129,7 +2129,7 @@ def _configure_qa_models(config, source, stage):
     normalized = _parse_model_config(config['model_config'])
     if not normalized.evaluation.enabled or normalized.stages.qa is None:
         raise HTTPException(422, detail='请先开启问答评价并选择模型')
-    roles = ['qa', 'asr'] if stage == 'video' else ['qa']
+    roles = ['quiz', 'qa', 'asr'] if stage == 'video' else ['quiz', 'qa']
     model_settings.ensure_implemented(normalized, roles)
     previous = source.get('config', {}).get('model_connections') or {}
     frozen = (_JOB_KEYS.get(source['id']) or {}).get('connections') or {}
@@ -2158,11 +2158,16 @@ def _qa_report_current(job, report, stage):
         return False
     material = Path(_result_dir(job), 'subtitle_w_cursor.txt' if stage == 'script' else '3_merage.mp4')
     try:
-        selection = (job.get('config') or {}).get('model_config', {}).get('stages', {}).get('qa')
+        stages = (job.get('config') or {}).get('model_config', {}).get('stages', {})
+        selection, generator = stages.get('qa'), stages.get('quiz')
+        if not selection or not generator or selection['model'].casefold() == generator['model'].casefold():
+            return False
         return (report.get('material_sha256') == digest_file(material)
                 and report.get('source_sha256') == digest_file(_qa_source(job))
                 and report.get('language') == job['config'].get('script_lang', 'zh')
                 and report.get('model_selection') == selection
+                and report.get('quiz_model_selection') == generator
+                and report.get('independent_models') is True
                 and report.get('total') == _qa_policy(job).question_count)
     except (OSError, HTTPException):
         return False

@@ -12,9 +12,9 @@ from web.model_config import ConnectionID, ConfigurationError, StrictModel
 from typing import Literal
 
 
-ROLES = ('text', 'vision', 'tts', 'asr', 'grounding', 'avatar', 'qa')
+ROLES = ('text', 'vision', 'tts', 'asr', 'grounding', 'avatar', 'quiz', 'qa')
 RECOMMENDED = dict(zip(ROLES, ('qwen3.8-flash', 'qwen3-vl-plus', 'cosyvoice-v3.5-plus',
-                              'fun-asr', 'qwen3-vl-plus', 'wan2.2-s2v', 'qwen3-vl-plus')))
+                              'fun-asr', 'qwen3-vl-plus', 'wan2.2-s2v', 'qwen3.8-flash', 'qwen3-vl-plus')))
 LOCAL = {'tts': ('qwen3', 'qwen3tts'), 'asr': ('qwen3', 'qwen3-asr'),
          'grounding': ('gui_owl', 'gui-owl'), 'avatar': ('musetalk', 'musetalk')}
 SNAPSHOT = json.loads((Path(__file__).resolve().parents[1] / 'docs' / 'bailian-model-catalog-2026-10-02.json').read_text(encoding='utf-8'))
@@ -22,7 +22,7 @@ SNAPSHOT = json.loads((Path(__file__).resolve().parents[1] / 'docs' / 'bailian-m
 
 class CatalogRequest(StrictModel):
     connection_id: ConnectionID
-    role: Literal['all', 'text', 'vision', 'tts', 'asr', 'grounding', 'avatar', 'qa']
+    role: Literal['all', 'text', 'vision', 'tts', 'asr', 'grounding', 'avatar', 'quiz', 'qa']
     include_retiring: bool = False
     cursor: str | None = Field(default=None, max_length=100)
     limit: int = Field(default=100, ge=1, le=100)
@@ -81,16 +81,16 @@ def merged(compatible, native):
 def candidate(record, role, provider, today=None):
     caps = record['capabilities']
     compatible = 'compatible' in record['sources']
-    known = {'text': 'TG' in caps, 'vision': 'VU' in caps, 'qa': 'VU' in caps, 'tts': 'TTS' in caps,
+    known = {'text': 'TG' in caps, 'vision': 'VU' in caps, 'qa': 'VU' in caps, 'quiz': 'TG' in caps, 'tts': 'TTS' in caps,
              'asr': 'ASR' in caps, 'grounding': 'VU' in caps or record['id'] == RECOMMENDED['grounding'],
              'avatar': record['id'] == RECOMMENDED['avatar']}[role]
-    unknown = role in ('text', 'vision', 'qa') and compatible and not caps
+    unknown = role in ('text', 'vision', 'qa', 'quiz') and compatible and not caps
     if not known and not unknown:
         return None
     speech = role == 'tts' and 'native' in record['sources'] and record['id'] in (
         'cosyvoice-v3.5-plus', 'cosyvoice-v3.5-flash', 'cosyvoice-v3-plus', 'cosyvoice-v3-flash', 'cosyvoice-v2')
     avatar = role == 'avatar' and 'native' in record['sources'] and record['id'] == 'wan2.2-s2v'
-    implemented = (role in ('text', 'vision', 'qa') and compatible) or (role == 'grounding' and compatible and record['id'] == RECOMMENDED['grounding']) or speech or avatar
+    implemented = (role in ('text', 'vision', 'qa', 'quiz') and compatible) or (role == 'grounding' and compatible and record['id'] == RECOMMENDED['grounding']) or speech or avatar
     offline = record['offline_time']
     status = 'active'
     if offline:
@@ -274,7 +274,7 @@ class CatalogStore:
                 field = f'config.model_config.stages.{role}.model' if role != 'avatar' else 'config.model_config.avatar.model'
                 if item is None or not item['selectable']:
                     raise ConfigurationError(field, '已知目录声明的能力/协议不适配此环节，或型号已下线', 'model_not_supported')
-                if role in ('text', 'vision', 'qa'):
+                if role in ('text', 'vision', 'qa', 'quiz'):
                     maximum = record.get('model_info', {}).get('max_output_tokens')
                     requested = stage.parameters.max_output_tokens
                     if maximum and requested and requested > maximum:
@@ -288,7 +288,7 @@ class CatalogStore:
                 entry['catalog_source'] = catalog['source']
 
     def annotate_limits(self, snapshots, config, roles):
-        for role in set(roles) & {'text', 'vision', 'qa'}:
+        for role in set(roles) & {'text', 'vision', 'qa', 'quiz'}:
             stage = config.roles()[role]
             entry = snapshots.get(stage.connection_id)
             if not entry:

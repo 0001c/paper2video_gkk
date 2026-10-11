@@ -214,7 +214,7 @@ def evaluate(mode, snapshot_path, source_path, result_dir, output, language='zh'
     root.mkdir(parents=True, exist_ok=True)
     bank = question_bank(source_path, root, settings, config.evaluation.question_count, request)
     material = Path(result_dir) / ('subtitle_w_cursor.txt' if mode == 'script' else '3_merage.mp4')
-    identity = digest({'bank': bank['id'], 'material': digest_file(material), 'model': settings, 'mode': mode, 'language': language, 'v': 1})
+    identity = digest({'bank': bank['id'], 'material': digest_file(material), 'model': settings, 'mode': mode, 'language': language, 'v': 2})
     cached = read_json(root / f'report-{identity}.json')
     if cached:
         write_json(output, cached)
@@ -244,7 +244,7 @@ def evaluate(mode, snapshot_path, source_path, result_dir, output, language='zh'
             {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + base64.b64encode(Path(frame['path']).read_bytes()).decode()}}])
     result = request(settings, content, result_dir)
     report = {**grade(bank, result.get('answers'), text, [f['timestamp'] for f in frames]),
-        'stage': mode, 'fingerprint': identity, 'material_sha256': digest_file(material), 'bank_id': bank['id'],
+        'stage': mode, 'language': language, 'fingerprint': identity, 'material_sha256': digest_file(material), 'bank_id': bank['id'],
         'model': settings['model_type'], 'model_selection': config.stages.qa.model_dump(exclude_none=True), 'source_sha256': bank['source_sha256'],
         'evidence_mode': 'script' if mode == 'script' else 'actual_audio_asr_and_sampled_frames', 'sampled_frames': len(frames)}
     write_json(root / f'report-{identity}.json', report)

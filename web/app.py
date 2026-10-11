@@ -2123,6 +2123,25 @@ def _qa_policy(job):
     return model_settings.EvaluationPolicy.model_validate(value.get('evaluation') or {})
 
 
+def _configure_qa_models(config, source, stage):
+    """只评价已有材料时，只校验问答与识别，不依赖已失效的生成连接/音色。"""
+    model_settings.reject_embedded_secrets(config)
+    normalized = _parse_model_config(config['model_config'])
+    if not normalized.evaluation.enabled or normalized.stages.qa is None:
+        raise HTTPException(422, detail='请先开启问答评价并选择模型')
+    roles = ['qa', 'asr'] if stage == 'video' else ['qa']
+    model_settings.ensure_implemented(normalized, roles)
+    previous = source.get('config', {}).get('model_connections') or {}
+    frozen = (_JOB_KEYS.get(source['id']) or {}).get('connections') or {}
+    snapshots, keys = _MODEL_CONNECTIONS.freeze(normalized, roles, previous, frozen)
+    _MODEL_CATALOG.validate(normalized, roles, snapshots)
+    _MODEL_CATALOG.annotate(snapshots)
+    _MODEL_CATALOG.annotate_limits(snapshots, normalized, roles)
+    config.update(model_config=normalized.public_dict(), model_config_origin='v2', model_connections=snapshots,
+                  required_model_roles=roles, effective_model_mode=model_settings.effective_mode(normalized, roles))
+    return {**frozen, **keys}
+
+
 def _qa_source(job):
     path = (job.get('config') or {}).get('qa_source_path')
     if path and Path(path).is_file() and Path(path).resolve().is_relative_to(Path(JOBS_ROOT).resolve()):
@@ -2142,6 +2161,7 @@ def _qa_report_current(job, report, stage):
         selection = (job.get('config') or {}).get('model_config', {}).get('stages', {}).get('qa')
         return (report.get('material_sha256') == digest_file(material)
                 and report.get('source_sha256') == digest_file(_qa_source(job))
+                and report.get('language') == job['config'].get('script_lang', 'zh')
                 and report.get('model_selection') == selection
                 and report.get('total') == _qa_policy(job).question_count)
     except (OSError, HTTPException):
@@ -2155,7 +2175,7 @@ def _qa_check_script(job, config, text, override=False):
         return
     report = job.get('evaluation', {}).get('script')
     passed = (_qa_report_current(candidate, report, 'script')
-              and report['material_sha256'] == hashlib.sha256(text.encode('utf-8')).hexdigest()
+              and text == Path(_result_dir(job), 'subtitle_w_cursor.txt').read_text(encoding='utf-8')
               and report['score'] >= policy.script_threshold)
     if not passed and not override:
         raise HTTPException(409, detail='讲稿尚未达到问答通过线或内容已变化，请先评价，或明确选择手动继续')
@@ -2223,7 +2243,8 @@ async def _qa_evaluate_and_route(job, stage):
     output = Path(_job_dir(job_id), f'qa-{stage}.json')
     try:
         keys = _JOB_KEYS.get(job_id) or {}
-        keys['connections'] = _configure_job_models(job['config'], source=job, portrait=job.get('ref_img'))
+        keys['connections'] = _configure_qa_models(job['config'], job, stage)
+        _JOB_KEYS[job_id] = keys
         _save_job(job)
         env = _job_model_environment(job['config'], keys)
         env.update(PYTHONUTF8='1', PYTHONIOENCODING='utf-8')
@@ -2293,11 +2314,10 @@ async def api_evaluation_run(job_id: str, payload: EvaluationRunRequest, request
         if payload.model_options is not None:
             config = copy.deepcopy(job['config'])
             config['model_config'] = payload.model_options.public_dict()
-            keys = _configure_job_models(config, {'model_config': config['model_config']}, job, job.get('ref_img'))
             job['config'] = config
-            _JOB_KEYS.setdefault(job_id, {})['connections'] = keys
         if not _qa_policy(job).enabled:
             raise HTTPException(422, detail='请先开启问答评价并选择模型')
+        _JOB_KEYS.setdefault(job_id, {})['connections'] = _configure_qa_models(job['config'], job, payload.stage)
         _qa_source(job)
         material = Path(_result_dir(job), 'subtitle_w_cursor.txt' if payload.stage == 'script' else '3_merage.mp4')
         if not material.is_file():

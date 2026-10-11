@@ -16,6 +16,9 @@ sys.path[:0] = [str(ROOT), str(ROOT / 'Paper2Video-main/src')]
 import qa_evaluation as qa
 from web import app as web
 from web.model_config import EvaluationPolicy, ConfigurationError, PipelineModelConfig, legacy_config, required_roles
+from web.model_connections import ConnectionCreate, ConnectionStore
+
+REAL_QA_CONFIGURE = web._configure_qa_models
 
 
 def questions(count=4):
@@ -79,7 +82,7 @@ class FlowChecks(unittest.TestCase):
             override = patch.object(web, name, value)
             override.start()
             self.addCleanup(override.stop)
-        for name, value in [('_configure_job_models', {}), ('_job_model_environment', {})]:
+        for name, value in [('_configure_job_models', {}), ('_configure_qa_models', {}), ('_job_model_environment', {})]:
             override = patch.object(web, name, return_value=value)
             override.start()
             self.addCleanup(override.stop)
@@ -102,7 +105,7 @@ class FlowChecks(unittest.TestCase):
         web._save_job(self.job)
 
     def report(self, stage='script', score=100):
-        return {'stage': stage, 'score': score, 'total': 4, 'correct': round(score / 25), 'fingerprint': 'a' * 64,
+        return {'stage': stage, 'language': 'zh', 'score': score, 'total': 4, 'correct': round(score / 25), 'fingerprint': 'a' * 64,
             'source_sha256': qa.digest_file(self.root / 'original/ingest/paper_text.md'),
             'material_sha256': qa.digest_file(self.result / ('subtitle_w_cursor.txt' if stage == 'script' else '3_merage.mp4')),
             'model_selection': self.config['stages']['qa'], 'items': [{**row, 'correct': score == 100} for row in questions()]}
@@ -122,6 +125,16 @@ class FlowChecks(unittest.TestCase):
         with self.assertRaises(web.HTTPException):
             asyncio.run(web.api_rerun_job('original', {'action': 'continue'}))
         self.assertEqual(web._QUEUE.qsize(), 0)
+
+    def test_windows_crlf_script_can_pass_but_changed_language_invalidates_report(self):
+        script = self.result / 'subtitle_w_cursor.txt'
+        script.write_bytes('原文知识 | no\r\n\r\n下一段知识 | no'.encode('utf-8'))
+        job = copy.deepcopy(self.job)
+        job['evaluation'] = {'script': self.report()}
+        web._qa_check_script(job, job['config'], script.read_text(encoding='utf-8'))
+        job['config']['script_lang'] = 'en'
+        with self.assertRaises(web.HTTPException):
+            web._qa_check_script(job, job['config'], script.read_text(encoding='utf-8'))
 
     def test_manual_decisions_under_job_lock_and_stale_source_are_rejected(self):
         job = web._load_job('original')
@@ -168,6 +181,23 @@ class FlowChecks(unittest.TestCase):
         self.assertEqual(response['job_id'], 'original')
         self.assertEqual(web._load_job('original')['evaluation_only'], 'script')
         self.assertEqual(web._QUEUE.get_nowait(), 'original')
+
+    def test_standalone_evaluation_does_not_require_expired_generation_connections(self):
+        store = ConnectionStore()
+        current = store.create(ConnectionCreate(label='仅问答连接', provider='openai_compatible',
+            compatible_base_url='http://localhost:9000/v1', api_key='qa-only-test-key'))
+        job = copy.deepcopy(self.job)
+        config = job['config']
+        config['model_config']['stages']['qa'].update(provider='openai_compatible', connection_id=current['id'])
+        config['model_config']['stages']['tts'] = {'mode': 'api', 'provider': 'bailian', 'model': 'cosyvoice-v3-plus', 'connection_id': 'expired-tts', 'parameters': {}}
+        config['model_config']['timing'] = {'source': 'tts_timestamp'}
+        config['model_config']['avatar']['enabled'] = True
+        config['voice'] = {'kind': 'cloud', 'resource_id': 'expired-cloud-voice'}
+        with patch.object(web, '_MODEL_CONNECTIONS', store):
+            keys = REAL_QA_CONFIGURE(config, job, 'video')
+        self.assertEqual(config['required_model_roles'], ['qa', 'asr'])
+        self.assertEqual(keys[current['id']], 'qa-only-test-key')
+        self.assertNotIn('expired-tts', keys)
 
     def test_automatic_continue_has_isolated_media_and_inherited_report(self):
         job = web._load_job('original')

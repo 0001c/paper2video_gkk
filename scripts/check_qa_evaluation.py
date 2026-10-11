@@ -27,6 +27,64 @@ def questions(count=4):
 
 
 class ScoringChecks(unittest.TestCase):
+    def test_body_scope_excludes_publication_abstract_and_back_matter(self):
+        source = ('ISSN 1004-325X\n\n网络首发日期：2026-08-13\n\n网络首发：录用定稿一经发布不得修改。\n\n'
+            '[摘要]：摘要独有信息\n\n1 引言\n\n研究问题讨论制度规范与出版政策对科研行为的影响。\n\n'
+            '基金项目：项目编号123\n\n4 方法\n\n调查于2026年1月11日至2月19日实施。\n\n'
+            '5 结论\n\n研究显示三项因素敏感度较高。\n\n参考文献\n\n[1] 文献条目\n\n作者简介：研究者')
+        body = qa.question_source(source)
+        for noise in ('ISSN', '首发日期', '录用定稿', '摘要独有', '项目编号', '文献条目', '作者简介'):
+            self.assertNotIn(noise, body)
+        self.assertIn('出版政策对科研行为', body)
+        self.assertIn('2026年1月11日至2月19日', body)
+        self.assertIn('三项因素敏感度', body)
+        row = questions(1)
+        row[0].update(question='期刊的网络首发日期是哪天？', source_quote='研究显示三项因素敏感度较高。')
+        with self.assertRaisesRegex(ValueError, '非正文'):
+            qa.validate_questions(row, body, 1)
+
+    def test_body_scope_handles_markdown_latex_and_selected_sections(self):
+        for source in ('# Paper title\n\nAbstract\n\nSummary only.\n\n## Introduction\n\nResearch evidence.\n\n## References\n\nCitation only.',
+            '\\documentclass{article}\n\\begin{abstract}Summary only.\\end{abstract}\n\\section{Introduction}\nResearch evidence.\n\\bibliography{references}'):
+            body = qa.question_source(source)
+            self.assertIn('Research evidence.', body)
+            self.assertNotIn('Summary only.', body)
+            self.assertNotIn('references}', body)
+        for source in ('3 研究设计\n\n所选小节内容。', '用户选定无标题研究小节内容。'):
+            self.assertEqual(qa.question_source(source), source)
+        with self.assertRaises(ValueError):
+            qa.question_source('网络首发日期：2026-08-13\n\n出版确认：期刊规则')
+
+    def test_multiple_exact_quotes_and_layout_changes_count_without_partial_credit(self):
+        text = '采用系统动力学建模方法。\n\n这里是中间解释。\n随后采用模糊集定性比较分析方法。\n伦理道德意识促进增长。'
+        bank = {'questions': questions(1)}
+        for answer in ({'evidence_quotes': ['采用系统动力学建模方法。', '随后采用模糊集定性比较分析方法。']},
+            {'evidence': '采用系统动力学建模方法。 随后采用模糊集定性比较分析方法。'},
+            {'evidence': '随后采用模糊集定性比较分析方法。 伦理道德意识促进增长。'}):
+            result = qa.grade(bank, [{'id': '1', 'answer': 'A', **answer}], text)
+            self.assertEqual(result['score'], 100)
+            self.assertTrue(result['items'][0]['verified_evidence'])
+        for answer in ({'evidence_quotes': ['采用系统动力学建模方法。', '材料中不存在的推断。']},
+            {'evidence': '采用系统动力学建模方法。 材料中不存在的推断。'},
+            {'evidence': '采用系统动力学……随后采用模糊集定性比较分析方法。'}):
+            result = qa.grade(bank, [{'id': '1', 'answer': 'A', **answer}], text)
+            self.assertEqual(result['score'], 0)
+            self.assertEqual(result['items'][0]['reason'], 'evidence_unmatched')
+        result = qa.grade(bank, [{'id': '1', 'answer': 'A', 'evidence_quotes': ['伦理 道德意识促进增长。']}], text)
+        self.assertEqual(result['score'], 100)
+        with self.assertRaises(ValueError):
+            qa.grade(bank, [{'id': '1', 'answer': 'A', 'evidence_quotes': '非数组'}], text)
+
+    def test_scoring_reasons_distinguish_answer_and_material_errors(self):
+        result = qa.grade({'questions': questions()}, [
+            {'id': '1', 'answer': 'B', 'evidence': '原文知识'},
+            {'id': '2', 'answer': 'A'},
+            {'id': '3', 'answer': 'A', 'evidence': '并非材料原句'}], '原文知识')
+        self.assertEqual([row['reason'] for row in result['items']],
+            ['wrong_answer', 'evidence_missing', 'evidence_unmatched', 'unanswered'])
+        self.assertEqual(result['answer_correct'], 2)
+        self.assertEqual(list(result['issues'].values()), [1, 1, 1, 1])
+
     def test_quote_layout_differences_restore_exact_source_span(self):
         source = '前文。本研究借鉴 Zhang 等的研究，从预测性、自省性、包容性和响应性四个方面测量科研人员责任式\n\n创新行为[40]。'
         quote = '本研究借鉴Zhang等的研究，从预测性、自省性、包容性和响应性四个方面测量科研人员责任式创新行为'
@@ -215,7 +273,8 @@ class FlowChecks(unittest.TestCase):
         return {'stage': stage, 'language': 'zh', 'score': score, 'total': 4, 'correct': round(score / 25), 'fingerprint': 'a' * 64,
             'source_sha256': qa.digest_file(self.root / 'original/ingest/paper_text.md'),
             'material_sha256': qa.digest_file(self.result / ('subtitle_w_cursor.txt' if stage == 'script' else '3_merage.mp4')),
-            'model_selection': self.config['stages']['qa'], 'quiz_model_selection': self.config['stages']['quiz'], 'independent_models': True, 'items': [{**row, 'correct': score == 100} for row in questions()]}
+            'model_selection': self.config['stages']['qa'], 'quiz_model_selection': self.config['stages']['quiz'], 'independent_models': True,
+            'source_policy_version': qa.SOURCE_POLICY_VERSION, 'grading_version': qa.GRADING_VERSION, 'items': [{**row, 'correct': score == 100} for row in questions()]}
 
     def test_same_model_on_different_connections_rejected_before_requests(self):
         config = copy.deepcopy(self.config)
@@ -251,6 +310,27 @@ class FlowChecks(unittest.TestCase):
         job = copy.deepcopy(self.job)
         job['config']['model_config']['stages']['quiz']['model'] = 'new-producer'
         self.assertFalse(web._qa_report_current(job, report, 'script'))
+
+    def test_old_scope_and_old_grading_reports_cannot_pass_gate(self):
+        for field in ('source_policy_version', 'grading_version'):
+            old = self.report()
+            old.pop(field)
+            self.assertFalse(web._qa_report_current(self.job, old, 'script'))
+
+    def test_explicit_manual_continue_can_override_old_rules_but_not_changed_material(self):
+        job = web._load_job('original')
+        report = self.report('script', 25)
+        report.pop('source_policy_version')
+        report.pop('grading_version')
+        job['evaluation'] = {'script': report}
+        web._save_job(job)
+        self.assertFalse(web._qa_report_current(job, report, 'script'))
+        async def decide():
+            with patch.object(web, '_local_write'), patch.object(web, '_JOB_LOCK', asyncio.Lock()):
+                return await web.api_evaluation_decision('original', web.EvaluationDecisionRequest(action='continue', fingerprint='a' * 64), None)
+        self.assertEqual(asyncio.run(decide())['job_id'], web._load_job('original')['qa_next_job_id'])
+        (self.root / 'original/ingest/paper_text.md').write_text('原文已变化', encoding='utf-8')
+        self.assertFalse(web._qa_report_current(job, report, 'script', require_current_rules=False))
 
     def test_stale_script_rejected_and_explicit_override_allowed(self):
         job = copy.deepcopy(self.job)
@@ -541,6 +621,45 @@ class FlowChecks(unittest.TestCase):
         self.assertEqual(qa.question_bank(source, root, settings, 4, request), migrated)
         request.assert_not_called()
 
+    def test_v1_noise_bank_does_not_survive_scope_upgrade_or_change_history(self):
+        source = self.root / 'original/ingest/paper_text.md'
+        source.write_text('网络首发日期：2026-08-13\n\n1 引言\n\n原文知识作为出题唯一源数据\n\n参考文献\n\n引用条目', encoding='utf-8')
+        settings = {'role': 'quiz', 'model_type': 'fixture'}
+        root = self.result / 'evaluation'
+        root.mkdir()
+        key = qa.digest({'source': source.read_text(encoding='utf-8').strip(), 'count': 4, 'settings': settings, 'version': 1})
+        old = questions()
+        old[0].update(question='网络首发日期是哪天？', source_quote='网络首发日期：2026-08-13')
+        path = root / f'questions-{key}.json'
+        qa.write_json(path, {'id': key, 'source_sha256': qa.digest_file(source), 'questions': old})
+        old_hash = qa.digest_file(path)
+        def request(_settings, prompt, _directory):
+            material = prompt.split('\n原文：\n')[1]
+            self.assertNotIn('首发日期', material)
+            self.assertNotIn('引用条目', material)
+            self.assertIn('仅围绕研究正文', prompt)
+            return {'questions': questions()}
+        bank = qa.question_bank(source, root, settings, 4, request)
+        self.assertNotEqual(bank['id'], key)
+        self.assertEqual(bank['source_policy_version'], qa.SOURCE_POLICY_VERSION)
+        self.assertEqual(qa.digest_file(path), old_hash)
+
+    def test_v1_valid_body_bank_is_reused_without_rebuying_questions(self):
+        source = self.root / 'original/ingest/paper_text.md'
+        settings = {'role': 'quiz', 'model_type': 'fixture'}
+        root = self.result / 'evaluation'
+        root.mkdir()
+        key = qa.digest({'source': source.read_text(encoding='utf-8').strip(), 'count': 4, 'settings': settings, 'version': 1})
+        path = root / f'questions-{key}.json'
+        qa.write_json(path, {'id': key, 'source_sha256': qa.digest_file(source), 'questions': questions()})
+        old_hash = qa.digest_file(path)
+        request = MagicMock(side_effect=AssertionError('合格正文题库不能重复付费'))
+        bank = qa.question_bank(source, root, settings, 4, request)
+        self.assertEqual(bank['id'], key)
+        self.assertEqual(bank['source_policy_version'], qa.SOURCE_POLICY_VERSION)
+        self.assertEqual(qa.digest_file(path), old_hash)
+        request.assert_not_called()
+
     def test_invalid_question_response_is_preserved_before_validation(self):
         source = self.root / 'original/ingest/paper_text.md'
         settings = {'model_type': 'fixture'}
@@ -562,7 +681,7 @@ class FlowChecks(unittest.TestCase):
         settings = {'model_type': 'fixture'}
         root = self.result / 'evaluation'
         root.mkdir()
-        key = qa.digest({'source': source.read_text(encoding='utf-8').strip(), 'count': 4, 'settings': settings, 'version': 1})
+        key = qa.question_cache_key(qa.question_source(source.read_text(encoding='utf-8').strip()), 4, settings)
         response = {'questions': questions()}
         for row in response['questions']:
             row['options'] = list(row['options'].values())
@@ -607,7 +726,7 @@ class FlowChecks(unittest.TestCase):
         settings = {'model_type': 'fixture'}
         root = self.result / 'evaluation'
         root.mkdir()
-        key = qa.digest({'source': source.read_text(encoding='utf-8').strip(), 'count': 4, 'settings': settings, 'version': 1})
+        key = qa.question_cache_key(qa.question_source(source.read_text(encoding='utf-8').strip()), 4, settings)
         original = questions()
         original[2]['options'].pop('C')
         qa.write_json(root / f'questions-{key}-part-0.response.json', {'questions': original})

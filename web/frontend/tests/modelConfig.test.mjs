@@ -10,6 +10,16 @@ async function load(name) {
 }
 const models = await load("modelConfig");
 const storage = await load("storage");
+const { answerResult } = await load('evaluationResult');
+
+test('问答结果区分计分、错误选项、未作答与正确选项缺少有效依据', () => {
+  const item = { predicted: 'A', answer: 'A', correct: false, supported: false, evidence: '引文需要核验' };
+  assert.equal(answerResult(item).label, '选项正确 · 依据待核验');
+  assert.equal(answerResult({ ...item, evidence: '' }).label, '选项正确 · 缺少依据');
+  assert.equal(answerResult({ ...item, predicted: null }).label, '未作答');
+  assert.equal(answerResult({ ...item, predicted: 'B' }).label, '选项错误');
+  assert.equal(answerResult({ ...item, correct: true, supported: true }).label, '✓ 已计分');
+});
 
 test('出题与答题独立选择，同型号不同连接仍拦截；旧草稿保留题库模型', () => {
   const config = models.presetConfig('bailian_api', 'connection');

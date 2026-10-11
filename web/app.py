@@ -2152,8 +2152,8 @@ def _qa_source(job):
     raise HTTPException(409, detail='原文评价材料缺失，请重新上传素材；不能使用生成讲稿出题')
 
 
-def _qa_report_current(job, report, stage):
-    from qa_evaluation import digest_file
+def _qa_report_current(job, report, stage, require_current_rules=True):
+    from qa_evaluation import digest_file, SOURCE_POLICY_VERSION, GRADING_VERSION
     if not report or report.get('stage') != stage:
         return False
     material = Path(_result_dir(job), 'subtitle_w_cursor.txt' if stage == 'script' else '3_merage.mp4')
@@ -2168,6 +2168,8 @@ def _qa_report_current(job, report, stage):
                 and report.get('model_selection') == selection
                 and report.get('quiz_model_selection') == generator
                 and report.get('independent_models') is True
+                and (not require_current_rules or (report.get('source_policy_version') == SOURCE_POLICY_VERSION
+                    and report.get('grading_version') == GRADING_VERSION))
                 and report.get('total') == _qa_policy(job).question_count)
     except (OSError, HTTPException):
         return False
@@ -2350,7 +2352,7 @@ async def api_evaluation_decision(job_id: str, payload: EvaluationDecisionReques
             raise HTTPException(409, detail='任务或共享产物正在使用中，或问答评价尚未开启')
         stage = 'script' if payload.action == 'continue' else 'video'
         report = job.get('evaluation', {}).get(stage)
-        if payload.fingerprint != (report or {}).get('fingerprint') or (report and not _qa_report_current(job, report, stage)):
+        if payload.fingerprint != (report or {}).get('fingerprint') or (report and not _qa_report_current(job, report, stage, require_current_rules=payload.action != 'continue')):
             raise HTTPException(409, detail='评价材料已变化，请重新评价后决策')
         if payload.action == 'accept':
             if not report:
@@ -3196,7 +3198,12 @@ async def api_create_job(payload: dict):
         qa_source = selected_text if selected_text is not None else _course_source(work)
         if not qa_source.strip() or len(qa_source) > 240000:
             raise HTTPException(422, detail='原文为空或超过24万字符，请选择章节后开启问答评价')
-        if _qa_policy({'config': config}).question_count < math.ceil(len(qa_source) / 16000):
+        from qa_evaluation import question_source
+        try:
+            body = question_source(qa_source)
+        except ValueError as exc:
+            raise HTTPException(422, detail='qa_source：' + str(exc)) from None
+        if _qa_policy({'config': config}).question_count < math.ceil(len(body) / 16000):
             raise HTTPException(422, detail='题目数量不足以覆盖原文，请增加题目数量或缩小章节范围')
 
     job_id = "job_" + time.strftime("%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:4]

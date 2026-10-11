@@ -2241,7 +2241,9 @@ async def _qa_evaluate_and_route(job, stage):
         job.update(status='running', phase='讲稿问答评价中' if stage == 'script' else '成片音轨识别与问答评价中', phase_key='qa', qa_next_job_id=None)
         _save_job(job)
     output = Path(_job_dir(job_id), f'qa-{stage}.json')
+    error_output = Path(str(output) + '.error.json')
     try:
+        error_output.unlink(missing_ok=True)
         keys = _JOB_KEYS.get(job_id) or {}
         keys['connections'] = _configure_qa_models(job['config'], job, stage)
         _JOB_KEYS[job_id] = keys
@@ -2264,6 +2266,10 @@ async def _qa_evaluate_and_route(job, stage):
         if current.get('status') == 'canceled' or current.get('cancellation_requested'):
             return
         report = read_json(output) if code == 0 else None
+        if code != 0:
+            failure = read_json(error_output)
+            if isinstance(failure, dict) and failure.get('stage') == stage and isinstance(failure.get('message'), str):
+                raise ValueError(failure['message'])
         if not report or not _qa_report_current(current, report, stage):
             raise ValueError('评价未完成或材料已变化；检查模型连接、原文和本地识别环境后重新评价')
         evaluation = {**current.get('evaluation', {}), stage: report}

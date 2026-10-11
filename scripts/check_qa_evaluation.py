@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from pydantic import ValidationError
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +27,46 @@ def questions(count=4):
 
 
 class ScoringChecks(unittest.TestCase):
+    def test_provider_failure_details_redact_credentials(self):
+        import httpx
+        from openai import BadRequestError
+        response = httpx.Response(400, request=httpx.Request('POST', 'http://localhost/v1/chat/completions'))
+        exc = BadRequestError('必须避免记录的异常原文', response=response, body={'error': {
+            'code': 'InvalidParameter', 'param': 'model', 'message': 'API_KEY=secret-test; Bearer secret-test; sk-test-secret 无效型号'}})
+        with patch.dict(os.environ, {'PAPER2VIDEO_ROLE_QA_API_KEY': 'secret-test'}):
+            details = qa.error_details(exc, {'model_type': 'test-model'})
+        self.assertEqual(details['http_status'], 400)
+        self.assertEqual(details['code'], 'InvalidParameter')
+        self.assertEqual(details['param'], 'model')
+        serialized = json.dumps(details, ensure_ascii=False)
+        self.assertNotIn('secret-test', serialized)
+        self.assertNotIn('sk-test-secret', serialized)
+        self.assertNotIn('异常原文', serialized)
+        self.assertIn('实际得分', qa.error_message(details))
+        self.assertNotIn('未填写', qa.error_message(details))
+
+    def test_http_rejection_persists_failure_without_fabricating_score(self):
+        import httpx
+        from openai import BadRequestError
+        response = httpx.Response(400, request=httpx.Request('POST', 'http://localhost/v1/chat/completions'))
+        exc = BadRequestError('请求被拒绝', response=response, body={'code': 'ModelDenied', 'message': '模型不可调用'})
+        client = MagicMock()
+        client.chat.completions.create.side_effect = exc
+        settings = {'url': 'http://localhost/v1', 'model_type': 'test-model',
+                    'api_key_env': 'PAPER2VIDEO_ROLE_QA_API_KEY', 'model_config': {}}
+        with tempfile.TemporaryDirectory(dir=ROOT / 'jobs/_validation', prefix='qa-request-') as temporary:
+            with patch('openai.OpenAI', return_value=client), patch.dict(os.environ, {settings['api_key_env']: 'test-secret'}):
+                with self.assertRaises(BadRequestError):
+                    qa.model_request(settings, '不应写入错误日志的原文', temporary)
+            details = qa.read_json(Path(temporary) / 'evaluation/last-request-error.json')
+            self.assertEqual(details['code'], 'ModelDenied')
+            self.assertNotIn('score', details)
+            self.assertNotIn('不应写入', json.dumps(details, ensure_ascii=False))
+            ledger = qa.read_json(next((Path(temporary) / 'model_usage').glob('*.json')))
+            self.assertEqual(ledger['state'], 'failed')
+            self.assertIsNone(ledger['estimated_cny'])
+            client.close.assert_called_once()
+
     def test_unsupported_correct_guess_and_missing_answers_are_failures(self):
         bank = {'questions': questions()}
         result = qa.grade(bank, [{'id': '1', 'answer': 'A', 'evidence': '原文知识'},
@@ -264,6 +304,64 @@ class FlowChecks(unittest.TestCase):
         canceled, called = asyncio.run(exercise(100, canceled=True))
         self.assertEqual(canceled['status'], 'canceled')
         self.assertIsNone(called)
+
+    def test_failed_evaluation_exposes_diagnostics_and_preserves_thresholds(self):
+        job = web._load_job('original')
+        job['config']['model_config']['evaluation']['script_threshold'] = 85
+        job['status'] = 'running'
+        web._save_job(job)
+        message = '评价未完成（HTTP 400）；尚未生成实际得分，已设置的通过门槛仍然有效。原因：模型不可调用'
+        async def launch(*argv, **kwargs):
+            qa.write_json(argv[argv.index('--output') + 1] + '.error.json', {'stage': 'script', 'message': message})
+            proc = AsyncMock()
+            proc.wait.return_value = 1
+            return proc
+        with patch.object(web.asyncio, 'create_subprocess_exec', side_effect=launch), patch.object(web, '_qa_start_next', new_callable=AsyncMock) as next_job:
+            asyncio.run(web._qa_evaluate_and_route(job, 'script'))
+            next_job.assert_not_called()
+        result = web._load_job('original')
+        self.assertEqual(result['qa_error'], message)
+        self.assertEqual(result['config']['model_config']['evaluation']['script_threshold'], 85)
+        self.assertNotIn('script', result.get('evaluation', {}))
+        self.assertEqual(result['status'], 'awaiting_review')
+
+    def test_old_error_file_is_not_used_for_new_failure(self):
+        job = web._load_job('original')
+        error_file = self.root / 'original/qa-script.json.error.json'
+        qa.write_json(error_file, {'stage': 'script', 'message': '过时的错误'})
+        proc = AsyncMock()
+        proc.wait.return_value = 1
+        with patch.object(web.asyncio, 'create_subprocess_exec', return_value=proc):
+            asyncio.run(web._qa_evaluate_and_route(job, 'script'))
+        self.assertFalse(error_file.exists())
+        self.assertNotEqual(web._load_job('original')['qa_error'], '过时的错误')
+
+    def test_cli_failure_writes_diagnostics_without_changing_policy(self):
+        import httpx
+        import runpy
+        from openai import BadRequestError
+        snapshot = self.root / 'snapshot.json'
+        qa.write_json(snapshot, {'model_config': self.config, 'model_config_origin': 'v2', 'model_connections': {
+            'mock-connection': {'compatible_base_url': 'http://localhost:1/v1', 'provider': 'openai_compatible'}}})
+        original = snapshot.read_bytes()
+        output = self.root / 'qa-script.json'
+        source = self.root / 'original/ingest/paper_text.md'
+        response = httpx.Response(400, request=httpx.Request('POST', 'http://localhost/v1/chat/completions'))
+        client = MagicMock()
+        client.chat.completions.create.side_effect = BadRequestError('不要输出请求体', response=response,
+            body={'error': {'code': 'InvalidParameter', 'message': '不支持当前型号'}})
+        argv = [str(ROOT / 'Paper2Video-main/src/qa_evaluation.py'), '--snapshot', str(snapshot), '--source', str(source),
+                '--result', str(self.result), '--output', str(output), '--mode', 'script']
+        with patch('openai.OpenAI', return_value=client), patch.dict(os.environ, {'PAPER2VIDEO_ROLE_QA_API_KEY': 'mock-key'}), patch.object(sys, 'argv', argv):
+            with self.assertRaises(SystemExit) as exited:
+                runpy.run_path(argv[0], run_name='__main__')
+        self.assertEqual(exited.exception.code, 1)
+        failure = qa.read_json(str(output) + '.error.json')
+        self.assertEqual(failure['error']['http_status'], 400)
+        self.assertEqual(failure['error']['code'], 'InvalidParameter')
+        self.assertIn('不支持当前型号', failure['message'])
+        self.assertFalse(output.exists())
+        self.assertEqual(snapshot.read_bytes(), original)
 
     def test_questions_answer_separation_cache_and_material_invalidation(self):
         snapshot = self.root / 'snapshot.json'

@@ -20,7 +20,7 @@ export function EvaluationPanel({ jobId, evaluation, error, decision, nextJobId,
   const needsEvaluation = legacyReport || oldRules;
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
-  const [pending, setPending] = useState<'continue' | 'regenerate' | 'accept'>();
+  const [pending, setPending] = useState<'continue' | 'optimize_script' | 'regenerate' | 'accept'>();
   const lock = useRef(false);
   const evaluate = (stage: 'script' | 'video') => runExclusive(lock, setBusy, async () => {
     setMessage('');
@@ -33,7 +33,7 @@ export function EvaluationPanel({ jobId, evaluation, error, decision, nextJobId,
     const action = pending;
     if (!action) return;
     setMessage('');
-    const report = action === 'continue' ? evaluation?.script : evaluation?.video;
+    const report = action === 'continue' || action === 'optimize_script' ? evaluation?.script : evaluation?.video;
     const { data } = await api.post(`/api/jobs/${jobId}/evaluation/decision`, { action, fingerprint: report?.fingerprint });
     setPending(undefined); onJob(data.job_id);
   }, (e) => setMessage(errorMessage(e)));
@@ -57,13 +57,17 @@ export function EvaluationPanel({ jobId, evaluation, error, decision, nextJobId,
         </div>;
       })}
     </div>
-    {oldRules && <p className="notice warn" role="status"><strong>出题范围与依据核验规则已更新，请重新评价。</strong>历史分数保留；重新评价将核验正文题库，含噪声的旧题库需要重新出题，API 调用会计费。</p>}
+    {oldRules && <p className="notice warn" role="status"><strong>出题范围与依据核验规则已更新，请重新评价。</strong>历史分数保留；先重新评价，再根据有效反馈优化讲稿。含噪声的旧题库需要重新出题，API 调用会计费。</p>}
     <div className="qa-decision"><strong>{running ? '正在生成或评价，请等待' : nextJobId ? '已进入下一轮任务' : decision === 'manual_accept' ? '已接受当前成片' : legacyReport ? '历史评分需要独立模型重新评价' : oldRules ? '历史评分需要按新规则重新评价' : evaluation?.video && evaluation.video.score >= policy.standard_threshold ? '达到标准通过线' : evaluation?.video && evaluation.video.score < policy.minimum_threshold && attempt >= policy.max_auto_retries ? '已达自动重生成上限，请人工决策' : evaluation?.video ? '成片待决策' : '讲稿通过或手动继续后，开始配音合片'}</strong>
       <span>自动重生成 {attempt} / {policy.max_auto_retries} 次</span></div>
     {error && <p className="notice warn" role="alert">{error}<br /><strong>已设置门槛：讲稿 {policy.script_threshold}% · 成片最低 {policy.minimum_threshold}% / 标准 {policy.standard_threshold}%</strong><br />评价请求失败时不会产生本轮得分，也不会触发自动重生成。</p>}
     {message && <p className="notice err" role="alert">{message}</p>}
     {nextJobId ? <Button theme="primary" onClick={() => onJob(nextJobId)}>查看下一轮任务</Button> : !running && policy.enabled && <div className="actions">
-      {!evaluation?.video && <Button theme="primary" disabled={busy} onClick={() => setPending('continue')}>手动继续配音合片</Button>}
+      {!evaluation?.video && <>
+        {evaluation?.script && evaluation.script.score < policy.script_threshold && <div className="field-title"><Button tag="button" theme="primary" disabled={busy || needsEvaluation} onClick={() => setPending('optimize_script')}>根据评估优化讲稿</Button>
+          <Help title="根据评估优化讲稿">根据当前讲稿未计分题目的正文依据补充遗漏或纠正表述，复用现有幻灯片，在独立任务生成讲稿并重新评价。达到通过线后按原流程继续配音合片；未达到门槛则等待你的选择。仅引文核验失败的题目先核对已有内容。历史评分需要先重新评价，避免将期刊噪声或过时结论写入讲稿。</Help></div>}
+        <Button theme={evaluation?.script && evaluation.script.score < policy.script_threshold ? 'default' : 'primary'} variant={evaluation?.script && evaluation.script.score < policy.script_threshold ? 'outline' : 'base'} disabled={busy} onClick={() => setPending('continue')}>手动继续配音合片</Button>
+      </>}
       {evaluation?.video && <><Button tag="button" theme="primary" disabled={busy || needsEvaluation} onClick={() => setPending('regenerate')}>按评价反馈重新生成</Button>
         <Button tag="button" variant="outline" disabled={busy || needsEvaluation} onClick={() => setPending('accept')}>接受当前成片</Button></>}
     </div>}
@@ -79,9 +83,10 @@ export function EvaluationPanel({ jobId, evaluation, error, decision, nextJobId,
         <span className="hint">{item.kind === 'detail' ? '细节题' : '理解题'} · 模型回答 {item.predicted ?? '未答'} · 正确答案 {item.answer}</span>
       </div>)}</div>
     </details>)}
-    {pending && <Dialog visible header={pending === 'continue' ? '确认手动继续' : pending === 'regenerate' ? '按错题反馈重新生成' : '接受当前成片'} onClose={() => setPending(undefined)}
+    {pending && <Dialog visible header={pending === 'continue' ? '确认手动继续' : pending === 'optimize_script' ? '根据评估优化讲稿' : pending === 'regenerate' ? '按错题反馈重新生成' : '接受当前成片'} onClose={() => setPending(undefined)}
       onConfirm={decide} confirmBtn={{ content: busy ? '正在提交…' : '确认', loading: busy, disabled: busy }} cancelBtn={{ content: '取消', disabled: busy }}>
       {pending === 'continue' ? <p>将记录手动继续决定，复用已审核讲稿并开始配音合片。问答分数保留原值，后续成片仍会再次评价。</p>
+        : pending === 'optimize_script' ? <p>将根据讲稿评价中的未计分题目和正文依据优化讲稿，复用现有幻灯片，并保留当前讲稿与评分记录。新讲稿生成后先重新评价，未达到门槛时继续等待你的选择。<strong>讲稿生成与问答评价的 API 调用会新增费用；通过后按原流程配音合片。</strong>{value.avatar.enabled && value.avatar.mode === 'api' && <strong>后续配音合片仍可能产生数字人 API 费用。</strong>}</p>
         : pending === 'regenerate' ? <p>将根据错题与原文依据调整讲稿提示词，在独立任务中重新生成讲稿、配音和视频。历史产物保留，模型调用会新增费用。{value.avatar.enabled && value.avatar.mode === 'api' && <strong>当前启用了数字人 API，重新生成可能再次产生较高费用。</strong>}</p>
         : <p>将任务标记为用户接受，保留原评价分数与结果。</p>}
     </Dialog>}

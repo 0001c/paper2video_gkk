@@ -453,6 +453,64 @@ class FlowChecks(unittest.TestCase):
         with self.assertRaises(web.HTTPException):
             asyncio.run(web._qa_start_next(job, regenerate=True, automatic=True))
 
+    def test_script_optimization_endpoint_uses_script_feedback_and_preserves_history(self):
+        job = web._load_job('original')
+        script = self.report('script', 25)
+        script['items'][0].update(predicted='A', supported=False, reason='evidence_unmatched')
+        video = self.report('video', 25)
+        video['items'][0]['question'] = '不能误用的成片反馈'
+        job['evaluation'] = {'script': script, 'video': video}
+        job['config']['qa_attempt'] = 2
+        web._save_job(job)
+        original_hash = qa.digest_file(self.result / 'subtitle_w_cursor.txt')
+        async def optimize():
+            with patch.object(web, '_local_write'), patch.object(web, '_JOB_LOCK', asyncio.Lock()):
+                return await asyncio.wait_for(web.api_evaluation_decision('original',
+                    web.EvaluationDecisionRequest(action='optimize_script', fingerprint='a' * 64), None), 3)
+        response = asyncio.run(optimize())
+        child = web._load_job(response['job_id'])
+        self.assertEqual(child['config']['qa_feedback_stage'], 'script')
+        self.assertEqual(child['config']['stages'], ['2'])
+        self.assertFalse(child['config']['reuse_script'])
+        self.assertTrue(child['config']['review_before_render'])
+        self.assertTrue(child['config']['model_config']['evaluation']['enabled'])
+        self.assertEqual(child['evaluation'], {})
+        self.assertEqual(child['config']['qa_attempt'], 0)
+        self.assertNotEqual(child['config']['result_dir'], str(self.result))
+        self.assertEqual(child['qa_history'][-1]['action'], 'optimize_script')
+        prompt = Path(child['config']['script_prompt_path']).read_text(encoding='utf-8')
+        self.assertIn('evidence_unmatched', prompt)
+        self.assertIn('不能把引文格式失败当作事实错误', prompt)
+        self.assertNotIn('不能误用的成片反馈', prompt)
+        self.assertEqual(qa.digest_file(self.result / 'subtitle_w_cursor.txt'), original_hash)
+        self.assertEqual(web._load_job('original')['evaluation']['script'], script)
+        self.assertEqual(web._load_job('original')['qa_decision'], 'manual_optimize_script')
+        self.assertEqual(web._QUEUE.get_nowait(), child['id'])
+        with self.assertRaises(web.HTTPException):
+            asyncio.run(optimize())
+        self.assertTrue(web._QUEUE.empty())
+
+    def test_script_optimization_rejects_missing_passed_outdated_or_stale_report(self):
+        async def optimize(fingerprint='a' * 64):
+            with patch.object(web, '_local_write'), patch.object(web, '_JOB_LOCK', asyncio.Lock()):
+                return await web.api_evaluation_decision('original',
+                    web.EvaluationDecisionRequest(action='optimize_script', fingerprint=fingerprint), None)
+        for case in ('missing', 'passed', 'old_rules', 'stale_fingerprint', 'stale_material'):
+            job = copy.deepcopy(self.job)
+            report = self.report('script', 25)
+            if case == 'passed':
+                report.update(score=80)
+            elif case == 'old_rules':
+                report.pop('source_policy_version')
+            elif case == 'stale_material':
+                report['material_sha256'] = 'b' * 64
+            job['evaluation'] = {} if case == 'missing' else {'script': report}
+            web._save_job(job)
+            with self.subTest(case=case), self.assertRaises(web.HTTPException):
+                asyncio.run(optimize('b' * 64 if case == 'stale_fingerprint' else None if case == 'missing' else 'a' * 64))
+            self.assertTrue(web._QUEUE.empty())
+            self.assertIsNone(web._load_job('original').get('qa_next_job_id'))
+
     def test_worker_routes_valid_score_and_does_not_route_canceled_or_invalid_result(self):
         async def exercise(score, code=0, canceled=False):
             job = web._load_job('original')

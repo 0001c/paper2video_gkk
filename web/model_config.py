@@ -249,7 +249,7 @@ def capabilities():
                             "cloud_voices": True, "tts_timestamps": True, "bailian_speech": True,
                             "bailian_grounding": True, "bailian_avatar": True, "avatar_segmentation": True, "qa_evaluation": True,
                             "independent_quiz_answer_models": True, "local_key_storage": os.name == 'nt',
-                            "research_body_quiz": True, "multi_quote_evidence": True}}
+                            "research_body_quiz": True, "multi_quote_evidence": True, "script_feedback_optimization": True}}
 
 
 def effective_mode(config, roles):

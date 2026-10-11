@@ -341,7 +341,7 @@ if __name__ == '__main__':
             model_config_ll=agent_config_t, model_config_vl=agent_config_v,
             beamer_temp_name=args.beamer_templete_prompt,
             if_tree_search=args.if_tree_search,
-            extra_prompt=_slide_extra)
+            extra_prompt=_slide_extra, expected_slide_count=args.slide_count)
 
         # 上游这里用 pdf2image.convert_from_path，但它依赖 poppler（Windows 上要额外装），
         # 而仓库自带的 pdf2img() 本来就是 PyMuPDF 实现。统一改走 PyMuPDF，免装 poppler。

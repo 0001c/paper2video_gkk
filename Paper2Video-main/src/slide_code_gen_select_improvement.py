@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Sequence, Tuple, Optional
 from PIL import Image, ImageDraw, ImageFont
 from wei_utils import create_agent
-from slide_quality import LAYOUT_PROMPT, record_quality
+from slide_quality import LAYOUT_PROMPT, bound_image_sizes, record_quality
 
 
 def extract_json_block(text: str, first_only: bool = True):
@@ -70,7 +70,7 @@ def extract_beamer_code(tex_str):
 def latex_code_gen_upgrade(prompt_path, tex_dir, beamer_save_path, 
                            model_config_ll, model_config_vl,
                            beamer_temp_name=None, if_fix=True, if_tree_search=True,
-                           extra_prompt=None):
+                           extra_prompt=None, expected_slide_count=None):
     agent = create_agent(model_config_ll)
     with open(prompt_path, 'r', encoding='utf-8') as f_prompt: templete_prompt = f_prompt.read()
     token_usage = {}
@@ -126,33 +126,40 @@ def latex_code_gen_upgrade(prompt_path, tex_dir, beamer_save_path,
                 "\\documentclass" in _raw,
                 "\\end{document}" in _raw,
                 _raw[:500], _raw[-500:]))
+    code = bound_image_sizes(code)
     with open(beamer_save_path, "w", encoding="utf-8") as f: f.write(code)
-    ok, feedback = compile_tex(beamer_save_path)
+    ok, feedback = compile_tex(beamer_save_path, expected_count=expected_slide_count)
 
     ## fix if error
     num_try = 0
     token_usage["fix"] = []
     while if_fix and num_try < 3 and not ok:
-        error_info = re.findall(r'^(error: .+)', feedback, flags=re.MULTILINE)
+        error_info = list(dict.fromkeys(re.findall(r'^(error: .+)', feedback, flags=re.MULTILINE)))
         if not error_info:
             # 编译失败但拿不到 "error: " 行，说明失败原因不在反馈文本里（例如
             # 缺 DLL、tectonic 崩溃）。继续让模型"盲修"只会浪费 token。
             print("[slide_gen] 编译失败但未解析到 'error: ' 行，停止修复")
             break
         agent.reset()
-        fixed_code, fix_usage = correcte_error(code, error_info, agent)
+        fixed_code, fix_usage = correcte_error(code, error_info, agent, constraints=extra_prompt)
         token_usage["fix"].append(fix_usage)
         if not isinstance(fixed_code, str) or not fixed_code.strip():
             # 同上：宁可停在上一版，也绝不把代码写成 None 后再截断文件。
             print("[slide_gen] 修复未返回可用代码，保留上一版并停止修复")
             break
+        fixed_code = bound_image_sizes(fixed_code)
+        if fixed_code.strip() == code.strip():
+            print('[slide_gen] 修复代码没有变化，停止重复调用；保留失败证据')
+            break
         code = fixed_code
         with open(beamer_save_path, "w", encoding="utf-8") as f: f.write(code)
-        ok, feedback = compile_tex(beamer_save_path)
+        ok, feedback = compile_tex(beamer_save_path, expected_count=expected_slide_count)
         num_try += 1
 
     if not ok:
-        raise RuntimeError('课件未通过编译/版面/源图质量门禁，已在讲稿和配音前停止：\n'+feedback[-3000:])
+        errors = list(dict.fromkeys(re.findall(r'^error: .+', feedback, flags=re.MULTILINE)))
+        reason = '\n'.join(errors) if errors else feedback
+        raise RuntimeError('课件未通过编译/版面/源图质量门禁，已在讲稿和配音前停止：\n'+reason[-3000:])
 
     ## improve slide layout
     config = model_config_vl
@@ -632,14 +639,16 @@ def compute_frame_spans(code: str):
 
 ## fix the grammer error with complie error
 correct_prompt_path = "./prompts/slide_beamer_correct.txt"
-def correcte_error(beamer_code, error_info, agent):
+def correcte_error(beamer_code, error_info, agent, constraints=None):
     with open(correct_prompt_path, 'r', encoding='utf-8') as f_prompt: templete_prompt = f_prompt.read()
     inference_prompt = (
         templete_prompt,
         "This is the latex code for slides:", beamer_code,
         "The errors are:", "\n".join(error_info)
     )
-    inference_prompt = "\n".join(map(str, inference_prompt))
+    inference_prompt = "\n".join(map(str, inference_prompt)) + LAYOUT_PROMPT
+    if constraints:
+        inference_prompt += '\n\n保留本任务原有页数、原图清单与内容约束；通过重排解决错误：\n' + constraints
     print(len(inference_prompt))
     user_msg = BaseMessage.make_user_message(role_name="User", content=inference_prompt)
     response = safe_step(agent, user_msg)
@@ -699,7 +708,7 @@ def _clean_feedback(text):
     return "\n".join(line for line in text.splitlines() if line.strip())
 
 
-def compile_tex(tex_path):
+def compile_tex(tex_path, expected_count=None):
     """编译 tex，返回 ``(是否成功, 反馈文本)``。
 
     编译退出码与本地版面/图号检查均须通过；已去除 Fontconfig 噪声，
@@ -719,10 +728,11 @@ def compile_tex(tex_path):
     )
     ok = result.returncode == 0
     feedback = _clean_feedback("\n".join([result.stdout or "", result.stderr or ""]))
-    errors = record_quality(tex_path,feedback,ok)
+    tex_path.with_suffix('.compile.log').write_text(feedback, encoding='utf-8')
+    errors = record_quality(tex_path,feedback,ok,expected_count)
     if errors:
         ok = False
-        feedback += '\n' + '\n'.join('error: '+error+'；先拆页/减正文，保留原图绑定与可读字号。' for error in errors)
+        feedback += '\n' + '\n'.join('error: '+error+('' if error.startswith('页数不符') else '；先拆页/减正文，保留原图绑定与可读字号。') for error in errors)
     print("Tex File Compilation succeeded." if ok else "Compilation failed:")
     print(feedback)
     return ok, feedback

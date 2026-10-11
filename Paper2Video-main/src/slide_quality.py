@@ -9,17 +9,56 @@ LAYOUT_PROMPT = ('\n[Slide quality requirements] One idea per slide; at most fiv
                  'Split dense content into separate frames before reducing image size. '
                  'Never hide overflow with clipping, resizebox or tiny fonts. '
                  'Images must use width<=0.9\\linewidth, height<=0.5\\textheight,keepaspectratio. '
+                 'Every \\caption must be inside a figure or table environment; '
+                 'never place a bare caption in a frame or column. '
                  'Preserve source figure IDs and captions. No unfulfilled promises of live demos.')
+
+
+def bound_image_sizes(code):
+    """为普通 includegraphics 补齐双向尺寸约束；不缩小文字、不裁剪图片。
+
+    高度预留标题和图注空间。已有更小的相对尺寸保留，特殊尺寸表达式交给
+    编译门禁和模型修复，避免猜测其含义。
+    """
+    def bound(match):
+        options = [part.strip() for part in (match[1] or '').split(',') if part.strip()]
+        bounded = []
+        seen = set()
+        for option in options:
+            name, sep, value = option.partition('=')
+            name = name.strip()
+            if name in ('width', 'height') and sep:
+                seen.add(name)
+                size = re.fullmatch(r'((?:\d+(?:\.\d*)?|\.\d+)?)\\(textwidth|linewidth|columnwidth|textheight)', value.strip())
+                if size and ((name == 'width' and size[2] != 'textheight')
+                             or (name == 'height' and size[2] == 'textheight')):
+                    limit = 0.9 if name == 'width' else 0.45
+                    number = min(float(size[1] or '1'), limit)
+                    unit = 'linewidth' if name == 'width' else 'textheight'
+                    option = '{}={:g}\\{}'.format(name, number, unit)
+            if name != 'keepaspectratio':
+                bounded.append(option)
+        if 'width' not in seen:
+            bounded.append(r'width=0.9\linewidth')
+        if 'height' not in seen:
+            bounded.append(r'height=0.45\textheight')
+        bounded.append('keepaspectratio')
+        return '\\includegraphics[' + ','.join(bounded) + ']{' + match[2] + '}'
+    return re.sub(r'\\includegraphics(?:\s*\[([^\]]*)\])?\s*\{([^}]*)\}', bound, code)
 
 
 def _sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
 
 
-def quality_errors(code, feedback='', figures=None):
+def quality_errors(code, feedback='', figures=None, expected_count=None):
     errors = ['版面裁切：'+line.strip() for line in feedback.splitlines() if re.search(r'Overfull \\[hv]box',line,re.I)]
     errors += ['字体缺字：'+line.strip() for line in feedback.splitlines()
                if 'could not represent character' in line and '"nullfont"' not in line]
+    if expected_count is not None:
+        count = len(re.findall(r'\\begin\{frame\}', code))
+        if count != expected_count:
+            errors.append('页数不符：要求{}页，实际{}帧；请合并或拆分主题，保留源事实与原图注'.format(expected_count, count))
     if figures is not None:
         known = {fig['rel'].replace('\\','/'):fig for fig in figures}
         for frame_no, frame in enumerate(re.findall(r'\\begin\{frame\}.*?\\end\{frame\}',code,re.S),1):
@@ -52,13 +91,19 @@ def quality_errors(code, feedback='', figures=None):
     return errors
 
 
-def record_quality(tex_path, feedback, compile_ok):
+def record_quality(tex_path, feedback, compile_ok, expected_count=None):
     target = Path(tex_path)
     code = target.read_text(encoding='utf-8')
     index = target.parent/'figures/index.json'
     figures = json.loads(index.read_text(encoding='utf-8')).get('figures',[]) if index.is_file() else []
-    errors = quality_errors(code,feedback,figures) if re.search(r'\\documentclass(?:\[[^\]]*\])?\{(?:ctex)?beamer\}',code) else []
-    report = {'version':3,'tex_sha256':_sha(target),'figures_sha256':_sha(index),'pdf_sha256':_sha(target.with_suffix('.pdf')),
+    errors = quality_errors(code,feedback,figures,expected_count) if re.search(r'\\documentclass(?:\[[^\]]*\])?\{(?:ctex)?beamer\}',code) else []
+    if compile_ok and expected_count is not None:
+        import pymupdf
+        with pymupdf.open(target.with_suffix('.pdf')) as pdf:
+            if len(pdf) != expected_count:
+                errors.append('页数不符：要求{}页，渲染PDF实际{}页；移除额外逐步展开或合并主题'.format(expected_count, len(pdf)))
+    report = {'version':4,'tex_sha256':_sha(target),'figures_sha256':_sha(index),'pdf_sha256':_sha(target.with_suffix('.pdf')),
+              'expected_slide_count':expected_count,
               'compile_ok':compile_ok,'passed':compile_ok and not errors,'errors':errors}
     target.with_suffix('.quality.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
     return errors
@@ -73,9 +118,10 @@ def require_quality(project_root):
         return
     report_path = tex.with_suffix('.quality.json')
     report = json.loads(report_path.read_text(encoding='utf-8')) if report_path.is_file() else {}
-    if report.get('version') != 3 or report.get('tex_sha256') != _sha(tex) or report.get('figures_sha256') != _sha(root/'figures/index.json') or report.get('pdf_sha256') != _sha(tex.with_suffix('.pdf')):
+    if report.get('version') != 4 or report.get('tex_sha256') != _sha(tex) or report.get('figures_sha256') != _sha(root/'figures/index.json') or report.get('pdf_sha256') != _sha(tex.with_suffix('.pdf')):
         from slide_code_gen_select_improvement import compile_tex
-        ok, feedback = compile_tex(tex)
+        expected = report.get('expected_slide_count')
+        ok, feedback = compile_tex(tex, **({'expected_count': expected} if expected is not None else {}))
         if not ok:
             raise ValueError('课件未通过质量门禁，收费前停止：'+feedback[-2000:])
     elif not report.get('passed'):

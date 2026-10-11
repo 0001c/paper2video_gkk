@@ -39,15 +39,17 @@ import hashlib
 import io
 import json
 import os
+import posixpath
 import re
 import shutil
 import sys
 import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 # 改提取逻辑（阈值、命名、筛选）必须 +1 —— 它进 deck 指纹，
 # 不 +1 就会命中"用旧逻辑提的图"生成的那批幻灯片，且不报错。
-FIGURES_VERSION = "3"
+FIGURES_VERSION = "4"
 
 FIGURES_DIRNAME = "figures"
 INDEX_NAME = "index.json"
@@ -394,24 +396,84 @@ def extract_from_pdf(pdf_path, figures_dir, min_side=DEFAULT_MIN_SIDE,
     return out
 
 
+def _docx_figure_sources(zf):
+    """按正文图片关系及紧邻图注绑定，不把媒体文件大小当成论文图号。"""
+    namespaces = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
+                  'a': 'http://schemas.openxmlformats.org/drawingml/2006/main',
+                  'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'}
+    relationships = {}
+    for relation in ET.fromstring(zf.read('word/_rels/document.xml.rels')):
+        if relation.get('TargetMode') == 'External':
+            continue
+        target = relation.get('Target', '')
+        name = posixpath.normpath(target.lstrip('/') if target.startswith('/') else posixpath.join('word', target))
+        if name.startswith('word/media/') and name in zf.namelist():
+            relationships[relation.get('Id')] = name
+    root = ET.fromstring(zf.read('word/document.xml'))
+    rows = []
+    for paragraph in root.findall('.//w:body//w:p', namespaces):
+        text = ''.join(node.text or '' for node in paragraph.findall('.//w:t', namespaces))
+        names = [relationships.get(node.get('{%s}embed' % namespaces['r']))
+                 for node in paragraph.findall('.//a:blip', namespaces)]
+        rows.append((text.strip(), [name for name in names if name]))
+    label = re.compile(r'(?:图|Figure|Fig\.?)\s*\d+(?:\s*[-–－]\s*\d+)?', re.I)
+    def captions(text):
+        matches = list(label.finditer(text))
+        if not matches or text[:matches[0].start()].strip():
+            return []
+        return [_clean_caption(text[match.start():matches[i+1].start() if i+1 < len(matches) else len(text)])
+                for i, match in enumerate(matches)]
+    numbered = any(captions(text) for text, _ in rows)
+    result = []
+    used_captions = set()
+    for index, (text, names) in enumerate(rows):
+        if not names:
+            continue
+        nearby = captions(text)
+        caption_row = index
+        if not nearby:
+            # 忽略转换文档中的空白段落；遇到下一张图或正文即停止，避免跨段猜图注。
+            for row_no, (following, images) in enumerate(rows[index+1:], index+1):
+                if images:
+                    break
+                if following:
+                    nearby = captions(following)
+                    caption_row = row_no
+                    break
+        if not nearby:
+            for row_no in range(index-1, -1, -1):
+                preceding, images = rows[row_no]
+                if images:
+                    break
+                if preceding:
+                    nearby = captions(preceding)
+                    caption_row = row_no
+                    break
+        if len(nearby) == len(names) and caption_row not in used_captions:
+            result.extend(zip(names, nearby))
+            used_captions.add(caption_row)
+        elif not numbered:
+            result.extend((name, '') for name in names)
+    return result
+
+
 def extract_from_docx(docx_path, figures_dir, min_side=DEFAULT_MIN_SIDE,
                       max_figures=DEFAULT_MAX_FIGURES, max_dim=DEFAULT_MAX_DIM,
                       log=print):
-    """从 .docx 的 `word/media/` 取图（按体积倒序，去重）。"""
+    """按正文图片顺序和原图注取图；有图注的论文跳过未绑定的装饰图。"""
     os.makedirs(figures_dir, exist_ok=True)
     picked = []
     try:
         with zipfile.ZipFile(docx_path) as zf:
-            media = [n for n in zf.namelist()
-                     if n.lower().startswith("word/media/") and not n.endswith("/")]
-            media.sort(key=lambda n: -zf.getinfo(n).file_size)
+            media = _docx_figure_sources(zf)
             seen = set()
-            for name in media:
+            for name, caption in media:
                 raw = zf.read(name)
                 if not raw:
                     continue
                 digest = _sha1_bytes(raw)
-                if digest in seen:
+                identity = (digest, figure_id(caption))
+                if identity in seen:
                     continue
                 ext = os.path.splitext(name)[1].lower().lstrip(".")
                 if ext not in ("png", "jpg", "jpeg", "bmp", "gif", "tif", "tiff", "emf", "wmf"):
@@ -425,8 +487,8 @@ def extract_from_docx(docx_path, figures_dir, min_side=DEFAULT_MIN_SIDE,
                             size = im.size
                 except Exception:
                     continue
-                seen.add(digest)
-                picked.append((name, raw, ext, size))
+                seen.add(identity)
+                picked.append((name, raw, ext, size, caption))
                 if len(picked) >= max_figures:
                     break
     except Exception as exc:
@@ -434,7 +496,7 @@ def extract_from_docx(docx_path, figures_dir, min_side=DEFAULT_MIN_SIDE,
         return []
 
     out = []
-    for i, (name, raw, ext, size) in enumerate(picked, 1):
+    for i, (name, raw, ext, size, caption) in enumerate(picked, 1):
         use_jpg = ext in ("jpg", "jpeg")
         out_name = "fig%02d.%s" % (i, "jpg" if use_jpg else "png")
         path = os.path.join(figures_dir, out_name)
@@ -444,7 +506,7 @@ def extract_from_docx(docx_path, figures_dir, min_side=DEFAULT_MIN_SIDE,
             w, h = _save_png(raw, path, max_dim)
         out.append({"page": None, "bbox": None, "src_width": size[0], "src_height": size[1],
                     "shown_ratio": None, "kind": "docx", "format": ext,
-                    "caption": "", "name": out_name,
+                    "caption": caption, "figure_id": figure_id(caption), "docx_media": name, "name": out_name,
                     "rel": "%s/%s" % (FIGURES_DIRNAME, out_name),
                     "width": w, "height": h, "bytes": os.path.getsize(path)})
     return out

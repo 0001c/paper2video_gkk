@@ -2199,6 +2199,8 @@ async def _qa_start_next_unlocked(job, regenerate=False, automatic=False, feedba
     current = _load_job(job['id'])
     if current.get('status') == 'canceled' or current.get('cancellation_requested'):
         raise HTTPException(409, detail='任务已取消，不启动下一轮生成')
+    if not regenerate and not _rerun_plan(current)['can_reuse_script']:
+        raise HTTPException(409, detail='讲稿尚未完整生成或无法复用，请先继续准备课件与讲稿')
     policy = _qa_policy(job)
     if automatic and regenerate and job['config'].get('qa_attempt', 0) >= policy.max_auto_retries:
         raise HTTPException(409, detail='已达到自动重生成上限')

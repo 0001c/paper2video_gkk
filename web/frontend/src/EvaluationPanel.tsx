@@ -9,9 +9,9 @@ export type EvaluationReport = { stage: 'script' | 'video'; score: number; corre
   model: string; quiz_model?: string; independent_models?: boolean; source_policy_version?: number; grading_version?: number; answer_correct?: number; sampled_frames: number; items: { id: string; question: string; answer: string; predicted: string | null; correct: boolean;
     supported: boolean; evidence: string; verified_evidence?: string[]; evidence_status?: string; source_quote: string; options: Record<string, string>; kind: string; timestamp?: number }[] };
 
-export function EvaluationPanel({ jobId, evaluation, error, decision, nextJobId, attempt = 0, value, busy: running, hasVideo, onJob }: {
+export function EvaluationPanel({ jobId, evaluation, error, decision, nextJobId, attempt = 0, value, busy: running, hasScript, hasVideo, onJob }: {
   jobId: string; evaluation?: { script?: EvaluationReport; video?: EvaluationReport }; error?: string; decision?: string;
-  nextJobId?: string; attempt?: number; value: ModelConfig; busy: boolean; hasVideo: boolean; onJob: (id: string) => void;
+  nextJobId?: string; attempt?: number; value: ModelConfig; busy: boolean; hasScript: boolean; hasVideo: boolean; onJob: (id: string) => void;
 }) {
   const policy = value.evaluation ?? { ...defaultEvaluation, enabled: false };
   const latestReport = evaluation?.video ?? evaluation?.script;
@@ -53,20 +53,20 @@ export function EvaluationPanel({ jobId, evaluation, error, decision, nextJobId,
           {report && <span className="hint">{report.independent_models ? `出题 ${report.quiz_model}` : '历史评分采用同一模型出题与答题，请重新评价'}</span>}
           {report && !currentRules && <span className="hint">历史规则评分 · 不用于当前自动通过判断</span>}
           <span className="qa-threshold-label">{stage === 'script' ? `通过线 ${threshold}%` : `最低 ${policy.minimum_threshold}% · 标准 ${threshold}%`}</span>
-          <Button variant="outline" disabled={running || busy || !policy.enabled || !!evaluationModelProblem(value) || (stage === 'video' && !hasVideo)} loading={busy} onClick={() => evaluate(stage)}>重新评价{stage === 'script' ? '讲稿' : '成片'}</Button>
+          <Button variant="outline" disabled={running || busy || !policy.enabled || !!evaluationModelProblem(value) || (stage === 'script' ? !hasScript : !hasVideo)} loading={busy} onClick={() => evaluate(stage)}>重新评价{stage === 'script' ? '讲稿' : '成片'}</Button>
         </div>;
       })}
     </div>
     {oldRules && <p className="notice warn" role="status"><strong>出题范围与依据核验规则已更新，请重新评价。</strong>历史分数保留；先重新评价，再根据有效反馈优化讲稿。含噪声的旧题库需要重新出题，API 调用会计费。</p>}
-    <div className="qa-decision"><strong>{running ? '正在生成或评价，请等待' : nextJobId ? '已进入下一轮任务' : decision === 'manual_accept' ? '已接受当前成片' : legacyReport ? '历史评分需要独立模型重新评价' : oldRules ? '历史评分需要按新规则重新评价' : evaluation?.video && evaluation.video.score >= policy.standard_threshold ? '达到标准通过线' : evaluation?.video && evaluation.video.score < policy.minimum_threshold && attempt >= policy.max_auto_retries ? '已达自动重生成上限，请人工决策' : evaluation?.video ? '成片待决策' : '讲稿通过或手动继续后，开始配音合片'}</strong>
+    <div className="qa-decision"><strong>{running ? '正在生成或评价，请等待' : nextJobId ? '已进入下一轮任务' : !hasScript && !hasVideo ? '讲稿尚未完整生成，请先继续准备课件与讲稿' : decision === 'manual_accept' ? '已接受当前成片' : legacyReport ? '历史评分需要独立模型重新评价' : oldRules ? '历史评分需要按新规则重新评价' : evaluation?.video && evaluation.video.score >= policy.standard_threshold ? '达到标准通过线' : evaluation?.video && evaluation.video.score < policy.minimum_threshold && attempt >= policy.max_auto_retries ? '已达自动重生成上限，请人工决策' : evaluation?.video ? '成片待决策' : '讲稿通过或手动继续后，开始配音合片'}</strong>
       <span>自动重生成 {attempt} / {policy.max_auto_retries} 次</span></div>
     {error && <p className="notice warn" role="alert">{error}<br /><strong>已设置门槛：讲稿 {policy.script_threshold}% · 成片最低 {policy.minimum_threshold}% / 标准 {policy.standard_threshold}%</strong><br />评价请求失败时不会产生本轮得分，也不会触发自动重生成。</p>}
     {message && <p className="notice err" role="alert">{message}</p>}
     {nextJobId ? <Button theme="primary" onClick={() => onJob(nextJobId)}>查看下一轮任务</Button> : !running && policy.enabled && <div className="actions">
       {!evaluation?.video && <>
-        {evaluation?.script && evaluation.script.score < policy.script_threshold && <div className="field-title"><Button tag="button" theme="primary" disabled={busy || needsEvaluation} onClick={() => setPending('optimize_script')}>根据评估优化讲稿</Button>
+        {evaluation?.script && evaluation.script.score < policy.script_threshold && <div className="field-title"><Button tag="button" theme="primary" disabled={busy || needsEvaluation || !hasScript} onClick={() => setPending('optimize_script')}>根据评估优化讲稿</Button>
           <Help title="根据评估优化讲稿">根据当前讲稿未计分题目的正文依据补充遗漏或纠正表述，复用现有幻灯片，在独立任务生成讲稿并重新评价。达到通过线后按原流程继续配音合片；未达到门槛则等待你的选择。仅引文核验失败的题目先核对已有内容。历史评分需要先重新评价，避免将期刊噪声或过时结论写入讲稿。</Help></div>}
-        <Button theme={evaluation?.script && evaluation.script.score < policy.script_threshold ? 'default' : 'primary'} variant={evaluation?.script && evaluation.script.score < policy.script_threshold ? 'outline' : 'base'} disabled={busy} onClick={() => setPending('continue')}>手动继续配音合片</Button>
+        <Button theme={evaluation?.script && evaluation.script.score < policy.script_threshold ? 'default' : 'primary'} variant={evaluation?.script && evaluation.script.score < policy.script_threshold ? 'outline' : 'base'} disabled={busy || !hasScript} onClick={() => setPending('continue')}>手动继续配音合片</Button>
       </>}
       {evaluation?.video && <><Button tag="button" theme="primary" disabled={busy || needsEvaluation} onClick={() => setPending('regenerate')}>按评价反馈重新生成</Button>
         <Button tag="button" variant="outline" disabled={busy || needsEvaluation} onClick={() => setPending('accept')}>接受当前成片</Button></>}

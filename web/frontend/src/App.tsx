@@ -1638,7 +1638,7 @@ export default function App() {
 
         {job && taskModels && (visiblePages?.pages?.length > 0 || job.phase_key === 'qa' || job.evaluation) && <EvaluationPanel key={`qa-${job.id}`}
           jobId={job.id} evaluation={job.evaluation} error={job.qa_error} decision={job.qa_decision} nextJobId={job.qa_next_job_id}
-          attempt={job.config?.qa_attempt} value={taskModels} busy={!!running} hasVideo={!job.config?.review_before_render && visibleArtifacts.some((item) => item.name === '3_merage.mp4')} onJob={selectJob} />}
+          attempt={job.config?.qa_attempt} value={taskModels} busy={!!running} hasScript={!!visiblePages?.script_txt} hasVideo={!job.config?.review_before_render && visibleArtifacts.some((item) => item.name === '3_merage.mp4')} onJob={selectJob} />}
 
         {job && (
           <div style={{ marginTop: 18 }}>

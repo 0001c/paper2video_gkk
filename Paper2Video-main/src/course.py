@@ -329,7 +329,11 @@ def generate_script(plan, slide_dir, prompt_file, model_config, output_dir, gene
             pending.append((i, slide, prompt, key))
     def generate(item):
         i, slide, prompt, key = item
-        content, tokens = generator(slide_dir, prompt_file, model_config, image_paths=[str(slide)], prompt_text=prompt)
+        try:
+            content, tokens = generator(slide_dir, prompt_file, model_config, image_paths=[str(slide)], prompt_text=prompt,
+                                        diagnostics_dir=cache_dir / 'responses')
+        except Exception as exc:
+            raise RuntimeError('第 {} 页讲稿生成失败：{}'.format(i + 1, exc)) from exc
         valid, why = validate_script_output(content, 1)
         if not valid or len(split_pages(content)) != 1:
             raise ValueError('第 {} 页讲稿不合格：{}'.format(i + 1, why or '只允许返回当前一页'))

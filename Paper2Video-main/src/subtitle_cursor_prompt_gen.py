@@ -1,5 +1,7 @@
 import re
 import time
+import json
+import uuid
 import pdb
 import os, sys
 from os import path
@@ -9,6 +11,24 @@ from camel.messages import BaseMessage
 from camel.types import ModelPlatformType
 from wei_utils import create_agent
 from script_validation import validate_script_output, normalize_script
+
+
+def _save_rejected_response(directory, image_paths, attempt, content, why, response):
+    if directory is None:
+        return
+    usage = (getattr(response, 'info', None) or {}).get('usage') or {}
+    record = {'images': [Path(name).name for name in image_paths], 'attempt': attempt,
+              'validation_error': why, 'content': content,
+              'usage': {key: usage[key] for key in ('prompt_tokens', 'completion_tokens', 'total_tokens')
+                        if isinstance(usage.get(key), int)}}
+    try:
+        root = Path(directory)
+        root.mkdir(parents=True, exist_ok=True)
+        target = root / ('rejected-' + uuid.uuid4().hex + '.json')
+        target.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding='utf-8')
+        print('[subtitle_cursor_gen] 校验失败原始响应已保存：{}'.format(target), flush=True)
+    except OSError as exc:
+        print('[subtitle_cursor_gen] 无法保存格式诊断（{}）'.format(type(exc).__name__), flush=True)
 
 
 def _empty_response_hint(response, model_config):
@@ -51,7 +71,7 @@ def _empty_response_hint(response, model_config):
 
 
 def subtitle_cursor_gen(slide_imgs_dir, prompt_path, model_config, retries=None,
-                        image_paths=None, prompt_text=None):
+                        image_paths=None, prompt_text=None, diagnostics_dir=None):
     """让 VLM 看全部幻灯片，产出「讲稿 | 光标目标」的逐页文本。
 
     ⚠️ 为什么必须重试 + 判空 + **判完整性**
@@ -88,14 +108,17 @@ def subtitle_cursor_gen(slide_imgs_dir, prompt_path, model_config, retries=None,
     task_prompt = task_prompt.rstrip() + (
         "\n\n【本次输入】共有 {} 张幻灯片。请为**每一张**都生成一段，"
         "一张都不能遗漏，且必须在最后一张之后才结束输出。".format(len(images)))
-    task_prompt += ('\n【机器可读输出】只返回 JSON：{"pages":[{"sentences":[{"speech_text":"口播",'
+    task_prompt += ('\n【机器可读输出；覆盖上方旧的逐行讲稿格式和示例】只返回 JSON：{"pages":[{"sentences":[{"speech_text":"口播",'
                     '"cursor_prompt":"课件原文短语或 no"}]}]}。不要分行写口播与目标，不要伪脚注。'
+                    'speech_text 只放口播内容，不混入旧的“讲稿 | 光标目标”行或 ### 页分隔符；每句分别放在 sentences 中。'
+                    'cursor_prompt 只放原文短语，多个目标不要用 | 拼接；无需光标时写字符串 "no"，不能写裸 no。'
                     '保留年份、小数、百分比，不要凭常识补写课件未提供的事实、公式或演示承诺。')
     messages = BaseMessage.make_user_message(role_name="user", content=task_prompt, image_list=images, meta_dict={})
 
     attempts = retries if retries is not None else int(
         os.environ.get("PAPER2VIDEO_VLM_RETRIES", "3"))
     last_note = ""
+    format_failed = False
     for attempt in range(1, attempts + 1):
         try:
             response = agent.step(messages)
@@ -114,14 +137,21 @@ def subtitle_cursor_gen(slide_imgs_dir, prompt_path, model_config, retries=None,
             ok, why = validate_script_output(content, len(images))
             if ok:
                 return normalize_script(content), (getattr(response, "info", None) or {}).get("usage", {})
-            last_note = "结构不完整：{}".format(why)
+            format_failed = True
+            last_note = "讲稿格式校验失败：{}".format(why)
+            _save_rejected_response(diagnostics_dir, slide_image_list, attempt, content, why, response)
             if attempt < attempts:
                 wait = 3 * attempt
                 print("[subtitle_cursor_gen] 第 {}/{} 次响应不完整（{}；幻灯片 {} 张，"
                       "收到 {} 字符），{}s 后重试".format(
                           attempt, attempts, why, len(images), len(content), wait))
+                agent.reset()
+                messages = BaseMessage.make_user_message(role_name='user', content=task_prompt +
+                    '\n【上次格式校验失败】' + why + '。请重新输出完整、合法的JSON；不得遗漏当前页内容或用空字符串代替。',
+                    image_list=images, meta_dict={})
                 time.sleep(wait)
             continue
+        format_failed = False
         usage = (getattr(response, "info", None) or {}).get("usage") or {}
         hint = _empty_response_hint(response, model_config)
         last_note = "{} | usage={}".format(repr(response)[:300], usage)
@@ -133,6 +163,11 @@ def subtitle_cursor_gen(slide_imgs_dir, prompt_path, model_config, retries=None,
                       hint, wait))
             time.sleep(wait)
 
+    if format_failed:
+        raise RuntimeError('VLM 连续 {} 次未能给出可用的讲稿，幻灯片 {} 张、prompt={}。\n'
+                           '  末次问题：{}\n'
+                           '  接口已返回内容，失败发生在讲稿格式校验；已完成页的缓存保留，重试只补未完成页。'
+                           .format(attempts, len(images), path.basename(prompt_path), last_note))
     raise RuntimeError(
         "VLM 连续 {} 次未能给出可用的讲稿，放弃。幻灯片 {} 张、prompt={}。\n"
         "  末次问题：{}\n"

@@ -381,6 +381,22 @@ class FlowChecks(unittest.TestCase):
         with self.assertRaises(web.HTTPException):
             asyncio.run(decide('continue'))
 
+    def test_manual_continue_missing_script_does_not_change_failure_status(self):
+        job = web._load_job('original')
+        job['status'] = 'failed'
+        job['phase'] = '生成讲稿失败'
+        job['evaluation'] = {}
+        web._save_job(job)
+        (self.result / 'subtitle_w_cursor.txt').unlink()
+        before = web._load_job('original')
+        with patch.object(web, '_local_write'), patch.object(web, '_JOB_LOCK', asyncio.Lock()):
+            with self.assertRaisesRegex(web.HTTPException, '讲稿尚未'):
+                asyncio.run(web.api_evaluation_decision('original', web.EvaluationDecisionRequest(action='continue'), None))
+        with self.assertRaisesRegex(web.HTTPException, '讲稿尚未完整生成'):
+            asyncio.run(web._qa_start_next(job))
+        self.assertEqual(web._load_job('original'), before)
+        self.assertEqual(web._QUEUE.qsize(), 0)
+
     def test_canceled_task_cannot_restart_even_before_evaluator_launch(self):
         job = web._load_job('original')
         job['status'] = 'canceled'

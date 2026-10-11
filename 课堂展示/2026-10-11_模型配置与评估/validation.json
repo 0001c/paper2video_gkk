@@ -1,0 +1,30 @@
+{
+  "slides": 18,
+  "main_slides": 16,
+  "appendix_slides": 2,
+  "main_seconds": 900,
+  "script_chinese_characters": 3433,
+  "notes_slides": 18,
+  "screenshot_score_type": "离线模拟，不是真实成绩",
+  "historical_media": "2026-10-08旧版样本，不代表当前新版",
+  "outputs": [
+    "build_presentation.py",
+    "Paper2Video_翻转课堂_模型配置与评估_15分钟.pdf",
+    "Paper2Video_翻转课堂_模型配置与评估_15分钟.pptx",
+    "sources.json",
+    "validation.json",
+    "课件总览.png",
+    "逐页讲稿.docx",
+    "逐页讲稿.md"
+  ],
+  "integrity_checks": {
+    "pptx_reopen": "pass",
+    "docx_reopen": "pass",
+    "zip_xml": "pass",
+    "pdf_pages": 18,
+    "notes_pages": 18,
+    "slide_bounds": "pass",
+    "image_decode": "pass"
+  },
+  "rendering": "PPT原生对象；PDF和PNG由同一布局指令生成。未使用PowerPoint/LibreOffice原生渲染。"
+}

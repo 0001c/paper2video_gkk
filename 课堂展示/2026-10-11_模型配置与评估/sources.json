@@ -1,0 +1,66 @@
+{
+  "P": {
+    "label": "论文",
+    "path": "docs/Paper2Video.pdf",
+    "description": "arXiv:2510.05096v2，2025-10-09；19页",
+    "sha256": "22183644f460b10e7e798d9e102f83956c6d393530c0989e6d3021e2bd650364"
+  },
+  "C": {
+    "label": "模型配置",
+    "path": "web/model_config.py",
+    "description": "角色、参数范围、执行能力校验",
+    "sha256": "a8128e971f1e03542c7148b92465e7c7e10ae50d5e4d1710d01447851dea8252"
+  },
+  "F": {
+    "label": "前端默认",
+    "path": "web/frontend/src/modelConfig.ts",
+    "description": "预设型号、新任务评价默认值",
+    "sha256": "7597e210fa7ed5d7f732d15a3a21c1f58d2f45aa52b834994ff6a93ae925d7ad"
+  },
+  "R": {
+    "label": "模型运行",
+    "path": "Paper2Video-main/src/model_runtime.py",
+    "description": "角色客户端、任务快照、禁止全局凭据回落",
+    "sha256": "bf0d7362fce4152854a141d933ef53aa60eca9aef14612c5253d99b4ff4282d9"
+  },
+  "Q": {
+    "label": "问答实现",
+    "path": "Paper2Video-main/src/qa_evaluation.py",
+    "description": "原文题库、证据、抽帧、评分与缓存",
+    "sha256": "9b46d888d534ae4a2f029f59fc6c96fbbbe73cc73de608aca9a17448b383ba4b"
+  },
+  "D": {
+    "label": "问答说明",
+    "path": "docs/双阶段问答评价与数字人成本控制.md",
+    "description": "双阶段门槛、人工决策、独立任务",
+    "sha256": "3cf354e1b18c80376747153610c8f70ca57a6dda9b24e1c6ef725024c5a6245e"
+  },
+  "H": {
+    "label": "历史实测",
+    "path": "docs/自然语言处理第二章全链路实测评估.md",
+    "description": "2026-10-08历史样本，不代表当前新版",
+    "sha256": "2d7fdd39c96dd00e07d3d159a2b1e8bf54b2a0c5272d6cbcfe5a70c5f3882f14"
+  },
+  "L": {
+    "label": "修复验收",
+    "path": "docs/全链路P1与P2修复与离线验收.md",
+    "description": "字幕区、例题、逐项门禁及离线验收",
+    "sha256": "8fd00fda69867292a141728d0f8470e42607019215fa98ccbda8c66ded9889ce"
+  },
+  "V": {
+    "label": "最新验收",
+    "path": "log/2026-10-11_17-30-00_数字人成本提醒与双阶段问答评价.md",
+    "description": "离线回归与实际页面检查；未实测付费问答",
+    "sha256": "70423f8fac06945638e52e886411a2331ec80ff20f6d4e92944ca30ef81f9c26"
+  },
+  "assets": {
+    "historical-subtitle.png": {
+      "sha256": "416988d55318a313ef884449749848b5a7d41baa11b0b744d1637d22fcf9c4ba",
+      "description": "历史实测抽帧"
+    },
+    "simulated-evaluation.png": {
+      "sha256": "79f355fddcde76ba0c3c1273a7a32c61ff23fe5efabb0d4674c94ae42087b5f2",
+      "description": "离线模拟分数界面"
+    }
+  }
+}

@@ -166,6 +166,40 @@ def normalize_options(value):
     return {label: result[label] for label in 'ABCD'}
 
 
+def verified_quote(quote, source):
+    """仅忽略提取文本的空白差异，返回真正存在于原文中的连续片段。"""
+    if not isinstance(quote, str) or len(quote.strip()) < 4:
+        return None
+    if quote in source:
+        return quote
+    def compact_text(text):
+        characters, positions = [], []
+        whitespace = None
+        for index, char in enumerate(text):
+            if char.isspace():
+                if whitespace is None:
+                    whitespace = index
+                continue
+            # 数字和英文单词之间保留分隔，不能把“1 2”误认成“12”。
+            if (whitespace is not None and characters and characters[-1].isascii()
+                    and characters[-1].isalnum() and char.isascii() and char.isalnum()):
+                characters.append(' ')
+                positions.append(whitespace)
+            characters.append(char)
+            positions.append(index)
+            whitespace = None
+        return ''.join(characters), positions
+
+    needle, _ = compact_text(quote)
+    if len(needle) < 4:
+        return None
+    compact, positions = compact_text(source)
+    start = compact.find(needle)
+    if start < 0:
+        return None
+    return source[positions[start]:positions[start + len(needle) - 1] + 1]
+
+
 def validate_questions(items, source, count):
     if not isinstance(items, list) or len(items) != count:
         raise ValueError('题库数量与配置不一致；未继续生成')
@@ -183,12 +217,12 @@ def validate_questions(items, source, count):
         answer = option_label(item.get('answer'))
         if answer is None:
             raise ValueError(f'第{index + 1}题的答案必须为A/B/C/D，不能猜测或补写答案')
-        quote = item.get('source_quote')
-        if not isinstance(quote, str) or len(quote.strip()) < 4 or quote not in source:
-            raise ValueError('题库依据无法在原文中验证')
+        quote = verified_quote(item.get('source_quote'), source)
+        if quote is None:
+            raise ValueError(f'第{index + 1}题的source_quote无法在原文中验证；只允许空格和换行差异')
         if item.get('kind') not in ('detail', 'understanding'):
             raise ValueError('题库缺少细节/理解分类')
-        items[index] = {**item, 'options': options, 'answer': answer, 'id': str(index + 1)}
+        items[index] = {**item, 'options': options, 'answer': answer, 'source_quote': quote, 'id': str(index + 1)}
     return items
 
 

@@ -27,6 +27,23 @@ def questions(count=4):
 
 
 class ScoringChecks(unittest.TestCase):
+    def test_quote_layout_differences_restore_exact_source_span(self):
+        source = '前文。本研究借鉴 Zhang 等的研究，从预测性、自省性、包容性和响应性四个方面测量科研人员责任式\n\n创新行为[40]。'
+        quote = '本研究借鉴Zhang等的研究，从预测性、自省性、包容性和响应性四个方面测量科研人员责任式创新行为'
+        restored = qa.verified_quote(quote, source)
+        self.assertIn(restored, source)
+        self.assertIn('责任式\n\n创新行为', restored)
+        rows = questions(1)
+        rows[0]['source_quote'] = quote
+        normalized = qa.validate_questions(rows, source, 1)
+        self.assertEqual(normalized[0]['source_quote'], restored)
+        self.assertIsNone(qa.verified_quote(quote.replace('四个方面', '五个方面'), source))
+        self.assertIsNone(qa.verified_quote('前文。……责任式创新行为', source))
+        self.assertIsNone(qa.verified_quote(' \n\t ', source))
+        self.assertIsNone(qa.verified_quote('样本值为12', '样本值为1 2'))
+        self.assertIsNone(qa.verified_quote('responsibleinnovation', 'responsible innovation'))
+        self.assertEqual(qa.verified_quote('responsible innovation', 'responsible\ninnovation'), 'responsible\ninnovation')
+
     def test_option_variants_preserve_labels_and_answers(self):
         expected = dict(A='原文知识', B='乙', C='丙', D='丁')
         variants = [

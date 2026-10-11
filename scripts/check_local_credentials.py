@@ -165,6 +165,20 @@ class LocalCredentialsChecks(unittest.TestCase):
             asyncio.run(start())
         self.assertEqual(fresh.list()[0]['id'], row['id'])
 
+    def test_app_startup_restores_explicitly_allowed_private_endpoint(self):
+        from web import app as service
+        row = self.store.create(ConnectionCreate(label='私网模型', provider='openai_compatible',
+            compatible_base_url='http://192.168.50.20:8000/v1', persist_key=True), ['192.168.50.0/24'])
+        fresh = ConnectionStore(self.path)
+        async def worker():
+            self.assertEqual(fresh._entry(row['id'])['compatible_base_url'], 'http://192.168.50.20:8000/v1')
+        async def start():
+            await service._startup()
+            await service._WORKER
+        with patch.dict(os.environ, {'PAPER2VIDEO_MODEL_NETWORKS': '192.168.50.0/24'}), patch.object(service, '_MODEL_CONNECTIONS', fresh), patch.object(service, '_worker_loop', worker), patch.object(service, '_QUEUE', None), patch.object(service, '_WORKER', None):
+            asyncio.run(start())
+        self.assertIsNone(fresh.storage_status()['error'])
+
 
 class MemoryOnlyChecks(unittest.TestCase):
     def test_unconfigured_storage_refuses_persist_and_retains_memory_mode(self):

@@ -2389,7 +2389,9 @@ async def _worker_loop():
 @app.on_event("startup")
 async def _startup():
     global _QUEUE, _WORKER
-    _MODEL_CONNECTIONS.restore([str(network) for network in app.state.lan_networks])
+    networks = [str(network) for network in app.state.lan_networks]
+    networks.extend(value.strip() for value in os.environ.get('PAPER2VIDEO_MODEL_NETWORKS', '').split(',') if value.strip())
+    _MODEL_CONNECTIONS.restore(networks)
     _QUEUE = asyncio.Queue()
     _WORKER = asyncio.create_task(_worker_loop())
 

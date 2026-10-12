@@ -90,7 +90,7 @@ export function EvaluationPanel({ jobId, evaluation, error, decision, nextJobId,
     {stale && <p className="notice warn" role="status"><strong>评价项目、门槛、模型或规则已变化，请重新评价。</strong>历史分数保留，旧报告不用于新配置的通过或修复判断。</p>}
     <div className="qa-decision"><strong>{running ? '正在生成或评价，请等待' : nextJobId ? '已创建下一轮任务' : decision === 'manual_accept' ? '已接受当前成片' : stale ? '请按当前配置重新评价' : evaluation?.video ? videoFailed ? '成片存在未通过项目，请复核后定向修复' : '所选成片项目均已通过' : '讲稿通过或手动继续后开始配音合片'}</strong>
       {selected.video.enabled && <span>知识自动修复 {attempt} / {policy.max_auto_retries} 次</span>}</div>
-    {error && <p className="notice warn" role="alert">{error}<br />评价异常不会产生本轮有效得分或触发自动重生成。</p>}
+    {error && <p className="notice warn" role="alert">{error}<br />逐页格式或证据错误最多自动重试两次，成功页直接复用；仍失败时保留产物并按通知配置提醒。评价异常不会改写讲稿或伪造得分。</p>}
     {message && <p className="notice err" role="alert">{message}</p>}
     {nextJobId ? <Button theme="primary" onClick={() => onJob(nextJobId)}>查看下一轮任务</Button> : !running && policy.enabled && <div className="actions">
       {!evaluation?.video && <>

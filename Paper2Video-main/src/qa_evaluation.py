@@ -572,7 +572,11 @@ if __name__ == '__main__':
     Path(str(args.output) + '.error.json').unlink(missing_ok=True)
     try:
         report = evaluate(args.mode, args.snapshot, args.source, args.result, args.output, args.language)
-        print(f"[qa] {args.mode}: {report['correct']}/{report['total']} = {report['score']}%", flush=True)
+        if report.get('checks'):
+            scores = '；'.join(f"{check['label']} {check['score']}%（通过线 {check['threshold']}%）" for check in report['checks'].values())
+            print(f"[qa] {args.mode}: {scores}；所选项目最低分 {report['score']}%", flush=True)
+        else:
+            print(f"[qa] {args.mode}: {report['correct']}/{report['total']} = {report['score']}%", flush=True)
     except Exception as exc:
         details = error_details(exc)
         write_json(str(args.output) + '.error.json', {'stage': args.mode, 'error': details,

@@ -9,6 +9,7 @@ import { AvatarToggle } from './AvatarToggle';
 import { EvaluationPanel, type EvaluationReport } from './EvaluationPanel';
 import { EvaluationSettings } from './EvaluationSettings';
 import { VideoVersions } from './VideoVersions';
+import { NotificationSettings } from './NotificationSettings';
 import { ThemeToggle } from "./ThemeToggle";
 import { AccessControls } from './AccessGate';
 import { ModelSettings } from "./ModelSettings";
@@ -196,6 +197,7 @@ type Job = {
   qa_error?: string;
   qa_decision?: string;
   qa_next_job_id?: string;
+  notification?: { status: string; error?: string };
   phase_key?: string;
   remote_tasks?: RemoteTaskDetails;
   remote_cancel_state?: string;
@@ -1092,6 +1094,7 @@ export default function App() {
         <button type="button" aria-pressed={view === "detail"} disabled={!jobId} onClick={() => setView("detail")}>任务详情</button>
         <button type="button" aria-pressed={view === "history"} onClick={() => setView("history")}>任务记录</button>
       </nav>
+      <NotificationSettings />
       {(initError || sysError) && (
         <div className="notice err" role="alert">
           <span>{initError ? `服务配置加载失败：${initError}` : `硬件信息读取失败：${sysError}`}</span>
@@ -1626,6 +1629,7 @@ export default function App() {
         {job && <SubtitleSettings value={taskSubtitleStyle} disabled={!!running} onChange={(value) => setTaskSubtitleOverride({ jobId: job.id, value })} />}
         {job && taskModels && <EvaluationSettings value={taskModels} task disabled={!!running} onChange={(value) => setTaskOverride({ jobId: job.id, value })} />}
         {job && <VideoVersions jobId={job.id} refreshKey={`${job.status}-${filesVersion}-${job.qa_next_job_id ?? ''}`} />}
+        {job?.notification?.status === 'failed' && <p className="notice warn" role="status">{job.notification.error}</p>}
         {job && !running && <p className="hint">字幕样式修改将用于下一次审核合片或续跑，不会立即改变已有视频。</p>}
         {job?.status === 'failed' && job.phase_key === 'struct' && <div className="notice warn source-failure"><p>正文结构化未完成。若日志提示缺失字形，请对照源页修正，再以新素材创建任务。</p><SourceReview key={job.id} ingestId={job.id} onSaved={useCorrectedSource} /></div>}
         {job?.config?.model_config_origin === "v2" && job.config.model_config && taskModels && <TaskModelSettings key={`models-${job.id}`}

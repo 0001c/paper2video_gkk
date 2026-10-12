@@ -147,7 +147,10 @@ def model_request(settings, content, directory):
             messages=[{'role': 'system', 'content': SYSTEM}, {'role': 'user', 'content': content}],
             **settings['model_config'])
         model_costs.finish(ticket, response.usage.model_dump() if response.usage else {})
-        return parse_json(response.choices[0].message.content or '')
+        choice = response.choices[0]
+        if getattr(choice, 'finish_reason', None) == 'length':
+            raise ValueError('评价模型输出达到token上限而截断，未产生有效评分；请提高max_output_tokens后重试')
+        return parse_json(choice.message.content or '')
     except Exception as exc:
         details = error_details(exc, settings)
         # 收到HTTP拒绝即可明确失败；网络中断仍不能假定未计费。

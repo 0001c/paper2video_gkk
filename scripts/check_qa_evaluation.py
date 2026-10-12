@@ -190,6 +190,25 @@ class ScoringChecks(unittest.TestCase):
             self.assertIsNone(ledger['estimated_cny'])
             client.close.assert_called_once()
 
+    def test_truncated_response_reports_budget_instead_of_json_parse_error(self):
+        from types import SimpleNamespace
+        client = MagicMock()
+        client.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(finish_reason='length', message=SimpleNamespace(content='{"answers":['))],
+            usage=SimpleNamespace(model_dump=lambda: {'prompt_tokens': 10, 'completion_tokens': 8192}))
+        settings = {'url': 'http://localhost/v1', 'model_type': 'test-model',
+            'api_key_env': 'PAPER2VIDEO_ROLE_QA_API_KEY', 'model_config': {}}
+        with tempfile.TemporaryDirectory(dir=ROOT / 'jobs/_validation', prefix='qa-truncated-') as temporary:
+            with patch('openai.OpenAI', return_value=client), patch.dict(os.environ, {settings['api_key_env']: 'test-secret'}):
+                with self.assertRaisesRegex(ValueError, 'max_output_tokens'):
+                    qa.model_request(settings, '不应写入错误日志的原文', temporary)
+            details = qa.read_json(Path(temporary) / 'evaluation/last-request-error.json')
+            self.assertIn('token上限', details['provider_message'])
+            self.assertNotIn('score', details)
+            ledger = qa.read_json(next((Path(temporary) / 'model_usage').glob('*.json')))
+            self.assertEqual(ledger['state'], 'succeeded', '截断仍保留服务商成功请求的用量')
+            self.assertEqual(ledger['usage']['completion_tokens'], 8192)
+
     def test_unsupported_correct_guess_and_missing_answers_are_failures(self):
         bank = {'questions': questions()}
         result = qa.grade(bank, [{'id': '1', 'answer': 'A', 'evidence': '原文知识'},

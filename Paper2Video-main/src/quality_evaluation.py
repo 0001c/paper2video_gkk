@@ -4,6 +4,7 @@ import json
 import math
 from pathlib import Path
 import subprocess
+import time
 
 import course
 from qa_evaluation import digest, digest_file, read_json, write_json, question_bank, grade
@@ -14,6 +15,46 @@ LABELS = {'script': '讲稿知识', 'video': '成片知识', 'slides': 'PPT 展�
 CRITERIA = {'slides': ('readability', 'layout', 'visual_teaching'),
             'presentation': ('page_timing', 'focus', 'unobstructed'),
             'audio': ('coverage', 'accuracy', 'order')}
+RUBRIC_ATTEMPTS = 3
+
+
+def rubric_page(settings, content, root, cache, names, page, script, transcript, request):
+    """格式/证据校验失败只重试本页；成功页缓存与评分规则保持不变。"""
+    response = read_json(cache)
+    for attempt in range(RUBRIC_ATTEMPTS):
+        try:
+            if response is None:
+                raw = request(settings, content, root)
+                response = raw.get('checks') if isinstance(raw, dict) else None
+                write_json(cache.with_suffix('.response.json'), response)
+            if not isinstance(response, dict) or set(response) != set(names):
+                raise ValueError('评价模型返回的项目与本轮选择不一致')
+            rows = {name: rubric_result(name, response[name], page, script, transcript) for name in names}
+            write_json(cache, response)
+            print(f"[qa] 逐页评价 {page['page']} 完成", flush=True)
+            return rows
+        except Exception as exc:
+            transient = getattr(exc, 'status_code', None) in (429, 500, 502, 503, 504) or type(exc).__name__ in ('APIConnectionError', 'APITimeoutError')
+            formatting = isinstance(exc, ValueError) and 'token上限' not in str(exc)
+            if not (transient or formatting):
+                raise
+            reason = str(exc) if formatting else '模型连接暂时失败（' + type(exc).__name__ + '）'
+            write_json(cache.parent / f'{cache.stem}-attempt-{time.time_ns()}.json',
+                       {'attempt': attempt + 1, 'error': reason, 'response': response})
+            if attempt + 1 == RUBRIC_ATTEMPTS:
+                raise ValueError(f"第{page['page']}页评价自动重试{RUBRIC_ATTEMPTS - 1}次后仍失败：{reason}") from None
+            print(f"[qa] 第{page['page']}页评价未完成：{reason}；自动重试 {attempt + 1}/{RUBRIC_ATTEMPTS - 1}（复用其它成功页）", flush=True)
+            # 不擅自改时间/引文或放宽校验，让模型依据原始材料重新返回有效结果。
+            if formatting:
+                correction = ('\n【上一轮输出校验失败，请重新评价本页】\n' + reason +
+                    '\n视觉问题的timestamp只能取本页以下实际抽帧秒数：' + json.dumps([f['timestamp'] for f in page['frames']]) +
+                    '。不得使用页相对时间、页起始时间或猜测时间。音轨引文逐字来自script/actual_audio_asr。'
+                    '返回全部规定维度；只根据本页原始材料评价，不为通过门槛删除问题或捏造证据。\n上一轮输出：' +
+                    json.dumps(response, ensure_ascii=False)[:12000])
+                content = [{**item, 'text': item['text'] + correction} if index == 0 else item for index, item in enumerate(content)]
+            else:
+                time.sleep(2 * (attempt + 1))
+            response = None
 
 
 def material_inputs(result_dir, policy, stage):
@@ -116,7 +157,7 @@ def page_evidence(video, root, policy, language, transcribe=None):
 
 
 def rubric_result(name, result, page, script, transcript):
-    if not isinstance(result, dict) or set(result.get('criteria', {})) != set(CRITERIA[name]):
+    if not isinstance(result, dict) or not isinstance(result.get('criteria'), dict) or set(result['criteria']) != set(CRITERIA[name]):
         raise ValueError(LABELS[name] + '评价缺少规定维度')
     values = list(result['criteria'].values())
     if any(type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 100 for value in values):
@@ -243,16 +284,9 @@ def evaluate_checks(snapshot, config, source_path, result_dir, output, stage, la
         for frame in page['frames']:
             content.extend(image_content(frame))
         page_cache = root / 'evaluation' / f'rubric-{identity}-page-{page["page"]}.json'
-        response = read_json(page_cache)
-        if response is None:
-            response = request(settings, content, root).get('checks')
-            write_json(page_cache.with_suffix('.response.json'), response)
-        if not isinstance(response, dict) or set(response) != set(rubric_names):
-            raise ValueError('评价模型返回的项目与本轮选择不一致')
-        for name in rubric_names:
-            results[name].append(rubric_result(name, response[name], page, script, transcript))
-        # 只缓存全部项目都完成证据校验的页；重试其它页不重复计费。
-        write_json(page_cache, response)
+        rows = rubric_page(settings, content, root, page_cache, rubric_names, page, script, transcript, request)
+        for name, row in rows.items():
+            results[name].append(row)
     for name, rows in results.items():
         score = min(row['score'] for row in rows)
         checks[name] = {'label': LABELS[name], 'score': score, 'mean_score': round(sum(row['score'] for row in rows) / len(rows), 2),

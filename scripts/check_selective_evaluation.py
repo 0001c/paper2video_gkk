@@ -160,11 +160,13 @@ class QualityChecks(unittest.TestCase):
         self.config['evaluation'] = policy('slides').model_dump()
         config = PipelineModelConfig.model_validate(self.config)
         calls = []
+        failing = True
         def request(settings, content, root):
-            data = json.loads(content[0]['text'].split('\n')[-1])
-            calls.append(data['page'])
+            # 本测试使用无问题模板，不依赖纠正提示里的上一轮JSON。
+            page = 2 if '"page": 2' in content[0]['text'] else 1
+            calls.append(page)
             criteria = {name: 100 for name in quality.CRITERIA['slides']}
-            if calls == [1, 2]:
+            if page == 2 and failing:
                 criteria.pop('visual_teaching')
             return {'checks': {'slides': {'criteria': criteria, 'issues': []}}}
         with patch.object(quality, 'role_settings', return_value={'model_type': 'fixture'}):
@@ -173,9 +175,50 @@ class QualityChecks(unittest.TestCase):
             self.assertEqual(len(list((self.root / 'evaluation').glob('rubric-*-page-1.json'))), 1)
             self.assertEqual(len(list((self.root / 'evaluation').glob('rubric-*-page-2.response.json'))), 1)
             self.assertFalse((self.root / 'quality.json').is_file(), '失败不能发布完整评价')
+            self.assertEqual(calls, [1, 2, 2, 2], '失败页只尝试三次，成功页不重复调用')
+            failing = False
             report = quality.evaluate_checks({}, config, '', self.root, self.root / 'quality.json', 'video', 'zh', request)
-            self.assertEqual(calls, [1, 2, 2])
+            self.assertEqual(calls, [1, 2, 2, 2, 2])
             self.assertTrue(report['passed'])
+
+    def test_bad_frame_timestamp_recovers_automatically_without_relaxing_validation(self):
+        self.config['evaluation'] = policy('slides').model_dump()
+        config = PipelineModelConfig.model_validate(self.config)
+        calls = []
+        def request(settings, content, root):
+            page = 2 if '"page": 2' in content[0]['text'] else 1
+            calls.append(page)
+            actual = float(content[1]['text'].split()[-2])
+            if len(calls) == 2:
+                self.assertIn('实际抽帧秒数', content[0]['text'])
+                self.assertIn('视觉问题未引用', content[0]['text'])
+            return {'checks': {'slides': {'criteria': {name: 90 for name in quality.CRITERIA['slides']},
+                'issues': [{'criterion': 'layout', 'description': '版面较密', 'evidence': '右下角文字较密',
+                            'timestamp': actual + 100 if len(calls) == 1 else actual}]}}}
+        with patch.object(quality, 'role_settings', return_value={'model_type': 'fixture'}):
+            report = quality.evaluate_checks({}, config, '', self.root, self.root / 'report.json', 'video', 'zh', request)
+        self.assertEqual(calls, [1, 1, 2])
+        self.assertTrue(report['passed'])
+        self.assertEqual(len(report['checks']['slides']['pages']), 2, '失败尝试不能增加重复页分')
+        self.assertLess(report['checks']['slides']['issues'][0]['timestamp'], 2)
+
+    def test_transient_request_retries_but_auth_and_token_limits_do_not(self):
+        page = {'page': 1, 'start': 0, 'end': 1, 'frames': []}
+        good = {'checks': {'slides': {'criteria': {name: 100 for name in quality.CRITERIA['slides']}, 'issues': []}}}
+        class HttpError(Exception):
+            def __init__(self, status):
+                self.status_code = status
+        with patch.object(quality.time, 'sleep'):
+            request = MagicMock(side_effect=[HttpError(503), good])
+            quality.rubric_page({}, [{'type': 'text', 'text': '材料'}], self.root, self.root / 'temporary.json',
+                                ['slides'], page, '', '', request)
+            self.assertEqual(request.call_count, 2)
+            for failure in (HttpError(401), ValueError('评价模型输出达到token上限而截断')):
+                request = MagicMock(side_effect=failure)
+                with self.assertRaises(type(failure)):
+                    quality.rubric_page({}, [{'type': 'text', 'text': '材料'}], self.root, self.root / 'missing.json',
+                                        ['slides'], page, '', '', request)
+                self.assertEqual(request.call_count, 1)
 
     def test_evidence_format_repair_keeps_answers_and_never_receives_correct_keys(self):
         self.config['stages']['quiz'] = {**self.config['stages']['text'], 'model': 'fixture-quiz'}

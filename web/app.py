@@ -60,6 +60,7 @@ from web import model_config as model_settings
 from web.model_connections import ConnectionCreate, ConnectionUpdate, ConnectionStore
 from web import model_catalog
 from web import video_versions
+from web import notifications
 from web import public_access
 from web.cloud_voices import VoiceStore, VoiceReference, VoiceRegister, VoiceGenerate, VoicePreview
 
@@ -81,6 +82,7 @@ app = FastAPI(title="Paper2Video Web", version="0.1.0")
 app.state.lan_networks = ()
 _MODEL_CONNECTIONS = ConnectionStore(Path(REPO_ROOT, '.local', 'credentials', 'model-connections.dpapi'))
 _MODEL_CATALOG = model_catalog.CatalogStore()
+_BARK = notifications.BarkStore(Path(REPO_ROOT, '.local', 'credentials', 'bark.dpapi'))
 
 
 @app.exception_handler(model_settings.ConfigurationError)
@@ -137,7 +139,7 @@ async def trusted_lan_access(request, call_next):
 @app.middleware('http')
 async def review_body_limit(request, call_next):
     path = request.url.path
-    connection_request = path.startswith('/api/model-connections')
+    connection_request = path.startswith(('/api/model-connections', '/api/notifications/'))
     remote_request = path.endswith('/remote-tasks/reconcile')
     model_request = remote_request or connection_request or path.startswith('/api/cloud-voices') or path == '/api/model-config/validate' or path == '/api/jobs' or path.endswith(('/rerun', '/prepare-retry', '/model-connections/rebind', '/cancel'))
     review_request = path.endswith(('/review', '/review/run')) or path == '/api/course/plan'
@@ -2445,7 +2447,7 @@ async def api_evaluation_run(job_id: str, payload: EvaluationRunRequest, request
             raise HTTPException(409, detail='待评价的讲稿或最终视频不存在')
         if payload.stage == 'video' and job['config'].get('review_before_render'):
             raise HTTPException(409, detail='当前轮次尚未完成合片，请先评价讲稿并继续生成')
-        job.update(status='queued', phase='问答评价排队中', evaluation_only=payload.stage, qa_next_job_id=None)
+        job.update(status='queued', phase='问答评价排队中', evaluation_only=payload.stage, qa_next_job_id=None, qa_error=None)
         _save_job(job)
         await _QUEUE.put(job_id)
         return {'job_id': job_id}
@@ -2495,6 +2497,27 @@ async def api_evaluation_decision(job_id: str, payload: EvaluationDecisionReques
         return await _qa_start_next(job, regenerate=payload.action == 'regenerate', subtitle_style=payload.subtitle_style)
 
 
+async def _notify_job(job_id):
+    async with _JOB_LOCK:
+        job = _load_job(job_id)
+        event = notifications.job_event(job)
+        if not event or not _BARK.enabled_for(event):
+            return
+        identity = notifications.event_fingerprint(job, event)
+        if (job.get('notification') or {}).get('fingerprint') == identity:
+            return
+        record = {'event': event, 'fingerprint': identity, 'status': 'sending',
+                  'at': time.strftime('%Y-%m-%d %H:%M:%S')}
+        job['notification'] = record
+        _save_job(job)
+    try:
+        await asyncio.to_thread(_BARK.send_job, job, event)
+        record = {**record, 'status': 'sent'}
+    except Exception:
+        record = {**record, 'status': 'failed', 'error': 'Bark 推送失败，请在通知配置中检查并发送测试；任务产物已保留'}
+    await _update_job(job_id, notification=record)
+
+
 async def _worker_loop():
     while True:
         job_id = await _QUEUE.get()
@@ -2512,6 +2535,10 @@ async def _worker_loop():
             except Exception:
                 pass
         finally:
+            try:
+                await _notify_job(job_id)
+            except Exception:
+                pass  # 通知配置或存储异常不能阻塞后续任务。
             _QUEUE.task_done()
 
 
@@ -2524,8 +2551,35 @@ async def _startup():
     networks = [str(network) for network in app.state.lan_networks]
     networks.extend(value.strip() for value in os.environ.get('PAPER2VIDEO_MODEL_NETWORKS', '').split(',') if value.strip())
     _MODEL_CONNECTIONS.restore(networks)
+    _BARK.restore()
     _QUEUE = asyncio.Queue()
     _WORKER = asyncio.create_task(_worker_loop())
+
+
+@app.get('/api/notifications/bark')
+async def api_bark_settings():
+    return _BARK.public()
+
+
+@app.put('/api/notifications/bark')
+async def api_bark_save(payload: notifications.BarkUpdate, request: Request):
+    _local_write(request)
+    try:
+        return _BARK.update(payload)
+    except ValueError as exc:
+        raise HTTPException(422, detail=str(exc)) from None
+    except OSError:
+        raise HTTPException(503, detail='Bark 本机加密保存失败，请检查目录权限和当前 Windows 账户') from None
+
+
+@app.post('/api/notifications/bark/test')
+async def api_bark_test(request: Request):
+    _local_write(request)
+    try:
+        await asyncio.to_thread(_BARK.send, '讲解工坊 · 测试通知', 'Bark 已连接。任务完成、最终失败或等待审核时会按配置推送。')
+    except ValueError as exc:
+        raise HTTPException(502, detail=str(exc)) from None
+    return {'ok': True, 'message': 'Bark 服务已接收测试通知，请在手机确认'}
 
 
 @app.get("/api/options")
@@ -3730,6 +3784,7 @@ def _sse_frames(job_id, is_disconnected, keepalive):
                 "qa_error": job.get('qa_error'),
                 "qa_decision": job.get('qa_decision'),
                 "qa_next_job_id": job.get('qa_next_job_id'),
+                "notification": job.get('notification'),
                 "progress": read_progress(job),
                 "exit_code": job.get("exit_code"),
                 "elapsed_min": job.get("elapsed_min"),

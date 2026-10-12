@@ -1617,7 +1617,7 @@ export default function App() {
             此任务：{job.config.slide_lang}/{job.config.script_lang}
             {` · 目标 ${job.config.slide_count || "未记录"} 页 · ${job.config.voice_note || "内置默认音色"}`}
             {` · ${job.config.talking_note || (job.config.generate_talking ? "已启用数字人" : "无数字人")}`}
-            {` · 文字模型 ${job.config.text_model || "原默认模型"} · 讲稿模型 ${job.config.vision_model || "原默认模型"}`}
+            {` · 文字模型 ${job.config.model_config?.stages.text.model || job.config.text_model || "原默认模型"} · 讲稿模型 ${job.config.model_config?.stages.vision.model || job.config.vision_model || "原默认模型"}`}
             {` · 光标 ${opts?.cursors?.find((item) => item.value === (job.config?.cursor_style || 'classic-red'))?.label || '经典红箭头'} · ${Math.round((job.config.cursor_scale ?? 1) * 100)}%`}
             <br />这是创建时保存的配置，新建任务中的修改不影响它。
           </p>

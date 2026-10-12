@@ -31,7 +31,7 @@ export function EvaluationPanel({ jobId, evaluation, error, decision, nextJobId,
     if (!report || report.source_policy_version !== 2 || report.grading_version !== 2) return false;
     if (policy.checks) {
       const names = selectedFor(report.stage);
-      if (report.evaluation_version !== 1 || !names.length || Object.keys(report.check_selection ?? {}).length !== names.length
+      if (report.evaluation_version !== 3 || !names.length || Object.keys(report.check_selection ?? {}).length !== names.length
         || names.some(name => report.check_selection?.[name]?.threshold !== selected[name].threshold || !report.check_selection?.[name]?.enabled)) return false;
       if (modelIdentity(report.model_selection) !== modelIdentity(value.stages.qa)) return false;
       if (names.some(name => name === 'script' || name === 'video') && (!report.independent_models || report.total !== policy.question_count || modelIdentity(report.quiz_model_selection) !== modelIdentity(value.stages.quiz))) return false;

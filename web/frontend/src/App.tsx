@@ -1731,7 +1731,7 @@ export default function App() {
               </span>
               {job.resumed_from && (
                 <span className="section-note" style={{ marginLeft: 8 }}>
-                  续跑自 {job.resumed_from} · 与原任务共享同一份产物目录（重跑会覆盖它）
+                  续跑自 {job.resumed_from}
                 </span>
               )}
             </div>

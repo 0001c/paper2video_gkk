@@ -176,6 +176,8 @@ if __name__ == '__main__':
     parser.add_argument('--course_plan', type=str, default=None, help='已审核课程教案 JSON')
     parser.add_argument('--script_concurrency', type=int, choices=range(1, 9), default=3, help='讲稿 API 同时请求数（1～8），不影响本地 GPU 串行')
     parser.add_argument('--script_generation_id', type=str, default=None, help='同一次讲稿重写/恢复的缓存标识')
+    parser.add_argument('--force_audio_pages', type=str, default=None, help='复核后重新配音的零基页索引JSON')
+    parser.add_argument('--audio_generation_id', type=str, default=None, help='同一次配音修复的恢复标识')
     parser.add_argument('--cursor_style', choices=tuple(cursor_styles.STYLES), default=cursor_styles.DEFAULT)
     parser.add_argument('--cursor_scale', type=float, choices=(0.75, 1, 1.5), default=1)
     parser.add_argument('--subtitle-style', default=None, help='字幕样式JSON；字号按1080p缩放，默认自动换行')
@@ -431,7 +433,9 @@ if __name__ == '__main__':
         tts_per_slide(model_type=args.tts_model, script_path=subtitle_cursor_save_path,
                     speech_save_dir=speech_save_dir, ref_audio=args.ref_audio,
                     ref_text=args.ref_text, language=lang["tts_language"], resume_audio=True,
-                    model_snapshot=model_snapshot)
+                    model_snapshot=model_snapshot,
+                    force_pages=json.loads(args.force_audio_pages) if args.force_audio_pages else (),
+                    generation_id=args.audio_generation_id)
         step3_1_time =  time.time()
         time_second["tts"] = [step3_1_time-step2_time]
         print("Speech Generation", step3_1_time-step2_time)

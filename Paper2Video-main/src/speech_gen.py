@@ -362,7 +362,7 @@ def local_audio_status(script_path, directory, ref_audio, ref_text=None, languag
 
 
 def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=None,
-                  language=None, resume_audio=True, model_snapshot=None):
+                  language=None, resume_audio=True, model_snapshot=None, force_pages=(), generation_id=None):
     """逐页合成语音。
 
     与原版的差异
@@ -375,7 +375,7 @@ def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=
         from bailian_speech import tts_pages
         with open(script_path, encoding='utf-8') as handle:
             parsed = parse_script(handle.read())
-        tts_pages(parsed, speech_save_dir, model_snapshot, resume_audio)
+        tts_pages(parsed, speech_save_dir, model_snapshot, resume_audio, force_pages=force_pages, generation_id=generation_id)
         return
     if model_type != "qwen3tts":
         raise ValueError("不支持的配音模型: {}（当前仅支持 qwen3tts）".format(model_type))
@@ -383,6 +383,9 @@ def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=
     with open(script_path, "r", encoding="utf-8") as handle:
         script_with_cursor = "".join(handle.readlines())
     parsed_speech = parse_script(script_with_cursor)
+    if force_pages and (not isinstance(force_pages, (list, tuple)) or any(type(index) is not int or not 0 <= index < len(parsed_speech) for index in force_pages)
+                        or not isinstance(generation_id, str) or not re.fullmatch(r'[a-f0-9]{32}', generation_id)):
+        raise ValueError('配音修复需要有效页索引和恢复标识')
 
     os.makedirs(speech_save_dir, exist_ok=True)
 
@@ -430,13 +433,14 @@ def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=
             import numpy as np
             key = course.digest({"voice": voice_key, "text": subtitle})
             cached = manifest.get(str(slide_idx), {})
+            forced = slide_idx in force_pages and cached.get('repair_generation') != generation_id
             if not _valid_local_audio(speech_result_path, cached, key):
                 _archive_local_audio(speech_result_path, cached)
-                restored = _restore_local_audio(speech_result_path, key)
+                restored = None if forced else _restore_local_audio(speech_result_path, key)
                 if restored:
                     cached = manifest[str(slide_idx)] = restored
                     course.write_json(manifest_path, manifest)
-            if _valid_local_audio(speech_result_path, cached, key):
+            if not forced and _valid_local_audio(speech_result_path, cached, key):
                 print("[course] 第 {} 页音频复用".format(slide_idx + 1), flush=True)
             else:
                 # 长页主动分段，失败保留已完成段；避免一次生成数分钟语音。
@@ -458,13 +462,15 @@ def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=
                 os.makedirs(part_dir, exist_ok=True)
                 for j, chunk in enumerate(chunks):
                     part_key = course.digest({"voice": voice_key, "chunk": chunk})
+                    if slide_idx in force_pages:
+                        part_key = course.digest({'part': part_key, 'repair_generation': generation_id})
                     # 按内容保存分段，避免改稿后覆盖旧讲稿的恢复依据。
                     part = path.join(part_dir, part_key + ".wav")
                     stamp = part + ".json"
                     saved = course.read_json(stamp, {})
                     legacy = path.join(part_dir, str(j) + '.wav')
                     legacy_saved = course.read_json(legacy + '.json', {})
-                    if not _valid_local_audio(part, saved, part_key) and _valid_local_audio(legacy, legacy_saved, part_key):
+                    if slide_idx not in force_pages and not _valid_local_audio(part, saved, part_key) and _valid_local_audio(legacy, legacy_saved, part_key):
                         shutil.copy2(legacy, part)
                         saved = legacy_saved
                         course.write_json(stamp, saved)
@@ -483,7 +489,8 @@ def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=
                 sf.write(temporary, merged, sr)
                 os.replace(temporary, speech_result_path)
                 manifest[str(slide_idx)] = {"key": key, "text_sha": course.digest(subtitle),
-                    "wav_sha": course.digest(Path(speech_result_path).read_bytes()), "seconds": len(merged) / sr}
+                    "wav_sha": course.digest(Path(speech_result_path).read_bytes()), "seconds": len(merged) / sr,
+                    **({'repair_generation': generation_id} if slide_idx in force_pages else {})}
                 course.write_json(manifest_path, manifest)
             _progress_done += 1
             if progress_report:

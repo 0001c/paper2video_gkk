@@ -960,7 +960,28 @@ video { width: 100%; border-radius: var(--td-radius-default); background: #000; 
 .cloud-voice-panel details .field { margin-block: 14px; }
 .cloud-voice-panel audio { width: 100%; max-width: 480px; }
 .qa-settings { margin-block: 24px; padding-top: 20px; border-top: 1px solid var(--paper-rule); }
-.qa-thresholds { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 16px; margin-top: 16px; }
+.evaluation-settings { border: 0; padding: 0; margin: 0; min-width: 0; }
+.evaluation-settings .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.evaluation-targets { display: grid; gap: 12px; margin-block: 20px; }
+.evaluation-target { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 16px 20px; border: 1px solid var(--paper-rule); background: var(--paper-editor); }
+.evaluation-target[data-enabled="true"] { border-left: 3px solid var(--paper-ok); }
+.evaluation-target-choice { display: flex; align-items: flex-start; gap: 12px; min-width: 0; cursor: pointer; }
+.evaluation-target-choice input { margin-top: 4px; flex-shrink: 0; }
+.evaluation-target-choice span { display: grid; gap: 8px; }
+.evaluation-target-choice small { color: var(--paper-ink-soft); line-height: 1.5; }
+.evaluation-target-threshold { display: grid; gap: 8px; flex-shrink: 0; }
+.evaluation-target-threshold > label { font-size: 12px; color: var(--paper-ink-soft); }
+.evaluation-target-threshold > div { display: flex; align-items: center; gap: 8px; }
+.evaluation-target-threshold input { width: 80px; font-variant-numeric: tabular-nums; }
+.evaluation-advanced { margin-top: 20px; }
+.evaluation-stage + .evaluation-stage { margin-top: 24px; }
+.evaluation-stage > .field-title { margin-bottom: 16px; justify-content: space-between; }
+.evaluation-issue { border-top: 1px solid var(--paper-rule); padding-top: 12px; margin-top: 12px; overflow-wrap: anywhere; }
+.evaluation-page-scores { display: flex; flex-wrap: wrap; gap: 12px; padding-block: 12px; font-variant-numeric: tabular-nums; }
+.video-version { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; padding-block: 16px; border-top: 1px solid var(--paper-rule); }
+.video-version .hint { overflow-wrap: anywhere; }
+@media (max-width: 767px) { .evaluation-target { gap: 12px; padding: 16px 12px; } .evaluation-target-threshold input { width: 64px; } .evaluation-target-choice small { font-size: 12px; } .video-version .actions { flex-wrap: wrap; } }
+.qa-thresholds { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 16px; }
 .qa-thresholds .field { min-width: 0; margin: 0; }
 .qa-thresholds label { display: block; }
 .qa-thresholds label > .hint { float: right; }

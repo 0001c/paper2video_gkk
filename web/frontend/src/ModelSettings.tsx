@@ -3,10 +3,9 @@ import { Button, Select } from "tdesign-react";
 import { api, errorMessage, runExclusive } from "./flow";
 import { ModelConnections } from "./ModelConnections";
 import { Section } from "./Section";
-import { EvaluationSettings } from './EvaluationSettings';
 import { AvatarCostDialog } from './AvatarToggle';
 import { ModelPrice, ModelPriceProvider, type CatalogModel } from './ModelPrice';
-import { evaluationModelProblem, presetConfig, replaceStage, setTextParameter, roleLabels, roles, roleStage, bailianSpeechModels, type Connection, type ModelConfig, type ModelOptions, type Role, type Stage } from "./modelConfig";
+import { evaluationChecks, evaluationModelProblem, presetConfig, replaceStage, setTextParameter, roleLabels, roles, roleStage, bailianSpeechModels, type Connection, type ModelConfig, type ModelOptions, type Role, type Stage } from "./modelConfig";
 
 type Catalog = { items: CatalogModel[]; next_cursor: string | null; source: string; catalog_time: string | null; total: number; warnings: string[] };
 export function ModelSettings({ value, options, concurrency, onChange: publishChange, onConcurrency, voice = { kind: "default" }, portraitPath, preparePortrait, portraitKey, concurrencyEditable = true, onConnectionsChange }: {
@@ -22,7 +21,9 @@ export function ModelSettings({ value, options, concurrency, onChange: publishCh
     if (next.avatar.enabled && next.avatar.mode === 'api' && (value.avatar.mode !== 'api' || !value.avatar.enabled)) setPendingAvatar(next);
     else publishChange(next);
   };
-  const activeRoles = roles.filter((item) => (item !== 'avatar' || value.avatar.enabled) && (!['qa', 'quiz'].includes(item) || value.evaluation?.enabled));
+  const checks = evaluationChecks(value.evaluation);
+  const activeRoles = roles.filter((item) => (item !== 'avatar' || value.avatar.enabled) && (item !== 'qa' || value.evaluation?.enabled)
+    && (item !== 'quiz' || (value.evaluation?.enabled && (checks.script.enabled || checks.video.enabled))));
   const [connections, setConnections] = useState<Connection[]>([]);
   const [localKeyStorage, setLocalKeyStorage] = useState<{ available: boolean; error?: string }>();
   const [drawer, setDrawer] = useState(false);
@@ -179,7 +180,6 @@ export function ModelSettings({ value, options, concurrency, onChange: publishCh
         </Section>;
       })}
     </div>
-    <EvaluationSettings value={value} onChange={onChange} />
     {pendingAvatar && <AvatarCostDialog value={pendingAvatar} onCancel={() => setPendingAvatar(undefined)} onConfirm={(next) => { publishChange(next); setPendingAvatar(undefined); }} />}
     <details><summary>运行说明 · {value.timing.source === "tts_timestamp" ? "云端时间轴" : "本地时间轴"}{value.avatar.enabled ? " · 数字人自动分段" : ""}</summary>
       <p className="hint">时间轴：{value.timing.source === "tts_timestamp" ? "随 API 配音返回，不加载本地对齐器" : "本地 ForcedAligner"}。文字 / 视觉的本地模式需要自行部署兼容服务，不自动加载权重。{options?.implemented.independent_text_vision_connections ? "文字和视觉可分别选择本地/API连接，任务按角色独立调用。" : "当前后端仍要求文字和视觉共用连接，请重载至P3版本。"}</p>

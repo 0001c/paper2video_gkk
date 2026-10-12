@@ -4,8 +4,23 @@ export const bailianSpeechModels = ['cosyvoice-v3.5-plus', 'cosyvoice-v3.5-flash
 export const roleLabels: Record<Role, string> = { text: "文字 / 课件", vision: "视觉 / 讲稿", tts: "配音", asr: "音轨 / 参考录音识别", grounding: "光标定位", avatar: "数字人", quiz: "出题 / 题库", qa: "答题 / 评价" };
 export type Stage = { mode: "api" | "local"; provider: "bailian" | "openai_compatible" | "qwen3" | "gui_owl" | "musetalk";
   connection_id?: string; model: string; parameters: { resolution?: "480P" | "720P"; speech_rate?: number; temperature?: number; max_output_tokens?: number } };
-export type EvaluationPolicy = { enabled: boolean; script_threshold: number; minimum_threshold: number; standard_threshold: number; question_count: number; max_auto_retries: number };
-export const defaultEvaluation: EvaluationPolicy = { enabled: true, script_threshold: 80, minimum_threshold: 60, standard_threshold: 80, question_count: 20, max_auto_retries: 2 };
+export const evaluationTargets = {
+  script: { label: '讲稿知识', detail: '在配音前检查知识覆盖与理解', stage: 'script' },
+  video: { label: '成片知识', detail: '用同一题库对照成片中的知识传递', stage: 'video' },
+  slides: { label: 'PPT 展现', detail: '逐页检查可读性、布局与图示效果', stage: 'video' },
+  presentation: { label: '成片呈现', detail: '检查页面停留、光标与字幕遮挡', stage: 'video' },
+  audio: { label: '配音内容一致性', detail: '逐页比对实际音轨与已审核讲稿', stage: 'video' },
+} as const;
+export type EvaluationTarget = keyof typeof evaluationTargets;
+export type EvaluationCheck = { enabled: boolean; threshold: number };
+export type EvaluationChecks = Record<EvaluationTarget, EvaluationCheck>;
+export type EvaluationPolicy = { enabled: boolean; script_threshold: number; minimum_threshold: number; standard_threshold: number; question_count: number; max_auto_retries: number; checks?: EvaluationChecks };
+export const defaultEvaluation: EvaluationPolicy = { enabled: true, script_threshold: 80, minimum_threshold: 60, standard_threshold: 80, question_count: 20, max_auto_retries: 2,
+  checks: { script: { enabled: true, threshold: 80 }, video: { enabled: false, threshold: 80 }, slides: { enabled: true, threshold: 80 }, presentation: { enabled: true, threshold: 80 }, audio: { enabled: true, threshold: 90 } } };
+export function evaluationChecks(policy?: EvaluationPolicy): EvaluationChecks {
+  return policy?.checks ?? { script: { enabled: true, threshold: policy?.script_threshold ?? 80 }, video: { enabled: true, threshold: policy?.standard_threshold ?? 80 },
+    slides: { enabled: false, threshold: 80 }, presentation: { enabled: false, threshold: 80 }, audio: { enabled: false, threshold: 90 } };
+}
 export type ModelConfig = { schema_version: 2; preset: "bailian_api" | "local_existing" | "custom";
   stages: Record<Exclude<Role, "avatar" | "qa" | "quiz">, Stage> & { qa?: Stage; quiz?: Stage }; timing: { source: "tts_timestamp" | "local_forced_aligner" }; avatar: Stage & { enabled: boolean }; evaluation?: EvaluationPolicy };
 export type Connection = { id: string; label: string; provider: "bailian" | "openai_compatible"; key_present: boolean; persist_key?: boolean;
@@ -61,7 +76,7 @@ export function presetConfig(preset: "bailian_api" | "local_existing", connectio
     return [role, stage];
   })) as Record<Role, Stage>;
   const { avatar, ...rest } = stages;
-  return { schema_version: 2, preset, stages: rest, timing: { source: preset === "bailian_api" ? "tts_timestamp" : "local_forced_aligner" }, avatar: { ...avatar, enabled }, evaluation: { ...defaultEvaluation } };
+  return { schema_version: 2, preset, stages: rest, timing: { source: preset === "bailian_api" ? "tts_timestamp" : "local_forced_aligner" }, avatar: { ...avatar, enabled }, evaluation: structuredClone(defaultEvaluation) };
 }
 
 export function avatarConfigurationProblem(config: ModelConfig, hasPortrait: boolean, options?: ModelOptions): string | undefined {
@@ -108,13 +123,19 @@ export function readModelConfig(value: unknown): ModelConfig | undefined {
       ...(stage.connection_id ? { connection_id: stage.connection_id } : {}) };
   }
   const { avatar, ...rest } = stages as Record<Role, Stage>;
-  const evaluation = { ...defaultEvaluation };
+  const evaluation: EvaluationPolicy = { ...defaultEvaluation, checks: undefined };
   if (typeof raw.evaluation?.enabled === 'boolean') evaluation.enabled = raw.evaluation.enabled;
   for (const key of ['script_threshold', 'minimum_threshold', 'standard_threshold', 'question_count', 'max_auto_retries'] as const) {
     const limit = key === 'question_count' ? [4, 40] : key === 'max_auto_retries' ? [0, 3] : [0, 100];
     const item = raw.evaluation?.[key];
     if (Number.isInteger(item) && item >= limit[0] && item <= limit[1]) evaluation[key] = item;
   }
+  if (raw.evaluation?.checks && typeof raw.evaluation.checks === 'object') {
+    evaluation.checks = Object.fromEntries(Object.keys(evaluationTargets).map((name) => {
+      const item = raw.evaluation.checks[name];
+      return [name, { enabled: item?.enabled === true, threshold: Number.isInteger(item?.threshold) && item.threshold >= 0 && item.threshold <= 100 ? item.threshold : 80 }];
+    })) as EvaluationChecks;
+  } else if (!raw.evaluation) evaluation.checks = structuredClone(defaultEvaluation.checks);
   if (!raw.evaluation && evaluation.enabled) rest.asr = { ...localModels.asr! };
   if (evaluation.minimum_threshold > evaluation.standard_threshold) evaluation.minimum_threshold = evaluation.standard_threshold;
   return { schema_version: 2, preset: raw.preset, stages: rest, timing: { source: raw.timing.source }, avatar: { ...avatar, enabled: raw.avatar.enabled }, evaluation };
@@ -127,7 +148,11 @@ export function evaluationModelIdentity(model: string): string {
 
 export function evaluationModelProblem(config: ModelConfig): string | undefined {
   if (!config.evaluation?.enabled) return;
-  if (!config.stages.quiz || !config.stages.qa) return '请分别选择出题模型和答题模型。';
+  const checks = evaluationChecks(config.evaluation);
+  if (!Object.values(checks).some(check => check.enabled)) return '请至少选择一个评价项目，或关闭评价。';
+  if (!config.stages.qa) return '请选择评价模型。';
+  if (!checks.script.enabled && !checks.video.enabled) return;
+  if (!config.stages.quiz) return '请分别选择出题模型和答题模型。';
   if (evaluationModelIdentity(config.stages.quiz.model) === evaluationModelIdentity(config.stages.qa.model))
     return '出题与答题必须使用不同型号，请修改其中一个模型；更换连接或密钥不能替代更换模型。';
 }

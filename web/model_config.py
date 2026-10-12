@@ -63,6 +63,19 @@ class Stages(StrictModel):
     quiz: TextStage | None = None
 
 
+class EvaluationCheck(StrictModel):
+    enabled: bool = False
+    threshold: int = Field(default=80, ge=0, le=100)
+
+
+class EvaluationChecks(StrictModel):
+    script: EvaluationCheck = Field(default_factory=EvaluationCheck)
+    video: EvaluationCheck = Field(default_factory=EvaluationCheck)
+    slides: EvaluationCheck = Field(default_factory=EvaluationCheck)
+    presentation: EvaluationCheck = Field(default_factory=EvaluationCheck)
+    audio: EvaluationCheck = Field(default_factory=EvaluationCheck)
+
+
 class EvaluationPolicy(StrictModel):
     enabled: bool = False
     script_threshold: int = Field(default=80, ge=0, le=100)
@@ -70,12 +83,33 @@ class EvaluationPolicy(StrictModel):
     standard_threshold: int = Field(default=80, ge=0, le=100)
     question_count: int = Field(default=20, ge=4, le=40)
     max_auto_retries: int = Field(default=2, ge=0, le=3)
+    # 未设置 checks 的历史任务继续使用原双阶段策略，不自动加收费项目。
+    checks: EvaluationChecks | None = None
 
     @model_validator(mode='after')
     def ordered_thresholds(self):
         if self.minimum_threshold > self.standard_threshold:
             raise ConfigurationError('evaluation.minimum_threshold', '最低通过线不能高于标准通过线')
+        if self.enabled and self.checks is not None and not any(check.enabled for check in self.checks.__dict__.values()):
+            raise ConfigurationError('evaluation.checks', '请至少选择一个评价项目，或关闭评价')
+        if self.checks is not None and self.checks.video.enabled and self.minimum_threshold > self.checks.video.threshold:
+            raise ConfigurationError('evaluation.minimum_threshold', '知识自动修复线不能高于成片知识通过线')
         return self
+
+    def selected(self, stage=None):
+        names = ('script',) if stage == 'script' else ('video', 'slides', 'presentation', 'audio') if stage == 'video' else ('script', 'video', 'slides', 'presentation', 'audio')
+        if not self.enabled:
+            return {}
+        if self.checks is None:
+            return {name: EvaluationCheck(enabled=True, threshold=self.script_threshold if name == 'script' else self.standard_threshold)
+                    for name in names if name in ('script', 'video')}
+        return {name: getattr(self.checks, name) for name in names if getattr(self.checks, name).enabled}
+
+    def needs_questions(self, stage=None):
+        return bool(set(self.selected(stage)) & {'script', 'video'})
+
+    def needs_audio(self, stage='video'):
+        return bool(set(self.selected(stage)) & {'video', 'presentation', 'audio'})
 
 
 class Timing(StrictModel):
@@ -135,12 +169,12 @@ class PipelineModelConfig(StrictModel):
             self.avatar.parameters = AvatarParameters()
         if self.timing.source == "tts_timestamp" and self.stages.tts.mode != "api":
             raise ConfigurationError('timing.source', '本地TTS不能提供API合成时间戳')
-        if self.evaluation.enabled and self.stages.qa is None:
+        if self.evaluation.selected() and self.stages.qa is None:
             raise ConfigurationError('stages.qa', '开启问答评价后必须选择评价模型')
         # 旧任务仍可读取；执行时必须补选出题角色，不能回落为自问自答。
-        if self.evaluation.enabled and self.stages.quiz is not None:
+        if self.evaluation.needs_questions() and self.stages.quiz is not None:
             validate_evaluation_models(self)
-        if self.evaluation.enabled and (self.stages.asr.mode != 'local' or self.stages.asr.model != 'qwen3-asr'):
+        if self.evaluation.needs_audio() and (self.stages.asr.mode != 'local' or self.stages.asr.model != 'qwen3-asr'):
             raise ConfigurationError('stages.asr', '成片问答当前使用本地Qwen3-ASR识别实际音轨，请选择本地识别模型')
         return self
 
@@ -170,6 +204,10 @@ def evaluation_model_identity(model):
 
 
 def validate_evaluation_models(config):
+    if not config.evaluation.needs_questions():
+        if config.evaluation.selected() and config.stages.qa is None:
+            raise ConfigurationError('stages.qa', '请选择评价模型')
+        return
     if config.stages.quiz is None:
         raise ConfigurationError('stages.quiz', '请分别选择出题模型和答题模型；旧任务需补选独立模型')
     if config.stages.qa is None:
@@ -214,12 +252,22 @@ def required_roles(config, pipeline_config):
                 roles.add("asr")
     if "3" in selected and config.avatar.enabled:
         roles.add("avatar")
-    if config.evaluation.enabled:
-        validate_evaluation_models(config)
-        roles.update(('quiz', 'qa'))
-        if not pipeline_config.get('review_before_render'):
-            roles.add('asr')
+    stage = 'script' if pipeline_config.get('review_before_render') else 'video'
+    roles.update(evaluation_roles(config, stage))
     return sorted(roles)
+
+
+def evaluation_roles(config, stage):
+    policy = config.evaluation
+    roles = set()
+    if policy.selected(stage):
+        validate_evaluation_models(config)
+        roles.add('qa')
+    if policy.needs_questions(stage):
+        roles.add('quiz')
+    if policy.needs_audio(stage):
+        roles.add('asr')
+    return [role for role in ('quiz', 'qa', 'asr') if role in roles]
 
 
 def ensure_implemented(config, roles):
@@ -249,7 +297,8 @@ def capabilities():
                             "cloud_voices": True, "tts_timestamps": True, "bailian_speech": True,
                             "bailian_grounding": True, "bailian_avatar": True, "avatar_segmentation": True, "qa_evaluation": True,
                             "independent_quiz_answer_models": True, "local_key_storage": os.name == 'nt',
-                            "research_body_quiz": True, "multi_quote_evidence": True, "script_feedback_optimization": True}}
+                            "research_body_quiz": True, "multi_quote_evidence": True, "script_feedback_optimization": True,
+                            "selective_evaluation": True, "video_version_backups": True}}
 
 
 def effective_mode(config, roles):

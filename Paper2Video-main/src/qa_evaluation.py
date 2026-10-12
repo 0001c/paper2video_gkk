@@ -500,6 +500,9 @@ def media_evidence(video, root, language, transcribe=None):
 
 def evaluate(mode, snapshot_path, source_path, result_dir, output, language='zh', request=model_request):
     snapshot, config = load_model_snapshot(snapshot_path)
+    if config.evaluation.checks is not None:
+        from quality_evaluation import evaluate_checks
+        return evaluate_checks(snapshot, config, source_path, result_dir, output, mode, language, request)
     from web.model_config import validate_evaluation_models
     validate_evaluation_models(config)
     generator = role_settings(snapshot, 'quiz')

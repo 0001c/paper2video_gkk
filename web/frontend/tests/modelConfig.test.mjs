@@ -12,6 +12,28 @@ const models = await load("modelConfig");
 const storage = await load("storage");
 const { answerResult } = await load('evaluationResult');
 
+test('新任务评价可逐项配置，旧任务保持双问答，持久化仅保留项目白名单', () => {
+  const config = models.presetConfig('bailian_api', 'connection');
+  assert.equal(config.evaluation.checks.video.enabled, false);
+  assert.equal(config.evaluation.checks.slides.enabled, true);
+  config.evaluation.checks.script.enabled = false;
+  delete config.stages.quiz;
+  assert.equal(models.evaluationModelProblem(config), undefined);
+  config.evaluation.checks.audio.threshold = 93;
+  config.evaluation.checks.api_key = { enabled: true, threshold: 70, secret: 'forbidden' };
+  const saved = models.readModelConfig(config);
+  assert.equal(saved.evaluation.checks.audio.threshold, 93);
+  assert.equal(JSON.stringify(saved).includes('forbidden'), false);
+  assert.equal(models.presetConfig('bailian_api', 'another').evaluation.checks.script.enabled, true);
+  for (const value of Object.values(saved.evaluation.checks)) value.enabled = false;
+  assert.match(models.evaluationModelProblem(saved), /至少选择/);
+  delete config.evaluation.checks;
+  const legacy = models.readModelConfig(config);
+  assert.equal(legacy.evaluation.checks, undefined);
+  assert.equal(models.evaluationChecks(legacy.evaluation).video.enabled, true);
+  assert.equal(models.evaluationChecks(legacy.evaluation).slides.enabled, false);
+});
+
 test('问答结果区分计分、错误选项、未作答与正确选项缺少有效依据', () => {
   const item = { predicted: 'A', answer: 'A', correct: false, supported: false, evidence: '引文需要核验' };
   assert.equal(answerResult(item).label, '选项正确 · 依据待核验');

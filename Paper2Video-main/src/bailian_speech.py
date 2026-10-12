@@ -232,7 +232,10 @@ def chunks(text, limit=CHUNK_TARGET_CHARACTERS):
         remaining = remaining[boundary:]
 
 
-def tts_pages(parsed, directory, snapshot, resume=True, client=None):
+def tts_pages(parsed, directory, snapshot, resume=True, client=None, force_pages=(), generation_id=None):
+    if force_pages and (not isinstance(force_pages, (list, tuple)) or any(type(index) is not int or not 0 <= index < len(parsed) for index in force_pages)
+                        or not isinstance(generation_id, str) or not re.fullmatch(r'[a-f0-9]{32}', generation_id)):
+        raise ValueError('配音修复需要有效页索引和恢复标识')
     stage = snapshot['model_config']['stages']['tts']
     connection = snapshot['model_connections'][stage['connection_id']]
     voice = snapshot.get('voice_resource') or {}
@@ -261,7 +264,8 @@ def tts_pages(parsed, directory, snapshot, resume=True, client=None):
         filename = target / f'{page_index}.wav'
         key = digest({'identity': identity, 'text': text, 'spoken': spoken, 'language': language})
         saved = manifest.get(str(page_index), {})
-        if resume and saved.get('key') == key:
+        forced = page_index in force_pages and saved.get('repair_generation') != generation_id
+        if resume and not forced and saved.get('key') == key:
             try:
                 read_pair(filename, text)
                 if saved.get('wav_sha') != digest(filename.read_bytes()) or saved.get('timing_sha') != digest(filename.with_suffix('.timing.json').read_bytes()):
@@ -273,6 +277,8 @@ def tts_pages(parsed, directory, snapshot, resume=True, client=None):
             except (ValueError, OSError, KeyError):
                 pass
         part_dir = target / '.cloud_parts' / str(page_index)
+        if page_index in force_pages:
+            part_dir = part_dir / ('repair-' + generation_id)
         part_dir.mkdir(parents=True, exist_ok=True)
         page_pcm, segments, parts = bytearray(), [], []
         for part_index, chunk in enumerate(chunks(spoken)):
@@ -306,7 +312,8 @@ def tts_pages(parsed, directory, snapshot, resume=True, client=None):
                             'normalization_map': mapping}, text)
         manifest[str(page_index)] = {'key': key, **identity, 'wav_sha': timing['audio_sha256'],
                                     'timing_sha': digest(filename.with_suffix('.timing.json').read_bytes()),
-                                    'seconds': timing['sample_count'] / SAMPLE_RATE}
+                                    'seconds': timing['sample_count'] / SAMPLE_RATE,
+                                    **({'repair_generation': generation_id} if page_index in force_pages else {})}
         atomic_json(manifest_path, manifest)
         print(f'[speech_gen] 第 {page_index + 1} 页百炼配音完成', flush=True)
         import progress_report

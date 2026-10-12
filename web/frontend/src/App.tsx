@@ -7,6 +7,8 @@ import { CoursePanel, defaultCourse, type CourseSettings, type CoursePlan } from
 import { ReviewPanel } from "./ReviewPanel";
 import { AvatarToggle } from './AvatarToggle';
 import { EvaluationPanel, type EvaluationReport } from './EvaluationPanel';
+import { EvaluationSettings } from './EvaluationSettings';
+import { VideoVersions } from './VideoVersions';
 import { ThemeToggle } from "./ThemeToggle";
 import { AccessControls } from './AccessGate';
 import { ModelSettings } from "./ModelSettings";
@@ -1037,8 +1039,8 @@ export default function App() {
           <div><p className="eyebrow">CONTENT / VOICE / VIDEO</p><h1>内容讲解工作台</h1><p className="sub">选好素材与声音，让内容成为讲解视频。</p></div>
           <ol className="workflow-overview" aria-label="制作流程">
             <li><span>01</span><div><strong>编排内容</strong><small>素材、语言与声音</small></div></li>
-            <li><span>02</span><div><strong>讲稿检查</strong><small>问答通过或手动确认</small></div></li>
-            <li><span>03</span><div><strong>视频验收</strong><small>配音合片与问答评价</small></div></li>
+            <li><span>02</span><div><strong>讲稿检查</strong><small>按配置评价或手动确认</small></div></li>
+            <li><span>03</span><div><strong>视频验收</strong><small>配音合片与所选项目评价</small></div></li>
           </ol>
         </div>
         <details className="system-details">
@@ -1112,7 +1114,7 @@ export default function App() {
           {[
             ['material', '01', '素材'], ['language', '02', '语言与内容'],
             ...(courseEnabled ? [['teaching', '03', '教学范围']] : []),
-            ['credentials', '04', '模型配置'], ['voice', '05', '音色'], ['cursor', '06', '光标与字幕'], ['prepare', '07', '生成与审核'],
+            ['credentials', '04', '模型配置'], ['voice', '05', '音色'], ['cursor', '06', '光标与字幕'], ['evaluation', '07', '评估配置'], ['prepare', '08', '生成与审核'],
           ].map(([anchor, number, title]) => <a key={anchor} href={'#' + anchor} onClick={(event) => {
             if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
             const section = document.getElementById(anchor);
@@ -1557,8 +1559,9 @@ export default function App() {
       </Section>
 
       </fieldset>
-      <Section anchor="prepare" number="07" title="生成与审核" defaultOpen={false} label="创建新任务" summary={missing.length ? '待完善设置' : '准备就绪'} important help={<>
-        <p>先生成课件与讲稿。开启问答评价时，讲稿达到通过线后自动配音合片，否则等待你复核或手动继续；关闭问答评价时保持人工审核流程。</p>
+      <EvaluationSettings value={modelConfig} onChange={setModelConfig} />
+      <Section anchor="prepare" number="08" title="生成与审核" defaultOpen={false} label="创建新任务" summary={missing.length ? '待完善设置' : '准备就绪'} important help={<>
+        <p>先生成课件与讲稿。开启讲稿评价时，达到通过线后自动配音合片，否则等待复核或手动继续；仅选成片评价时，讲稿完成后继续生成。关闭质量评估时保持人工审核流程。</p>
         <p>成片达到标准线后完成；低于最低线时按错题反馈自动重生成，最多按设置次数执行；介于两条线之间时由你决定。自动重生成会新增模型费用。</p>
         <p>生成等待时间与成片播放时长分别计算。长课程尚无完整耗时标定；讲稿阶段动态估计剩余等待时间，配音合片以实际进度为准。新任务按队列串行执行。</p>
       </>}>
@@ -1621,6 +1624,8 @@ export default function App() {
         )}
         {filesError && <div className="notice err" role="alert"><span>产物读取失败：{filesError}</span><Button variant="outline" onClick={() => setFilesVersion((value) => value + 1)}>重试读取</Button></div>}
         {job && <SubtitleSettings value={taskSubtitleStyle} disabled={!!running} onChange={(value) => setTaskSubtitleOverride({ jobId: job.id, value })} />}
+        {job && taskModels && <EvaluationSettings value={taskModels} task disabled={!!running} onChange={(value) => setTaskOverride({ jobId: job.id, value })} />}
+        {job && <VideoVersions jobId={job.id} refreshKey={`${job.status}-${filesVersion}-${job.qa_next_job_id ?? ''}`} />}
         {job && !running && <p className="hint">字幕样式修改将用于下一次审核合片或续跑，不会立即改变已有视频。</p>}
         {job?.status === 'failed' && job.phase_key === 'struct' && <div className="notice warn source-failure"><p>正文结构化未完成。若日志提示缺失字形，请对照源页修正，再以新素材创建任务。</p><SourceReview key={job.id} ingestId={job.id} onSaved={useCorrectedSource} /></div>}
         {job?.config?.model_config_origin === "v2" && job.config.model_config && taskModels && <TaskModelSettings key={`models-${job.id}`}
@@ -1638,7 +1643,7 @@ export default function App() {
 
         {job && taskModels && (visiblePages?.pages?.length > 0 || job.phase_key === 'qa' || job.evaluation) && <EvaluationPanel key={`qa-${job.id}`}
           jobId={job.id} evaluation={job.evaluation} error={job.qa_error} decision={job.qa_decision} nextJobId={job.qa_next_job_id}
-          attempt={job.config?.qa_attempt} value={taskModels} busy={!!running} hasScript={!!visiblePages?.script_txt} hasVideo={!job.config?.review_before_render && visibleArtifacts.some((item) => item.name === '3_merage.mp4')} onJob={selectJob} />}
+          attempt={job.config?.qa_attempt} value={taskModels} subtitleStyle={taskSubtitleStyle} busy={!!running} hasScript={!!visiblePages?.script_txt} hasVideo={!job.config?.review_before_render && visibleArtifacts.some((item) => item.name === '3_merage.mp4')} onJob={selectJob} />}
 
         {job && (
           <div style={{ marginTop: 18 }}>

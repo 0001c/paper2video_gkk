@@ -9,7 +9,7 @@ import course
 from qa_evaluation import digest, digest_file, read_json, write_json, question_bank, grade
 from model_runtime import role_settings
 
-VERSION = 2
+VERSION = 3
 LABELS = {'script': '讲稿知识', 'video': '成片知识', 'slides': 'PPT 展现', 'presentation': '成片呈现', 'audio': '配音内容一致性'}
 CRITERIA = {'slides': ('readability', 'layout', 'visual_teaching'),
             'presentation': ('page_timing', 'focus', 'unobstructed'),
@@ -190,7 +190,8 @@ def evaluate_checks(snapshot, config, source_path, result_dir, output, stage, la
                     'evidence_quotes最多8段，每段必须逐字摘录材料中一个连续片段；多处原句分别放入数组。'
                     '不拼接、不概括、不改写标点、不加解释，不用省略号替代中间内容。'
                     '理解题可以依据多处原句推断，但不能把推断结果伪装成引文。'
-                    '画面依据需用所给timestamp和可见文字，引用画面时evidence_quotes为空数组。'
+                    'evidence_quotes只能来自material字段的文本，绝不能包含画面中的文字。'
+                    '每题选择一种依据：ASR原句或画面。画面依据需用所给timestamp和可见文字，引用画面时evidence_quotes为空数组。'
                     '输出{"answers":[{"id":"1","answer":"A","evidence_quotes":["原句"],"evidence":"","timestamp":null}]}。\n'
                     + json.dumps({'questions': questions, 'material': text}, ensure_ascii=False)}]
         for frame in frames:
@@ -199,7 +200,24 @@ def evaluate_checks(snapshot, config, source_path, result_dir, output, stage, la
         quiz_cache = root / 'evaluation' / f'knowledge-{identity}.json'
         quiz = read_json(quiz_cache)
         if quiz is None:
-            quiz = grade(bank, request(settings, content, root).get('answers'), text, [frame['timestamp'] for frame in frames])
+            answers = request(settings, content, root).get('answers')
+            write_json(quiz_cache.with_suffix('.response.json'), answers)
+            quiz = grade(bank, answers, text, [frame['timestamp'] for frame in frames])
+            if any(row['reason'] in ('evidence_missing', 'evidence_unmatched') for row in quiz['items']):
+                previous = [{'id': row['id'], 'answer': row['predicted'], 'evidence_quotes': row['evidence_quotes'],
+                    'evidence': row['evidence'], 'timestamp': row['timestamp']} for row in quiz['items']]
+                correction = [dict(item) for item in content]
+                correction[0]['text'] += ('\n【证据格式修正，最多一次】\n保持下列answer不变，仅修正证据字段。'
+                    'evidence_quotes仅摘录material字段中的连续原句；不得加入画面文字、改写标点或拼接句子。'
+                    '如使用画面，evidence_quotes必须为空数组，evidence写可见文字，timestamp选给定画面时间。'
+                    '不要将ASR和画面引文混在一起；没有可验证依据时保留原answer并返回空证据。'
+                    '下面是你上一轮回答，未提供题库正确答案：\n' + json.dumps(previous, ensure_ascii=False))
+                revised = request(settings, correction, root).get('answers')
+                write_json(quiz_cache.with_suffix('.repair-response.json'), revised)
+                repaired = grade(bank, revised, text, [frame['timestamp'] for frame in frames])
+                if [row['predicted'] for row in repaired['items']] != [row['predicted'] for row in quiz['items']]:
+                    raise ValueError('证据格式修正改变了答题选项，未发布评分；请重新评价')
+                quiz = {**repaired, 'evidence_format_repair': True}
             write_json(quiz_cache, quiz)
         name = 'script' if stage == 'script' else 'video'
         checks[name] = {'label': LABELS[name], **quiz, 'threshold': selected[name].threshold, 'passed': quiz['score'] >= selected[name].threshold}
@@ -272,6 +290,9 @@ def report_route(report, policy, attempt=0):
     if not failed:
         return 'pass'
     # 仅知识问题沿用有限自动重写；音频识别/视觉缺陷必须先复核并定向处理。
-    if report['stage'] == 'video' and failed == ['video'] and checks['video']['score'] < policy.minimum_threshold and attempt < policy.max_auto_retries:
+    issues = checks.get('video', {}).get('issues')
+    evidence_only = (isinstance(issues, dict) and not issues.get('wrong_answer') and not issues.get('unanswered')
+                     and bool(issues.get('evidence_missing') or issues.get('evidence_unmatched')))
+    if report['stage'] == 'video' and failed == ['video'] and not evidence_only and checks['video']['score'] < policy.minimum_threshold and attempt < policy.max_auto_retries:
         return 'retry'
     return 'review'

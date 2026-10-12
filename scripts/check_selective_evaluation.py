@@ -62,6 +62,10 @@ class PolicyChecks(unittest.TestCase):
         report['checks']['audio']['score'] = 100
         report['checks']['video']['score'] = 40
         self.assertEqual(quality.report_route(report, selected), 'retry')
+        report['checks']['video']['issues'] = {'wrong_answer': 0, 'unanswered': 0, 'evidence_unmatched': 4}
+        self.assertEqual(quality.report_route(report, selected), 'review', '纯证据格式失败不能触发收费重写')
+        report['checks']['video']['issues']['wrong_answer'] = 1
+        self.assertEqual(quality.report_route(report, selected), 'retry')
         self.assertEqual(quality.report_route(report, selected, 2), 'review')
         report['checks']['video']['score'] = 80
         self.assertEqual(quality.report_route(report, selected), 'pass')
@@ -172,6 +176,51 @@ class QualityChecks(unittest.TestCase):
             report = quality.evaluate_checks({}, config, '', self.root, self.root / 'quality.json', 'video', 'zh', request)
             self.assertEqual(calls, [1, 2, 2])
             self.assertTrue(report['passed'])
+
+    def test_evidence_format_repair_keeps_answers_and_never_receives_correct_keys(self):
+        self.config['stages']['quiz'] = {**self.config['stages']['text'], 'model': 'fixture-quiz'}
+        self.config['evaluation'] = policy('script').model_dump()
+        config = PipelineModelConfig.model_validate(self.config)
+        source = self.root / 'source.md'
+        source.write_text('原文知识', encoding='utf-8')
+        bank = {'id': 'fixture', 'questions': qa_fixture.questions()}
+        calls = []
+        def request(settings, content, root):
+            calls.append(content)
+            if len(calls) == 2:
+                self.assertIn('保持', content[0]['text'])
+                self.assertNotIn('source_quote', content[0]['text'])
+                self.assertNotIn('correct_content', content[0]['text'])
+            return {'answers': [{'id': str(i + 1), 'answer': 'A',
+                'evidence_quotes': ['捏造原句' if len(calls) == 1 else '原文知识']} for i in range(4)]}
+        with patch.object(quality, 'role_settings', return_value={'model_type': 'fixture'}), patch.object(quality, 'question_bank', return_value=bank):
+            report = quality.evaluate_checks({}, config, source, self.root, self.root / 'report.json', 'script', 'zh', request)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(report['score'], 100)
+        self.assertTrue(report['checks']['script']['evidence_format_repair'])
+        self.assertTrue(all(row['verified_evidence'] == ['原文知识'] for row in report['items']))
+
+    def test_evidence_format_repair_cannot_change_answer_to_earn_points(self):
+        self.config['stages']['quiz'] = {**self.config['stages']['text'], 'model': 'fixture-quiz'}
+        self.config['evaluation'] = policy('script').model_dump()
+        config = PipelineModelConfig.model_validate(self.config)
+        source = self.root / 'source.md'
+        source.write_text('原文知识', encoding='utf-8')
+        calls = []
+        def request(settings, content, root):
+            calls.append(content)
+            return {'answers': [{'id': str(i + 1), 'answer': 'B' if len(calls) == 1 else 'A',
+                'evidence_quotes': ['捏造原句' if len(calls) == 1 else '原文知识']} for i in range(4)]}
+        # 错误选项仍有待修正的引文：不得借格式修正改选正确答案。
+        first = request
+        def both(settings, content, root):
+            response = first(settings, content, root)
+            response['answers'][0]['answer'] = 'A' if len(calls) == 1 else 'B'
+            return response
+        with patch.object(quality, 'role_settings', return_value={'model_type': 'fixture'}), patch.object(quality, 'question_bank', return_value={'id': 'fixture', 'questions': qa_fixture.questions()}):
+            with self.assertRaisesRegex(ValueError, '改变了答题选项'):
+                quality.evaluate_checks({}, config, source, self.root, self.root / 'report.json', 'script', 'zh', both)
+        self.assertFalse((self.root / 'report.json').is_file())
 
     def test_selected_audio_and_presentation_use_actual_audio_and_do_not_generate_quiz(self):
         self.config['evaluation'] = policy('audio', 'presentation').model_dump()

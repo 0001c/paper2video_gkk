@@ -9,7 +9,7 @@ import course
 from qa_evaluation import digest, digest_file, read_json, write_json, question_bank, grade
 from model_runtime import role_settings
 
-VERSION = 1
+VERSION = 2
 LABELS = {'script': '讲稿知识', 'video': '成片知识', 'slides': 'PPT 展现', 'presentation': '成片呈现', 'audio': '配音内容一致性'}
 CRITERIA = {'slides': ('readability', 'layout', 'visual_teaching'),
             'presentation': ('page_timing', 'focus', 'unobstructed'),
@@ -186,8 +186,12 @@ def evaluate_checks(snapshot, config, source_path, result_dir, output, stage, la
         if len(text) > 180000:
             raise ValueError('答题材料超过18万字符')
         questions = [{key: row[key] for key in ('id', 'question', 'options')} for row in bank['questions']]
-        content = [{'type': 'text', 'text': '仅根据材料回答题目，不猜测。无依据answer为null。逐字引用材料原句，多处原句分开列出，不改写。'
-                    '画面依据需用所给timestamp和可见文字。输出{"answers":[{"id":"1","answer":"A","evidence_quotes":["原句"],"evidence":"","timestamp":null}]}。\n'
+        content = [{'type': 'text', 'text': '仅根据材料回答题目，不猜测。无依据answer为JSON null。'
+                    'evidence_quotes最多8段，每段必须逐字摘录材料中一个连续片段；多处原句分别放入数组。'
+                    '不拼接、不概括、不改写标点、不加解释，不用省略号替代中间内容。'
+                    '理解题可以依据多处原句推断，但不能把推断结果伪装成引文。'
+                    '画面依据需用所给timestamp和可见文字，引用画面时evidence_quotes为空数组。'
+                    '输出{"answers":[{"id":"1","answer":"A","evidence_quotes":["原句"],"evidence":"","timestamp":null}]}。\n'
                     + json.dumps({'questions': questions, 'material': text}, ensure_ascii=False)}]
         for frame in frames:
             content.extend(image_content(frame))

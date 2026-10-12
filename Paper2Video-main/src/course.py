@@ -311,7 +311,7 @@ def generate_script(plan, slide_dir, prompt_file, model_config, output_dir, gene
             relevant = [example for example in examples if mentions_example(topics[i] if i < len(topics) else '',example['id'])]
             prompt += directive(relevant)+'\n本次只讲当前课件页。例题约束仅应用于当页标注的 ID，不在其他页重复整章例题。'
         identity = {name: model_config.get(name) for name in ('model_type', 'url', 'model_config', 'connection_id', 'scope_id', 'context_window')}
-        facts = {"v": 5, "prompt": prompt, "slide": digest(slide.read_bytes()), "model": identity}
+        facts = {"v": 6, "prompt": prompt, "slide": digest(slide.read_bytes()), "model": identity}
         if generation_id:
             facts['generation_id'] = generation_id  # 新重写绕开旧缓存；同一次失败恢复复用成功页。
         key = digest(facts)
@@ -338,6 +338,25 @@ def generate_script(plan, slide_dir, prompt_file, model_config, output_dir, gene
         if not valid or len(split_pages(content)) != 1:
             raise ValueError('第 {} 页讲稿不合格：{}'.format(i + 1, why or '只允许返回当前一页'))
         content = normalize_script(content)
+        if plan and plan.get('duration_mode') == 'custom':
+            budget = sections[i]['page_minutes']
+            actual = estimate_minutes(content, plan['script_lang'], plan['speech_rate'])
+            if abs(actual - budget) > budget * 0.1:
+                units = round(budget * plan['speech_rate'])
+                repair = prompt + ('\n【本页时长修正，仅修正一次】\n'
+                    '上一版口播预计{:.2f}分钟，目标{:.2f}分钟。请重写成{}～{}个汉字/英文词，'
+                    '只统计竖线左侧口播。保留核心知识和原诗，删掉重复类比、制作信息和空泛铺垫；'
+                    '每句单独一行并保留 | 光标目标 格式。勿输出解释或截断原句。'
+                    '\n【上一版讲稿，仅作修订材料】\n{}').format(
+                        actual, budget, math.ceil(units * 0.9), math.floor(units * 1.1), content)
+                revised, repair_tokens = generator(slide_dir, prompt_file, model_config,
+                    image_paths=[str(slide)], prompt_text=repair, diagnostics_dir=cache_dir / 'responses')
+                valid, why = validate_script_output(revised, 1)
+                if not valid or len(split_pages(revised)) != 1:
+                    raise ValueError('第 {} 页时长修正格式不合格：{}'.format(i + 1, why or '只允许返回当前一页'))
+                content = normalize_script(revised)
+                tokens = {'generation': tokens, 'duration_repair': repair_tokens}
+                # 仍超预算时交给原有教学审核门禁，不能无限付费重试或直接截断。
         write_json(cache_dir / (str(i) + '.json'), {'key': key, 'text': content})
         return i, content, tokens
     error = None

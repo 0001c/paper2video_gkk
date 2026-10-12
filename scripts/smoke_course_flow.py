@@ -175,13 +175,13 @@ def main():
             calls.append(kwargs)
             return '根据教材解释新的内容。 | no', {'total_tokens': 1}
         output, _ = course.generate_script(plan, slides, job['config']['script_prompt_path'], {'model': 'stub'}, result, generator)
-        check(len(calls) == 4 and all(len(c['image_paths']) == 1 for c in calls), '长讲稿分单页请求并保存')
+        check(len(calls) == 8 and all(len(c['image_paths']) == 1 for c in calls), '长讲稿分单页请求并保存，每页最多一次时长修正')
         check(all('教材原文' in c['prompt_text'] and '本页目标约' in c['prompt_text'] and '80~120' not in c['prompt_text'] for c in calls), '长讲稿使用正文和时长预算，移除短讲解限制')
         course.generate_script(plan, slides, job['config']['script_prompt_path'], {'model': 'stub'}, result, generator)
-        check(len(calls) == 4, '重新准备复用已经完成的讲稿页')
+        check(len(calls) == 8, '重新准备复用已经完成的讲稿页')
         script.write_text(output, encoding='utf-8')
         course.generate_script(plan, slides, job['config']['script_prompt_path'], {'model': 'stub'}, result, generator, selected=[1])
-        check(len(calls) == 5, '模型只重写选定的一页')
+        check(len(calls) == 10, '模型只重写选定的一页并有界修正时长')
         import speech_gen as speech
         original = speech.synth_page_qwen3tts
         voice = result / 'ref.wav'
@@ -227,7 +227,7 @@ def main():
         check(len(alignment_calls) == first_alignments, '未变化页的强制对齐和光标结果复用')
         # 执行真实 pipeline 主入口；替换模型/媒体依赖，确认审核断点在 TTS 之前退出。
         fake_modules = {
-            'pdf_render': ['render_pdf_to_images'], 'speech_gen': ['tts_per_slide'],
+            'pdf_render': ['render_pdf_to_images'], 'speech_gen': ['tts_per_slide', 'release_models'],
             'subtitle_render': ['add_subtitles'], 'talking_gen': ['talking_gen_per_slide'],
             'merge_talking': ['merge_slides_and_talking'], 'merge_video': ['merge_slides_and_audio'],
             'talking_config': ['describe_profile', 'resolve_profile'], 'cursor_gen': ['cursor_gen_per_sentence'],

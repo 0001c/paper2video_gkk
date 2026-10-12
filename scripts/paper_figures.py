@@ -49,7 +49,7 @@ from pathlib import Path
 
 # 改提取逻辑（阈值、命名、筛选）必须 +1 —— 它进 deck 指纹，
 # 不 +1 就会命中"用旧逻辑提的图"生成的那批幻灯片，且不报错。
-FIGURES_VERSION = "5"
+FIGURES_VERSION = "6"
 
 FIGURES_DIRNAME = "figures"
 INDEX_NAME = "index.json"
@@ -278,6 +278,11 @@ def extract_from_pdf(pdf_path, figures_dir, min_side=DEFAULT_MIN_SIDE,
                 src_h = int(meta.get("height") or 0)
                 if min(src_w, src_h) < min_side:
                     continue
+                if meta.get('smask'):
+                    # 单独提取 RGB 底图会丢掉文字/图形的透明蒙版（常见底图全黑）。
+                    # 按源页显示区域渲染，保留蒙版、底色及叠加内容的实际效果。
+                    raw = page.get_pixmap(clip=pymupdf.Rect(bbox), dpi=dpi, alpha=False).tobytes('png')
+                    meta['ext'] = 'png'
                 digest = _sha1_bytes(raw)
                 if digest in seen_digest:      # 同一张图重复出现：只留第一处
                     continue

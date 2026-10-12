@@ -267,9 +267,14 @@ def tts_pages(parsed, directory, snapshot, resume=True, client=None, force_pages
         forced = page_index in force_pages and saved.get('repair_generation') != generation_id
         if resume and not forced and saved.get('key') == key:
             try:
-                read_pair(filename, text)
+                _, timing = read_pair(filename, text)
                 if saved.get('wav_sha') != digest(filename.read_bytes()) or saved.get('timing_sha') != digest(filename.with_suffix('.timing.json').read_bytes()):
                     raise ValueError('配对缓存manifest不一致')
+                if saved.get('text_sha') != digest(text):
+                    # 旧云配音缓存也须提供课程章节导航使用的口播指纹。
+                    saved.update(text_sha=digest(text), seconds=timing['sample_count'] / SAMPLE_RATE)
+                    manifest[str(page_index)] = saved
+                    atomic_json(manifest_path, manifest)
                 print(f'[speech_gen] 第 {page_index + 1} 页云配音配对缓存复用', flush=True)
                 import progress_report
                 progress_report.report('tts', stage=2, done=page_index + 1, total=len(parsed), page=page_index)
@@ -310,7 +315,7 @@ def tts_pages(parsed, directory, snapshot, resume=True, client=None, force_pages
                             'spoken_text': spoken, 'spoken_sha256': digest(spoken),
                             'normalization_version': NORMALIZATION_VERSION, 'normalization_language': language,
                             'normalization_map': mapping}, text)
-        manifest[str(page_index)] = {'key': key, **identity, 'wav_sha': timing['audio_sha256'],
+        manifest[str(page_index)] = {'key': key, **identity, 'text_sha': digest(text), 'wav_sha': timing['audio_sha256'],
                                     'timing_sha': digest(filename.with_suffix('.timing.json').read_bytes()),
                                     'seconds': timing['sample_count'] / SAMPLE_RATE,
                                     **({'repair_generation': generation_id} if page_index in force_pages else {})}

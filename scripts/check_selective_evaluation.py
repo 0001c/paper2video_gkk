@@ -152,6 +152,27 @@ class QualityChecks(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '缺少具体问题'):
             quality.rubric_result('audio', result, page, '', '')
 
+    def test_failed_rubric_preserves_diagnostic_and_reuses_valid_pages(self):
+        self.config['evaluation'] = policy('slides').model_dump()
+        config = PipelineModelConfig.model_validate(self.config)
+        calls = []
+        def request(settings, content, root):
+            data = json.loads(content[0]['text'].split('\n')[-1])
+            calls.append(data['page'])
+            criteria = {name: 100 for name in quality.CRITERIA['slides']}
+            if calls == [1, 2]:
+                criteria.pop('visual_teaching')
+            return {'checks': {'slides': {'criteria': criteria, 'issues': []}}}
+        with patch.object(quality, 'role_settings', return_value={'model_type': 'fixture'}):
+            with self.assertRaisesRegex(ValueError, '规定维度'):
+                quality.evaluate_checks({}, config, '', self.root, self.root / 'quality.json', 'video', 'zh', request)
+            self.assertEqual(len(list((self.root / 'evaluation').glob('rubric-*-page-1.json'))), 1)
+            self.assertEqual(len(list((self.root / 'evaluation').glob('rubric-*-page-2.response.json'))), 1)
+            self.assertFalse((self.root / 'quality.json').is_file(), '失败不能发布完整评价')
+            report = quality.evaluate_checks({}, config, '', self.root, self.root / 'quality.json', 'video', 'zh', request)
+            self.assertEqual(calls, [1, 2, 2])
+            self.assertTrue(report['passed'])
+
     def test_selected_audio_and_presentation_use_actual_audio_and_do_not_generate_quiz(self):
         self.config['evaluation'] = policy('audio', 'presentation').model_dump()
         config = PipelineModelConfig.model_validate(self.config)

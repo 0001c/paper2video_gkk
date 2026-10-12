@@ -176,6 +176,31 @@ class SpeechTests(unittest.TestCase):
             self.assertEqual(len(calls), 2)
             self.assertTrue(Path(directory, '0.timing.json').exists())
 
+    def test_course_timing_and_legacy_cache_upgrade_without_resynthesis(self):
+        import course
+        calls = []
+        class FakeSpeech:
+            def synthesize(self, model, voice, text, rate, language):
+                calls.append(text)
+                return PCM, {'segments': [{'words': [{'word': text, 'start': 0, 'end': 1}]}]}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio = root / 'audio'
+            text = '春夜闻笛引发思乡。'
+            (root / 'subtitle_w_cursor.txt').write_text(text + ' | no', encoding='utf-8')
+            plan, _ = course.build_plan(text, {}, 4, 'zh')
+            speech.tts_pages([[(text, 'no')]], audio, self.snapshot(), client=FakeSpeech())
+            self.assertEqual(course.audio_report(plan, root)['pages'][0]['actual_seconds'], 1)
+            manifest = json.loads((audio / 'manifest.json').read_text(encoding='utf-8'))
+            manifest['0'].pop('text_sha')
+            speech.atomic_json(audio / 'manifest.json', manifest)
+            self.assertIsNone(course.audio_report(plan, root)['actual_minutes'])
+            speech.tts_pages([[(text, 'no')]], audio, self.snapshot(), client=FakeSpeech())
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(course.audio_report(plan, root)['pages'][0]['actual_seconds'], 1)
+            (root / 'subtitle_w_cursor.txt').write_text('讲稿已经变化。 | no', encoding='utf-8')
+            self.assertIsNone(course.audio_report(plan, root)['actual_minutes'])
+
     def test_unknown_submission_not_resubmitted(self):
         calls = []
         class BrokenSpeech:

@@ -3,6 +3,7 @@ import base64
 import json
 import math
 from pathlib import Path
+import re
 import subprocess
 import time
 
@@ -48,7 +49,7 @@ def rubric_page(settings, content, root, cache, names, page, script, transcript,
             if formatting:
                 correction = ('\n【上一轮输出校验失败，请重新评价本页】\n' + reason +
                     '\n视觉问题的timestamp只能取本页以下实际抽帧秒数：' + json.dumps([f['timestamp'] for f in page['frames']]) +
-                    '。不得使用页相对时间、页起始时间或猜测时间。音轨引文逐字来自script/actual_audio_asr。'
+                    '。timestamp使用JSON数值（例如2.963），不要加引号。不得使用页相对时间、页起始时间或猜测时间。音轨引文逐字来自script/actual_audio_asr。'
                     '返回全部规定维度；只根据本页原始材料评价，不为通过门槛删除问题或捏造证据。\n上一轮输出：' +
                     json.dumps(response, ensure_ascii=False)[:12000])
                 content = [{**item, 'text': item['text'] + correction} if index == 0 else item for index, item in enumerate(content)]
@@ -179,8 +180,13 @@ def rubric_result(name, result, page, script, transcript):
                     or (expected and expected not in script) or (actual and actual not in transcript)):
                 raise ValueError('配音差异引文未匹配讲稿或实际音轨识别')
             timestamp = page['start']
-        elif type(timestamp) not in (int, float) or not any(abs(timestamp - frame['timestamp']) < 0.01 for frame in page['frames']):
-            raise ValueError('视觉问题未引用本页实际抽帧时间')
+        else:
+            # 部分兼容模型将秒数序列化为字符串；只转换纯十进制表示，不补时间、不吸附到邻近帧。
+            if isinstance(timestamp, str) and len(timestamp) <= 24 and re.fullmatch(r'\d+(?:\.\d+)?', timestamp):
+                timestamp = float(timestamp)
+            if (type(timestamp) not in (int, float) or not math.isfinite(timestamp)
+                    or not any(abs(timestamp - frame['timestamp']) < 0.01 for frame in page['frames'])):
+                raise ValueError('视觉问题未引用本页实际抽帧时间')
         verified.append({'criterion': issue['criterion'], 'description': description, 'evidence': evidence,
                          'timestamp': timestamp, 'script_quote': issue.get('script_quote', ''), 'asr_quote': issue.get('asr_quote', ''),
                          'page': page['page'], 'requires_review': name == 'audio'})
@@ -275,7 +281,8 @@ def evaluate_checks(snapshot, config, source_path, result_dir, output, stage, la
                   '任何扣分必须有具体问题和证据。PPT评价文字/公式/图表可读性、布局与信息密度、图示的教学帮助；'
                   '成片呈现评价本页停留时间与讲解配合、光标/强调位置、字幕/数字人是否遮挡内容。抽帧不能证明帧间完整同步，不虚构未观察的缺陷。'
                   '配音只比较实际音轨ASR与讲稿的覆盖、准确性和顺序；允许标点、数字读法、合理口语差异。ASR可能有误，差异仅为待复核线索，不能评价音色或音质。'
-                  '视觉问题timestamp必须引用所给抽帧时间，evidence描述可见事实。音频问题script_quote/asr_quote必须分别逐字来自材料，缺失一侧填空字符串。'
+                  '视觉问题timestamp必须是JSON数值（不要加引号），只能取本页实际抽帧秒数' + json.dumps([f['timestamp'] for f in page['frames']]) +
+                  '，evidence描述可见事实。音频问题script_quote/asr_quote必须分别逐字来自材料，缺失一侧填空字符串。'
                   '必须使用以下JSON结构和英文项目/维度名，每个criteria保留全部指定维度：' + json.dumps(example, ensure_ascii=False) +
                   '。issues每项包含criterion、description、evidence、timestamp、script_quote、asr_quote；'
                   'criterion必须是该项目的规定维度。未发现问题时issues为空数组。\n' + json.dumps({'checks': {name: CRITERIA[name] for name in rubric_names},

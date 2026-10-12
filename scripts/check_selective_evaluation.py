@@ -181,6 +181,18 @@ class QualityChecks(unittest.TestCase):
             self.assertEqual(calls, [1, 2, 2, 2, 2])
             self.assertTrue(report['passed'])
 
+    def test_visual_timestamp_accepts_exact_decimal_string_and_rejects_fabrication(self):
+        page = {'page': 1, 'start': 0, 'end': 37.04, 'frames': [{'timestamp': 2.963}, {'timestamp': 18.52}, {'timestamp': 34.077}]}
+        result = {'criteria': {name: 90 for name in quality.CRITERIA['slides']},
+                  'issues': [{'criterion': 'layout', 'description': '正文较密', 'evidence': '右下角文字较密', 'timestamp': '2.963'}]}
+        row = quality.rubric_result('slides', result, page, '', '')
+        self.assertEqual(row['issues'][0]['timestamp'], 2.963)
+        self.assertEqual(row['score'], 90, '表示转换不改模型评分')
+        for invalid in ('9.963', '2.963秒', '', 'NaN', 'Infinity', '2.963;print(1)', None, True, float('nan'), float('inf')):
+            result['issues'][0]['timestamp'] = invalid
+            with self.subTest(invalid=repr(invalid)), self.assertRaisesRegex(ValueError, '抽帧时间'):
+                quality.rubric_result('slides', result, page, '', '')
+
     def test_bad_frame_timestamp_recovers_automatically_without_relaxing_validation(self):
         self.config['evaluation'] = policy('slides').model_dump()
         config = PipelineModelConfig.model_validate(self.config)

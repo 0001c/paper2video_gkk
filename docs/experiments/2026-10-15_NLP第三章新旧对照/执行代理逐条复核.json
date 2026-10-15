@@ -1,0 +1,32 @@
+{
+  "reviewer": "本次执行代理；不是独立教师。阅读四份讲稿后的事后定位，不是预注册错误率，也不是穷尽性标注",
+  "findings": [
+    {"id":"C1","label":"A1","page":2,"kind":"前文回顾不实","quote":"上一节我们写出了表达式 h = (a + b) * c","finding":"前页的h是sigmoid表达式；下一例题使用z，回顾时混淆变量名。"},
+    {"id":"C2","label":"A1","page":3,"kind":"后页承诺不符","quote":"这个细节直接关系到下一页 x 与 W 的矩阵乘法能否成立","finding":"实际下一页讲Session，矩阵形状核对在第6页。"},
+    {"id":"C3","label":"B1","page":3,"kind":"局部衔接改善","quote":"这就要进入会话（Session）的执行阶段——下一页我们聚焦这个问题。","finding":"与实际第4页的会话主题一致；这仅是第一轮的局部证据。"},
+    {"id":"C4","label":"B1","page":2,"kind":"重复开场","quote":"我们刚写出 h = sigmoid(W·x + b)，但屏幕上并没有数字——为什么定义了表达式，还拿不到结果？","finding":"与本版本第1页首句逐字重复。"},
+    {"id":"C5","label":"B2","page":1,"kind":"提前给出后页答案","quote":"表达式 z = (a + b) × c 应该如何分步得到 20？","finding":"第2页负责的E1最终数值已在引入时给出，任务范围约束没有完全生效。A2也提前给出20，不能把它当作新版独有问题。"},
+    {"id":"C6","label":"B2","page":2,"kind":"前文回顾不完整","quote":"我们刚刚看到，定义表达式 h = tf.matmul(x, W) + b 并不会自动给出数值","finding":"前页定义h包含tf.nn.sigmoid，这里把h说成未经过sigmoid的线性值。"},
+    {"id":"C7","label":"B1","page":4,"kind":"仍重讲已有算例","quote":"举个教学补充例子：假设我们有图 z = (a + b) * c，其中 a=2, b=3, c=4。","finding":"第2页已完整讲同条件算例；本段再讲并给出20。不能因长句完全重复计数低就断言没有语义重复。"},
+    {"id":"M1","label":"A1","page":1,"kind":"矩阵顺序前后矛盾","quote":"h = sigmoid(W·x + b)","finding":"同版第6页按x[1,10]乘W[10,5]；这里却写W乘x。A2第1/7/8页、B1第1/4/5页也有此类矛盾，B2第1页使用正确代码。"},
+    {"id":"M2","label":"B1","page":6,"kind":"反向乘法内维说错","quote":"如果误写成tf.matmul(W,x)，就会因内维10≠5报错。","finding":"W[10,5]乘x[1,10]的内维是5和1；不兼容的结论对，给出的尺寸理由错。"},
+    {"id":"M3","label":"B2","page":6,"kind":"反向乘法内维说错","quote":"若误写成 tf.matmul(W, x)，shape 将因内维 5≠10 而报错。","finding":"内维应为5和1，不是5和10。两次新版均出现该错误，通用计算门禁未检出。"},
+    {"id":"M4","label":"A1","page":6,"kind":"广播表述需澄清","quote":"若误用[5,1]就会出错。","finding":"NumPy复算[1,5]+[5,1]合法广播成[5,5]，偏离目标形状；原文的‘出错’也可能指结果形状错，不能直接记为确定声称运行报错。建议明确静默形状扩张风险。"},
+    {"id":"M5","label":"A2","page":6,"kind":"广播规则过度概括","quote":"广播只作用于末轴","finding":"广播从末轴对齐并逐轴比较，不仅能作用于末轴；本例结果[1,5]本身正确。"},
+    {"id":"M6","label":"A2","page":5,"kind":"偏置初值表述错误","quote":"W 和 b 虽然被初始化了，但仍是随机值","finding":"教材W随机初始化，b由zeros初始化为零；不能把两者都叫随机值。"},
+    {"id":"M7","label":"B2","page":4,"kind":"按需执行表述过度","quote":"你没请求的梯度或中间变量，它根本不去碰。","finding":"未直接fetch的中间张量只要是依赖仍需计算；应表达为不执行无关节点。该段前文说必要子图正确，但此句容易造成相反理解。"},
+    {"id":"G1","label":"A1","page":2,"kind":"例题结果误报","quote":"用 d 的结果算 z：5 乘 4 等于 20。","finding":"讲稿已给出正确20，后面也有z=20的Tensor；现门禁却报告未完整兑现z=20。属于口述结果/中文后缀解析漏识别，不能计为讲稿算错。"},
+    {"id":"P1","label":"B1","page":6,"kind":"形状与参数正例","quote":"合计55个可训练参数。","finding":"四份讲稿均能给出E1最终20、xW形状[1,5]及55参数；这些固定答案正确不意味着所有中间解释正确。"}
+  ],
+  "local_counterexamples": {
+    "runtime":"本地NumPy；未安装或执行TensorFlow/GPU",
+    "x_shape":[1,10],"W_shape":[10,5],"x_matmul_W":[1,5],
+    "W_matmul_x_inner_dimensions":[5,1],
+    "add_bias_shape_5":[1,5],"add_bias_shape_5_1":[5,5],"parameters":55
+  },
+  "references": [
+    "https://www.tensorflow.org/api_docs/python/tf/linalg/matmul",
+    "https://www.tensorflow.org/api_docs/python/tf/math/add",
+    "https://www.tensorflow.org/api_docs/python/tf/compat/v1/Session"
+  ]
+}

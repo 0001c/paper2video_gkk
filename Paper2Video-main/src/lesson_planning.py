@@ -130,7 +130,19 @@ def lesson_report(tasks, spoken, examples=()):
             found = _compact(fact['text']) in _compact(text)
             knowledge.append({**fact, 'status': '有原文证据，待核对解释' if found else '待核对转述或补讲',
                               'evidence': fact['text'] if found else None})
-        pages.append({'page': i+1, 'knowledge': knowledge, 'question_id': task['question_id'],
+        from calculation_checks import math_text
+        recalls = []
+        for sentence in re.split(r'[。；\n]',text):
+            if not re.search(r'上一页|上页|前面|此前|刚才|上一节',sentence):
+                continue
+            for formula in re.findall(r'(?<![A-Za-z0-9_])[A-Za-z]\s*=\s*[A-Za-z0-9_+*/().,\s\-×·]{2,100}',sentence):
+                formula = formula.strip()
+                found = _compact(math_text(formula)) in _compact(math_text('\n'.join(spoken[:i])))
+                recalls.append({'formula':formula,'evidence_found':found,
+                                'status':'找到前文原式，待核对解释' if found else '未找到前文原式，待核对回顾'})
+                if not found:
+                    warnings.append(f'第{i+1}页回顾“{formula}”未找到前文原式证据，请核对符号和回顾对象；转述不自动判错')
+        pages.append({'page': i+1, 'knowledge': knowledge, 'question_id': task['question_id'], 'recalls':recalls,
                       'answer_page': task['answer_page'], 'question_status': '待核对回答', 'bridge_limit_sentences': 1})
         if task['role'] != '回顾检查':
             paragraphs = [s.strip() for s in re.split(r'[\n]+|(?<=[。！？!?])\s*', text) if s.strip()]

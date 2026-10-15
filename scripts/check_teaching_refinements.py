@@ -75,6 +75,11 @@ class RefinementChecks(unittest.TestCase):
         self.assertTrue(any('提前' in i for i in lesson_report(tasks,['先算z=20。'],[VALUE_EXAMPLE])['issues']))
         bridge='前面已经说明计算图只定义依赖关系需要执行才能得到输出数值。'
         self.assertFalse(lesson_report(tasks,['开场。'+bridge,'现在继续。'+bridge+'本页解释新的知识。'],[])['issues'])
+        recalled=lesson_report(tasks,['我们定义z=(a+b)*c。','上一页我们写出h=(a+b)*c。'])
+        self.assertFalse(recalled['pages'][1]['recalls'][0]['evidence_found'])
+        self.assertTrue(any('前文原式证据' in warning for warning in recalled['warnings']))
+        matched=lesson_report(tasks,['我们定义z=(a+b)*c。','上一页我们写出z=(a+b)*c。'])
+        self.assertTrue(matched['pages'][1]['recalls'][0]['evidence_found'])
 
     def test_tensor_order_output_and_reverse_reason(self):
         contracts=tensor_contracts([SHAPE_EXAMPLE])
@@ -158,6 +163,7 @@ class RefinementChecks(unittest.TestCase):
         self.assertTrue(any('重复前文' in issue for issue in results['B1']['issues']))
         self.assertTrue(any('实际内维是5与1' in issue for issue in results['B1']['issues']))
         self.assertTrue(any('实际内维是5与1' in issue for issue in results['B2']['issues']))
+        self.assertTrue(any('h = (a + b)' in warning for warning in results['A1']['warnings']))
 
 
 if __name__=='__main__': unittest.main()

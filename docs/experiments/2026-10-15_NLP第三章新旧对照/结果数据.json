@@ -1,0 +1,1398 @@
+{
+  "groups": {
+    "A": {
+      "mean_estimated_minutes": 14.472999999999999,
+      "estimated_passed": 0,
+      "mean_actual_minutes": null,
+      "actual_passed": 0,
+      "auxiliary_score": 4.178571428571429
+    },
+    "B": {
+      "mean_estimated_minutes": 19.659,
+      "estimated_passed": 0,
+      "mean_actual_minutes": null,
+      "actual_passed": 0,
+      "auxiliary_score": 4.821428571428571
+    }
+  },
+  "samples": {
+    "A1": {
+      "estimated_minutes": 14.855,
+      "estimated_within_10_percent": false,
+      "script_sha256": "15292a75c16471ab825f3e12b3e59e2950038f42e076f165cee5ba0bfb40dcf5",
+      "diagnostic_new_gate": {
+        "version": 2,
+        "passed": false,
+        "issues": [
+          "例题E1未完整兑现已核验结果 z=20，请明确给出结果",
+          "讲稿预计14.85分钟，目标12.0分钟，超过10%预算偏差；请调整后再配音",
+          "第1页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第2页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第3页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第4页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第5页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第6页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第7页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第8页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容"
+        ],
+        "warnings": [],
+        "estimated_minutes": 14.854545454545455,
+        "page_timing": [
+          {
+            "page": 1,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 1.509090909090909,
+            "passed": false
+          },
+          {
+            "page": 2,
+            "planned_minutes": 2.297872340425532,
+            "estimated_minutes": 1.7227272727272727,
+            "passed": false
+          },
+          {
+            "page": 3,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 2.3136363636363635,
+            "passed": false
+          },
+          {
+            "page": 4,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 2.0136363636363637,
+            "passed": false
+          },
+          {
+            "page": 5,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 1.55,
+            "passed": false
+          },
+          {
+            "page": 6,
+            "planned_minutes": 2.297872340425532,
+            "estimated_minutes": 1.8909090909090909,
+            "passed": false
+          },
+          {
+            "page": 7,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 1.6590909090909092,
+            "passed": false
+          },
+          {
+            "page": 8,
+            "planned_minutes": 1.021276595744681,
+            "estimated_minutes": 2.1954545454545453,
+            "passed": false
+          }
+        ],
+        "calculations": [
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 1,
+            "checks": [
+              {
+                "expression": "10*5",
+                "stated": 50.0,
+                "calculated": 50.0
+              }
+            ],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          }
+        ],
+        "example_coverage": [
+          {
+            "example_id": "E1",
+            "source_page": 9,
+            "slide_pages": [
+              2
+            ]
+          },
+          {
+            "example_id": "E2",
+            "source_page": 15,
+            "slide_pages": [
+              6
+            ]
+          }
+        ]
+      },
+      "exact_repeated_sentences": {},
+      "exact_repeat_excess": 0,
+      "audio": null,
+      "page_estimates": [
+        1.509,
+        1.723,
+        2.314,
+        2.014,
+        1.55,
+        1.891,
+        1.659,
+        2.195
+      ]
+    },
+    "B1": {
+      "estimated_minutes": 19.123,
+      "estimated_within_10_percent": false,
+      "script_sha256": "71658a3261e356d1ccb34b0d7a93418beb8e214355c8920d949eaf38076b8436",
+      "diagnostic_new_gate": {
+        "version": 2,
+        "passed": false,
+        "issues": [
+          "讲稿预计19.12分钟，目标12.0分钟，超过10%预算偏差；请调整后再配音",
+          "第1页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第2页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第3页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第4页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第5页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第7页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第8页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容"
+        ],
+        "warnings": [],
+        "estimated_minutes": 19.12272727272727,
+        "page_timing": [
+          {
+            "page": 1,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 1.981818181818182,
+            "passed": false
+          },
+          {
+            "page": 2,
+            "planned_minutes": 2.297872340425532,
+            "estimated_minutes": 2.713636363636364,
+            "passed": false
+          },
+          {
+            "page": 3,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 2.172727272727273,
+            "passed": false
+          },
+          {
+            "page": 4,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 2.713636363636364,
+            "passed": false
+          },
+          {
+            "page": 5,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 2.290909090909091,
+            "passed": false
+          },
+          {
+            "page": 6,
+            "planned_minutes": 2.297872340425532,
+            "estimated_minutes": 2.4045454545454548,
+            "passed": true
+          },
+          {
+            "page": 7,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 2.5090909090909093,
+            "passed": false
+          },
+          {
+            "page": 8,
+            "planned_minutes": 1.021276595744681,
+            "estimated_minutes": 2.3363636363636364,
+            "passed": false
+          }
+        ],
+        "calculations": [
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 2,
+            "checks": [
+              {
+                "expression": "2 + 3",
+                "stated": 5.0,
+                "calculated": 5.0
+              },
+              {
+                "expression": "5 * 4",
+                "stated": 20.0,
+                "calculated": 20.0
+              }
+            ],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          }
+        ],
+        "example_coverage": [
+          {
+            "example_id": "E1",
+            "source_page": 9,
+            "slide_pages": [
+              2
+            ]
+          },
+          {
+            "example_id": "E2",
+            "source_page": 15,
+            "slide_pages": [
+              6
+            ]
+          }
+        ]
+      },
+      "exact_repeated_sentences": {
+        "我们刚写出hsigmoidWxb但屏幕上并没有数字为什么定义了表达式还拿不到结果": 2
+      },
+      "exact_repeat_excess": 1,
+      "audio": null,
+      "page_estimates": [
+        1.982,
+        2.714,
+        2.173,
+        2.714,
+        2.291,
+        2.405,
+        2.509,
+        2.336
+      ]
+    },
+    "B2": {
+      "estimated_minutes": 20.195,
+      "estimated_within_10_percent": false,
+      "script_sha256": "985db898932762a5e9b4b74daba8059a3f3b306773918c15ca6720354f14edcd",
+      "diagnostic_new_gate": {
+        "version": 2,
+        "passed": false,
+        "issues": [
+          "讲稿预计20.20分钟，目标12.0分钟，超过10%预算偏差；请调整后再配音",
+          "第1页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第3页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第4页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第5页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第6页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第7页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第8页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容"
+        ],
+        "warnings": [],
+        "estimated_minutes": 20.195454545454545,
+        "page_timing": [
+          {
+            "page": 1,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 2.018181818181818,
+            "passed": false
+          },
+          {
+            "page": 2,
+            "planned_minutes": 2.297872340425532,
+            "estimated_minutes": 2.4545454545454546,
+            "passed": true
+          },
+          {
+            "page": 3,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 2.481818181818182,
+            "passed": false
+          },
+          {
+            "page": 4,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 2.9727272727272727,
+            "passed": false
+          },
+          {
+            "page": 5,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 2.518181818181818,
+            "passed": false
+          },
+          {
+            "page": 6,
+            "planned_minutes": 2.297872340425532,
+            "estimated_minutes": 3.059090909090909,
+            "passed": false
+          },
+          {
+            "page": 7,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 2.340909090909091,
+            "passed": false
+          },
+          {
+            "page": 8,
+            "planned_minutes": 1.021276595744681,
+            "estimated_minutes": 2.35,
+            "passed": false
+          }
+        ],
+        "calculations": [
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 2,
+            "checks": [
+              {
+                "expression": "2 + 3",
+                "stated": 5.0,
+                "calculated": 5.0
+              },
+              {
+                "expression": "5 * 4",
+                "stated": 20.0,
+                "calculated": 20.0
+              }
+            ],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 1,
+            "checks": [
+              {
+                "expression": "4*1*5",
+                "stated": 20.0,
+                "calculated": 20.0
+              }
+            ],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 1,
+            "checks": [
+              {
+                "expression": "10*5",
+                "stated": 50.0,
+                "calculated": 50.0
+              }
+            ],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          }
+        ],
+        "example_coverage": [
+          {
+            "example_id": "E1",
+            "source_page": 9,
+            "slide_pages": [
+              2
+            ]
+          },
+          {
+            "example_id": "E2",
+            "source_page": 15,
+            "slide_pages": [
+              6
+            ]
+          }
+        ]
+      },
+      "exact_repeated_sentences": {},
+      "exact_repeat_excess": 0,
+      "audio": null,
+      "page_estimates": [
+        2.018,
+        2.455,
+        2.482,
+        2.973,
+        2.518,
+        3.059,
+        2.341,
+        2.35
+      ]
+    },
+    "A2": {
+      "estimated_minutes": 14.091,
+      "estimated_within_10_percent": false,
+      "script_sha256": "3da29445c824f8d9128e31cab255d97e360ce644730de55f44d0a7ceccad9ed3",
+      "diagnostic_new_gate": {
+        "version": 2,
+        "passed": false,
+        "issues": [
+          "讲稿预计14.09分钟，目标12.0分钟，超过10%预算偏差；请调整后再配音",
+          "第1页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第2页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第3页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第4页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第5页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第6页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第7页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第8页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容"
+        ],
+        "warnings": [],
+        "estimated_minutes": 14.090909090909092,
+        "page_timing": [
+          {
+            "page": 1,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 1.6181818181818182,
+            "passed": false
+          },
+          {
+            "page": 2,
+            "planned_minutes": 2.297872340425532,
+            "estimated_minutes": 1.7272727272727273,
+            "passed": false
+          },
+          {
+            "page": 3,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 1.85,
+            "passed": false
+          },
+          {
+            "page": 4,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 1.6727272727272726,
+            "passed": false
+          },
+          {
+            "page": 5,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 1.65,
+            "passed": false
+          },
+          {
+            "page": 6,
+            "planned_minutes": 2.297872340425532,
+            "estimated_minutes": 1.7818181818181817,
+            "passed": false
+          },
+          {
+            "page": 7,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 1.5636363636363637,
+            "passed": false
+          },
+          {
+            "page": 8,
+            "planned_minutes": 1.021276595744681,
+            "estimated_minutes": 2.227272727272727,
+            "passed": false
+          }
+        ],
+        "calculations": [
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 2,
+            "checks": [
+              {
+                "expression": "2 + 3",
+                "stated": 5.0,
+                "calculated": 5.0
+              },
+              {
+                "expression": "5 * 4",
+                "stated": 20.0,
+                "calculated": 20.0
+              }
+            ],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 1,
+            "checks": [
+              {
+                "expression": "10*5",
+                "stated": 50.0,
+                "calculated": 50.0
+              }
+            ],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          }
+        ],
+        "example_coverage": [
+          {
+            "example_id": "E1",
+            "source_page": 9,
+            "slide_pages": [
+              2
+            ]
+          },
+          {
+            "example_id": "E2",
+            "source_page": 15,
+            "slide_pages": [
+              6
+            ]
+          }
+        ]
+      },
+      "exact_repeated_sentences": {},
+      "exact_repeat_excess": 0,
+      "audio": null,
+      "page_estimates": [
+        1.618,
+        1.727,
+        1.85,
+        1.673,
+        1.65,
+        1.782,
+        1.564,
+        2.227
+      ]
+    }
+  },
+  "knowledge": [
+    {
+      "label": "A1",
+      "total": 12,
+      "rows": [
+        {
+          "id": "Q1",
+          "answer": "A",
+          "page": 1,
+          "quote": "这是因为 TensorFlow 1.x 的图模式把‘描述计算’和‘执行计算’严格分开了：就像建筑师画好施工图，不等于房子已经盖好；图只记录了运算依赖关系，它本身不会自动算出数值。",
+          "expected": "A",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q2",
+          "answer": "C",
+          "page": 2,
+          "quote": "第一步，按图中依赖顺序算 d：2 加 3 等于 5；第二步, 用 d 的结果算 z：5 乘 4 等于 20。",
+          "expected": "C",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q3",
+          "answer": "B",
+          "page": 3,
+          "quote": "矩阵 [[1,2,3],[4,5,6]] 有行和列两个独立方向，秩就是2。注意：秩不是元素总数——这个向量含3个数，但秩仍是1。",
+          "expected": "B",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q4",
+          "answer": "D",
+          "page": 3,
+          "quote": "命名规则也很重要：add:2 表示 add 操作的第三个输出，因为索引从0开始计数。",
+          "expected": "D",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q5",
+          "answer": "C",
+          "page": 3,
+          "quote": "控制边只约束执行先后顺序，比如确保 multiply 等 add 完成后再启动，但它本身不携带任何数值——这是初学者最常见的混淆点。",
+          "expected": "C",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q6",
+          "answer": "A",
+          "page": 5,
+          "quote": "x 是占位符（placeholder），它像一个空插座——图构建时只预留接口，真正运行时才通过 feed_dict 插入具体数据。",
+          "expected": "A",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q7",
+          "answer": "B",
+          "page": 5,
+          "quote": "这里有个常见误解：定义初始化器（如 tf.global_variables_initializer()）只是创建了一个操作节点，并不等于已经执行了初始化。",
+          "expected": "B",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q8",
+          "answer": "D",
+          "page": 6,
+          "quote": "矩阵乘法要求左矩阵列数等于右矩阵行数：x的第二维是10，W的第一维也是10，内维匹配，结果必为[1,5]。",
+          "expected": "D",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q9",
+          "answer": "A",
+          "page": 6,
+          "quote": "sigmoid函数逐元素作用，不改变张量结构，只对每个值做1/(1+exp(-t))变换。因此h的输出形状保持[1,5]，对应5个神经元的激活输出。",
+          "expected": "A",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q10",
+          "answer": "C",
+          "page": 6,
+          "quote": "参数量直接由形状决定：W含10×5=50个标量，b含5个标量，共55个可训练参数。",
+          "expected": "C",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q11",
+          "answer": "B",
+          "page": 5,
+          "quote": "注意，本例仅做一次前向求值，没有梯度计算，也没有训练循环。Session 不会自动训练，也不会默认求所有梯度——它只执行你明确请求的 fetch 和其依赖。",
+          "expected": "B",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q12",
+          "answer": "D",
+          "page": 7,
+          "quote": "常见误区是认为 client、master、worker 必须对应三台物理机器；实际上单机时它们可共存于同一进程，职责分明但无需物理隔离。",
+          "expected": "D",
+          "evidence_exact": true,
+          "passed": true
+        }
+      ],
+      "answer_correct": 12,
+      "evidence_correct": 12
+    },
+    {
+      "label": "A2",
+      "total": 12,
+      "rows": [
+        {
+          "id": "Q1",
+          "answer": "A",
+          "page": 1,
+          "quote": "这是因为 TensorFlow 1.x 的图模式把‘描述计算’和‘执行计算’严格分开了。就像建筑师画好施工图，不等于房子已经盖好；图只是记录了运算依赖关系，它本身不会自动算出数值。\n\n\n整个流程必须三步走：第一，定义依赖——用 Operation 节点搭建计算图；第二，提供数据——通过 feed_dict 给占位符赋值，或初始化变量；第三，执行求值——启动 Session，明确告诉系统‘我要取回 h 的值’。",
+          "expected": "A",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q2",
+          "answer": "C",
+          "page": 2,
+          "quote": "为便于手算验证，本实验统一补充教学设值：a = 2，b = 3，c = 4——注意，这是教学辅助值，非原书给定。\n\n\n第一步：d = 2 + 3 = 5；第二步：z = 5 * 4 = 20。这个顺序不能颠倒，因为 z 依赖 d 的结果。",
+          "expected": "C",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q3",
+          "answer": "B",
+          "page": 3,
+          "quote": "矩阵 [[1,2,3],[4,5,6]] 有行与列两个独立方向，秩为2；shape 写作 [2,3]，顺序对应行数、列数。\n\n\n易错点：shape 不是元素总数。[2,3] 共6个元素，但秩仍是2——维度数不等于元素个数，这是初学者高频混淆处。",
+          "expected": "B",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q4",
+          "answer": "D",
+          "page": 3,
+          "quote": "名字后缀如 add:2 表示操作节点 add 的第三个输出（索引从0开始）。同一个操作可能产出多个张量，调试时必须精确定位到具体输出项。",
+          "expected": "D",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q5",
+          "answer": "C",
+          "page": 3,
+          "quote": "图中边分两类：数据边传递实际数值，控制边仅约束执行先后顺序——例如确保 d 计算完成后再算 z，但它本身不携带任何值。",
+          "expected": "C",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q6",
+          "answer": "A",
+          "page": 5,
+          "quote": "x 是占位符（placeholder），它像一个空插槽——图构建时只声明‘这里将来要塞一个 [1,10] 的张量’，但不存任何数值；真正运行时，必须通过 feed_dict 显式传入数据，比如 np.random.rand(1,10)。",
+          "expected": "A",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q7",
+          "answer": "B",
+          "page": 5,
+          "quote": "而 W 和 b 是变量（Variable），它们代表模型参数，生命周期贯穿整个会话。变量在图中被定义后，内存里还是一片未初始化的随机区域；必须显式执行初始化操作，才能填入合法数值。\n\n\n这里有个经典误区：定义初始化器（如 tf.global_variables_initializer()）只是生成一个操作节点，并不执行它。就像写好‘开灯’指令 ≠ 灯真的亮了——你得调用 .run() 才真正触发初始化。",
+          "expected": "B",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q8",
+          "answer": "D",
+          "page": 6,
+          "quote": "输入x定义为shape [1,10]，权重W是[10,5]，矩阵乘法要求左矩阵列数等于右矩阵行数，这里内维10匹配，结果必为[1,5]。",
+          "expected": "D",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q9",
+          "answer": "A",
+          "page": 6,
+          "quote": "偏置b的shape是[5]，TensorFlow按最后一轴广播：它被自动扩展为[1,5]与结果对齐，加法后形状仍为[1,5]。注意，广播只作用于末轴，不是任意维度都能自由扩展。\n\n\nsigmoid函数是逐元素非线性变换，它不改变张量结构——输入[1,5]，输出h仍是[1,5]。每个元素独立经过S形曲线，维度完全保留。",
+          "expected": "A",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q10",
+          "answer": "C",
+          "page": 6,
+          "quote": "参数量可精确计算：W含10×5=50个标量，b含5个，共55个可训练参数。这个数字直接关联模型复杂度与梯度计算开销。",
+          "expected": "C",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q11",
+          "answer": "B",
+          "page": 5,
+          "quote": "注意：本例仅做单次前向求值，没有梯度计算，也没有训练循环。这意味着 W 和 b 虽然被初始化了，但仍是随机值，不会自动更新——会话从不替你做训练。",
+          "expected": "B",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q12",
+          "answer": "D",
+          "page": 7,
+          "quote": "这里必须澄清一个常见误解：在单机环境中，client、master、worker 这三个职责完全可以合并在同一个进程里，不需要三台物理机器；它们是逻辑分工，不是硬件绑定。",
+          "expected": "D",
+          "evidence_exact": true,
+          "passed": true
+        }
+      ],
+      "answer_correct": 12,
+      "evidence_correct": 12
+    },
+    {
+      "label": "B1",
+      "total": 12,
+      "rows": [
+        {
+          "id": "Q1",
+          "answer": "A",
+          "page": 1,
+          "quote": "先用代码构建一张静态的计算图，记录所有操作依赖；真正算出数值，必须启动会话并提供输入数据。",
+          "expected": "A",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q2",
+          "answer": "C",
+          "page": 2,
+          "quote": "第二步：用上一步结果代入，z = d * c = 5 * 4 = 20。最终输出数值是 20。",
+          "expected": "C",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q3",
+          "answer": "B",
+          "page": 3,
+          "quote": "再看矩阵 [[1,2,3],[4,5,6]]：它有 2 行、3 列，两个方向都有长度，因此秩是 2；shape 是 [2,3]——注意顺序：先写行数，再写列数，这和 NumPy 一致。",
+          "expected": "B",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q4",
+          "answer": "D",
+          "page": 3,
+          "quote": "比如 add 操作若定义了三个输出端口，第三个就叫 add:2——后缀从 0 开始计数，:2 就是第三个。",
+          "expected": "D",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q5",
+          "answer": "C",
+          "page": 3,
+          "quote": "而控制边只表示‘必须先完成某操作，才能启动下一个’，它不携带任何数值。",
+          "expected": "C",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q6",
+          "answer": "A",
+          "page": 5,
+          "quote": "x 是占位符（placeholder），它本身不存数值，只在运行时由用户通过 feed_dict 提供具体数据",
+          "expected": "A",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q7",
+          "answer": "B",
+          "page": 5,
+          "quote": "你写 tf.Variable(...) 或 tf.global_variables_initializer()，只是在图里加了一个‘初始化操作节点’；它还没跑，W 和 b 仍是未定义状态。必须显式调用 session.run(init_op) 才真正赋初值。",
+          "expected": "B",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q8",
+          "answer": "D",
+          "page": 6,
+          "quote": "首先看矩阵乘法x × W：这是标准的行向量左乘矩阵，内维10必须匹配，结果自然是[1,5]。",
+          "expected": "D",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q9",
+          "answer": "A",
+          "page": 6,
+          "quote": "最后是sigmoid函数。注意：它不是矩阵运算，而是逐元素作用——对每个标量独立计算1/(1+exp(-t))。输入是[1,5]的张量，输出仍是[1,5]，元素个数没变，只是数值被非线性压缩到(0,1)区间。",
+          "expected": "A",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q10",
+          "answer": "C",
+          "page": 6,
+          "quote": "再算参数总量：W是10行5列，共50个标量；b是长度5的向量，5个标量；合计55个可训练参数。",
+          "expected": "C",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q11",
+          "answer": "B",
+          "page": 5,
+          "quote": "再强调一次：本例是单次前向求值，不是训练。它只算一次 h = sigmoid(W·x + b)，不更新 W 和 b，也不涉及梯度或优化器循环。所以你看到的代码里没有 train_op，也没有 for 循环。",
+          "expected": "B",
+          "evidence_exact": true,
+          "passed": true
+        },
+        {
+          "id": "Q12",
+          "answer": "D",
+          "page": 7,
+          "quote": "这里有个常见误解：以为这三个角色必须对应三台物理机器。其实单机开发时，client、master、worker的职责完全可以由同一个Python进程承担——它们是逻辑分工，不是硬件绑定。",
+          "expected": "D",
+          "evidence_exact": true,
+          "passed": true
+        }
+      ],
+      "answer_correct": 12,
+      "evidence_correct": 12
+    },
+    {
+      "label": "B2",
+      "valid": false,
+      "total": 12,
+      "raw_answer_count": 9,
+      "missing_ids": [
+        "Q10",
+        "Q11",
+        "Q12"
+      ],
+      "rows": [
+        {
+          "id": "Q1",
+          "answer": "A",
+          "page": 1,
+          "quote": "第一，定义依赖关系，也就是构建计算图；第二，提供具体数据；第三，执行求值操作。"
+        },
+        {
+          "id": "Q2",
+          "answer": "C",
+          "page": 2,
+          "quote": "第二步：执行乘法操作（Operation），把上一步输出的 d 和 c 代入，得到 z = 5 × 4 = 20。z 同样是一个张量，此时它的值是 20。"
+        },
+        {
+          "id": "Q3",
+          "answer": "B",
+          "page": 3,
+          "quote": "矩阵 [[1,2,3],[4,5,6]] 有两行三列，两个轴，秩就是2。shape 描述的是各轴的长度。向量 [1,2,3] 的 shape 是 [3]，表示第一轴长为3；矩阵 [[1,2,3],[4,5,6]] 的 shape 是 [2,3]，表示第一轴2个元素、第二轴3个元素。"
+        },
+        {
+          "id": "Q4",
+          "answer": "D",
+          "page": 3,
+          "quote": "add:2 表示 add 节点的第三个输出——因为索引从0开始，:0 是第一个，:1 是第二个，:2 就是第三个。"
+        },
+        {
+          "id": "Q5",
+          "answer": "C",
+          "page": 3,
+          "quote": "控制边只约束先后顺序。比如你加一条控制依赖，它不会给下游节点多送一个数值，只是说‘等我做完你再开始’。"
+        },
+        {
+          "id": "Q6",
+          "answer": "A",
+          "page": 5,
+          "quote": "x 是占位符（placeholder），它在图构建阶段只声明形状和类型，比如 shape=[1,10]、dtype=float32；真正的数值必须等到运行时，通过 feed_dict 字典提供。"
+        },
+        {
+          "id": "Q7",
+          "answer": "B",
+          "page": 5,
+          "quote": "你必须显式调用 session.run(tf.global_variables_initializer())，系统才会真正把随机数或零值写入 W 和 b 的内存位置。"
+        },
+        {
+          "id": "Q8",
+          "answer": "D",
+          "page": 6,
+          "quote": "先看第一层运算：x 的 shape 是 [1,10]，W 的 shape 是 [10,5]。矩阵乘法要求左矩阵列数等于右矩阵行数，这里内维 10 完全匹配，因此 tf.matmul(x, W) 的结果 shape 必为 [1,5]。"
+        },
+        {
+          "id": "Q9",
+          "answer": "A",
+          "page": 6,
+          "quote": "然后应用 sigmoid 函数。注意：sigmoid 是逐元素非线性变换，它不改变输入张量的形状，只对每个标量独立计算 1 除以（1 加 e 的负 t 次方）。因此 h 的 shape 依然保持 [1,5]。"
+        }
+      ],
+      "answer_correct": null,
+      "evidence_correct": null,
+      "reason": "提供方正常结束但只答9题；整份问答无效，不重抽补答",
+      "request_id": "chatcmpl-453ee446-d93c-95b7-adcf-227041c87eb0"
+    }
+  ],
+  "blind": [
+    {
+      "valid": true,
+      "mapping": {
+        "1": "A1",
+        "2": "B1"
+      },
+      "errors": [],
+      "versions": [
+        {
+          "id": "1",
+          "scores": {
+            "accuracy": 5,
+            "explanation": 4,
+            "worked_example": 4,
+            "misconception": 5,
+            "question_closure": 5,
+            "coherence": 5,
+            "oral": 4
+          },
+          "strength": {
+            "page": 3,
+            "quote": "思考一下：shape 为 [1,10] 的张量，它的秩是多少？对，是2——即使第一维长度为1，它仍是二维结构。这个细节直接关系到下一页 x 与 W 的矩阵乘法能否成立：内维必须匹配，而秩决定了维度兼容性。",
+            "reason": "精准兑现了上一页关于张量属性的设问，并自然引出下一页的核心难点（形状匹配），逻辑链条严密且符合教学节奏。"
+          },
+          "weakness": {
+            "page": 7,
+            "quote": "这正是前一页强调‘定义图 ≠ 得到数值’的原因：Session.run 的本质，就是向这套协作系统发出一次精准的求值指令，而非自动遍历整张图。",
+            "reason": "此处回顾的是第4页的内容，但中间隔了第5、6页（占位符/变量和形状核验）。虽然逻辑正确，但在口语连贯性上略显跳跃，不如直接关联紧邻的前文或明确标注“回到之前提到的概念”更顺畅。"
+          }
+        },
+        {
+          "id": "2",
+          "scores": {
+            "accuracy": 5,
+            "explanation": 5,
+            "worked_example": 5,
+            "misconception": 5,
+            "question_closure": 4,
+            "coherence": 4,
+            "oral": 5
+          },
+          "strength": {
+            "page": 2,
+            "quote": "第一步：先算 d = a + b = 2 + 3 = 5。注意，这一步不是代码自动执行的，而是我们在‘构图完成、供值之后、求值之前’手动模拟的中间结果。",
+            "reason": "在讲解例题时，极其清晰地界定了“手算模拟”与“代码执行”的区别，有效防止学生混淆 TensorFlow 的惰性执行机制与即时计算，解释深度优于版本1。"
+          },
+          "weakness": {
+            "page": 1,
+            "quote": "接下来我们会用一个具体例子 E1：设 a=2, b=3, c=4，按 z = (a+b)×c 手动走一遍——看清楚哪一步是构图、哪一步是供值、哪一步是求值。这将帮我们确认：定义表达式 ≠ 得到结果。",
+            "reason": "第1页末尾提出的“手动走一遍”在第2页开头立即重复了相同的引入语（“现在就用这个最简计算图 E1 来手算一遍...”），导致跨页衔接处存在轻微的冗余感，不如版本1那样通过提问自然过渡紧凑。"
+          }
+        }
+      ],
+      "ranking": [
+        "1",
+        "2"
+      ],
+      "reason": "两个版本在准确性、误区澄清和核心事实校正上均表现优异，严格遵循了源文约束。版本1胜在**跨页衔接（Coherence）**和**设问兑现（Question Closure）**：其每一页的结尾都精心设计了针对下一页内容的引导性问题或总结，形成了更强的叙事流，特别是第3页到第4页关于秩与形状匹配的过渡非常丝滑。版本2在**因果解释（Explanation）**和**例题处理（Worked Example）**上略优，例如第2页对手算过程的界定更严谨，口语表达也更生动（如菜谱类比），但在页面间的逻辑钩子设置上稍逊于版本1，存在少量重复引入的情况。综合来看，版本1的教学结构感和连贯性更佳。"
+    },
+    {
+      "valid": true,
+      "mapping": {
+        "1": "B1",
+        "2": "A1"
+      },
+      "errors": [],
+      "versions": [
+        {
+          "id": "1",
+          "scores": {
+            "accuracy": 5,
+            "explanation": 4,
+            "worked_example": 5,
+            "misconception": 5,
+            "question_closure": 5,
+            "coherence": 5,
+            "oral": 4
+          },
+          "strength": {
+            "page": 6,
+            "quote": "还要特别注意代码顺序：教材PDF第14–16页明确写的是tf.matmul(x,W)，也就是x左乘W。这和W左乘x完全不同——如果误写成tf.matmul(W,x)，就会因内维10≠5报错。形状核验的第一步，就是确认乘法方向是否匹配定义。",
+            "reason": "严格遵循校正事实，明确指出代码中矩阵乘法的方向及其导致的维度不匹配后果，避免了常见的数学/编程混淆。"
+          },
+          "weakness": {
+            "page": 2,
+            "quote": "第一步：先算 d = a + b = 2 + 3 = 5。注意，这一步不是代码自动执行的，而是我们在‘构图完成、供值之后、求值之前’手动模拟的中间结果。",
+            "reason": "表述略显冗余且逻辑上容易引发歧义（“供值之后、求值之前”在TF1.x Session模型中通常指feed_dict传入后run执行前的瞬间，但此处强调“手动模拟”可能让初学者困惑于Session.run的实际原子性操作）。"
+          }
+        },
+        {
+          "id": "2",
+          "scores": {
+            "accuracy": 4,
+            "explanation": 4,
+            "worked_example": 4,
+            "misconception": 4,
+            "question_closure": 4,
+            "coherence": 4,
+            "oral": 5
+          },
+          "strength": {
+            "page": 8,
+            "quote": "记住：图是静态描述，Session是动态执行引擎，变量需初始化，占位符需喂数据——这四点串起来，你就掌握了TensorFlow 1.x图模式的核心逻辑。",
+            "reason": "总结精炼，口语化强，清晰地将核心概念归纳为四个关键点，便于记忆。"
+          },
+          "weakness": {
+            "page": 3,
+            "quote": "思考一下：shape 为 [1,10] 的张量，它的秩是多少？对，是2——即使第一维长度为1，它仍是二维结构。这个细节直接关系到下一页 x 与 W 的矩阵乘法能否成立：内维必须匹配，而秩决定了维度兼容性。",
+            "reason": "虽然结论正确，但将“秩决定维度兼容性”作为主要因果解释略显牵强；实际上矩阵乘法兼容性的直接判据是“内维相等”，而非单纯看秩。此外，该处设问虽好，但后续页面并未深入探讨秩与广播规则的复杂交互，仅停留在基础匹配上。"
+          }
+        }
+      ],
+      "ranking": [
+        "1",
+        "2"
+      ],
+      "reason": "版本1在准确性上略胜一筹，特别是在处理关键校正点（如矩阵乘法方向、Session不自动求梯度）时引用更具体、警示更到位。版本1的例题讲解（Page 2, 6）步骤拆解更符合教学逻辑，误区澄清（Page 4, 5）覆盖了更多高频错误（如OOM、未初始化报错的具体文本）。版本2口语流畅度更高，但在某些技术细节的解释深度和精确度上稍逊于版本1，例如对秩与矩阵乘法关系的阐述不如版本1严谨。两者均很好地完成了跨页衔接和问题闭环，但版本1的证据链更完整。"
+    },
+    {
+      "valid": true,
+      "mapping": {
+        "1": "A2",
+        "2": "B2"
+      },
+      "errors": [],
+      "versions": [
+        {
+          "id": "1",
+          "scores": {
+            "accuracy": 5,
+            "explanation": 4,
+            "worked_example": 4,
+            "misconception": 5,
+            "question_closure": 3,
+            "coherence": 4,
+            "oral": 4
+          },
+          "strength": {
+            "page": 4,
+            "quote": "必须警惕一个常见误解：创建会话绝不等于启动训练或自动求梯度。教材第13页曾表述‘启动Session会自动计算所有梯度’，这是不严谨的；梯度必须显式定义如tf.gradients(loss, [W,b])，再单独run它。",
+            "reason": "准确引用并纠正了源文中关于Session自动计算梯度的错误说法，体现了对事实校正的严格遵循。"
+          },
+          "weakness": {
+            "page": 2,
+            "quote": "数值为教学补充；教材PDF第9–10页说明了这一流程，我们下一页将展开张量的秩、形状与名字等属性，它们在构图阶段就已确定。",
+            "reason": "虽然提到了下一页内容，但缺乏具体的逻辑钩子（如“为什么需要知道这些属性”），衔接略显生硬，不如版本2自然。"
+          }
+        },
+        {
+          "id": "2",
+          "scores": {
+            "accuracy": 5,
+            "explanation": 5,
+            "worked_example": 5,
+            "misconception": 5,
+            "question_closure": 5,
+            "coherence": 5,
+            "oral": 5
+          },
+          "strength": {
+            "page": 3,
+            "quote": "现在你可以试着回答：如果某张量 shape 是 [4,1,5]，它的秩是多少？共多少元素？——答案是秩3, 元素总数 4×1×5=20。这个判断能力，将直接决定你能否正确连接 x 和 W 的矩阵乘法。",
+            "reason": "不仅给出了即时反馈的问题闭环，还明确指出了该知识点在后续章节（矩阵乘法）中的具体应用价值，增强了学习的连贯性和动机。"
+          },
+          "weakness": {
+            "page": "",
+            "quote": "",
+            "reason": ""
+          }
+        }
+      ],
+      "ranking": [
+        "2",
+        "1"
+      ],
+      "reason": "两个版本在准确性上均表现优秀，都正确执行了关于Session不自动求梯度的事实校正，且未编造原书未给的数值。版本2胜在‘设问兑现’和‘跨页衔接’：它在每一页结尾都设计了具体的思考题或过渡问题，并在下一页开头或中间给予回应，形成了完整的教学闭环；同时，版本2的解释更具因果性（例如解释为何需要张量属性是为了后续矩阵乘法的维度匹配），而版本1的部分衔接较为陈述性。版本2的口语表达也更流畅自然，符合‘简洁’要求。"
+    },
+    {
+      "valid": true,
+      "mapping": {
+        "1": "B2",
+        "2": "A2"
+      },
+      "errors": [],
+      "versions": [
+        {
+          "id": "1",
+          "scores": {
+            "accuracy": 5,
+            "explanation": 5,
+            "worked_example": 5,
+            "misconception": 5,
+            "question_closure": 5,
+            "coherence": 5,
+            "oral": 4
+          },
+          "strength": {
+            "page": 6,
+            "quote": "x 的 shape 是 [1,10]，W 的 shape 是 [10,5]。矩阵乘法要求左矩阵列数等于右矩阵行数，这里内维 10 完全匹配，因此 tf.matmul(x, W) 的结果 shape 必为 [1,5]。",
+            "reason": "严格遵循代码中 x@W 的顺序进行形状推导，准确解释了广播机制和维度匹配规则，未犯公式与代码顺序混淆的错误。"
+          },
+          "weakness": {
+            "page": "",
+            "quote": "",
+            "reason": ""
+          }
+        },
+        {
+          "id": "2",
+          "scores": {
+            "accuracy": 3,
+            "explanation": 4,
+            "worked_example": 4,
+            "misconception": 4,
+            "question_closure": 4,
+            "coherence": 4,
+            "oral": 4
+          },
+          "strength": {
+            "page": 8,
+            "quote": "整个流程像做一道菜：备料（定义）、开火（初始化+feed）、炒制（run）、关火（close）——缺一步，菜就做不成。",
+            "reason": "使用了生动且准确的类比来总结执行生命周期，有助于学生记忆关键步骤及其依赖关系。"
+          },
+          "weakness": {
+            "page": 7,
+            "quote": "我们已经构造出计算图，比如 h = sigmoid(W·x + b)，但图只是静态描述",
+            "reason": "此处引用了数学符号 W·x (即 W 乘 x)，而教材代码实际为 tf.matmul(x, W) (即 x 乘 W)。虽然第6页提到了正确顺序，但在第7页回顾时再次使用错误的符号表示，容易误导学生认为两者可互换或忽略代码的具体实现细节，违反了‘不把W乘x与x乘W说成可任意互换’的原则。"
+          }
+        }
+      ],
+      "ranking": [
+        "1",
+        "2"
+      ],
+      "reason": "版本1在准确性上显著优于版本2。核心差异在于对矩阵乘法顺序的处理：版本1始终严格依据代码 `tf.matmul(x, W)` 进行讲解和形状推导；而版本2在第7页错误地使用了数学惯例 `W·x` 作为示例，尽管其第6页提到了正确顺序，但这种前后不一致及符号上的不严谨可能导致学生对‘代码实现’与‘数学公式’的区别产生混淆。此外，版本1的设问兑现更完整，每一页结尾的问题都能在后续页面得到明确回应，逻辑链条更紧密。"
+    }
+  ],
+  "llm_usage": {
+    "qwen3-vl-plus": {
+      "calls": 73,
+      "known_tokens": 382611
+    },
+    "qwen3.8-flash": {
+      "calls": 8,
+      "known_tokens": 55621
+    }
+  },
+  "unknown_llm_usage": 0,
+  "tts": {
+    "requests": 146,
+    "submitted_characters": 22162,
+    "unknown": 1
+  },
+  "limitations": [
+    "每组仅两次，描述性小样本",
+    "固定课件，非整章端到端",
+    "评审同家族，非独立教师",
+    "知识问答是模型依据讲稿作答，非学生效果",
+    "旧/新总长度可能不同，评分受时长混淆",
+    "两组共同加入教材勘误和明确补充条件",
+    "配音包括预算未通过样本，属于隔离测量而非正式流程通过"
+  ]
+}

@@ -1,0 +1,718 @@
+{
+  "samples": {
+    "A1": {
+      "estimated_minutes": 14.855,
+      "estimated_within_10_percent": false,
+      "script_sha256": "15292a75c16471ab825f3e12b3e59e2950038f42e076f165cee5ba0bfb40dcf5",
+      "diagnostic_new_gate": {
+        "version": 2,
+        "passed": false,
+        "issues": [
+          "例题E1未完整兑现已核验结果 z=20，请明确给出结果",
+          "讲稿预计14.85分钟，目标12.0分钟，超过10%预算偏差；请调整后再配音",
+          "第1页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第2页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第3页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第4页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第5页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第6页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第7页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第8页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容"
+        ],
+        "warnings": [],
+        "estimated_minutes": 14.854545454545455,
+        "page_timing": [
+          {
+            "page": 1,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 1.509090909090909,
+            "passed": false
+          },
+          {
+            "page": 2,
+            "planned_minutes": 2.297872340425532,
+            "estimated_minutes": 1.7227272727272727,
+            "passed": false
+          },
+          {
+            "page": 3,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 2.3136363636363635,
+            "passed": false
+          },
+          {
+            "page": 4,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 2.0136363636363637,
+            "passed": false
+          },
+          {
+            "page": 5,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 1.55,
+            "passed": false
+          },
+          {
+            "page": 6,
+            "planned_minutes": 2.297872340425532,
+            "estimated_minutes": 1.8909090909090909,
+            "passed": false
+          },
+          {
+            "page": 7,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 1.6590909090909092,
+            "passed": false
+          },
+          {
+            "page": 8,
+            "planned_minutes": 1.021276595744681,
+            "estimated_minutes": 2.1954545454545453,
+            "passed": false
+          }
+        ],
+        "calculations": [
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 1,
+            "checks": [
+              {
+                "expression": "10*5",
+                "stated": 50.0,
+                "calculated": 50.0
+              }
+            ],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          }
+        ],
+        "example_coverage": [
+          {
+            "example_id": "E1",
+            "source_page": 9,
+            "slide_pages": [
+              2
+            ]
+          },
+          {
+            "example_id": "E2",
+            "source_page": 15,
+            "slide_pages": [
+              6
+            ]
+          }
+        ]
+      },
+      "exact_repeated_sentences": {},
+      "exact_repeat_excess": 0,
+      "audio": null,
+      "page_estimates": [
+        1.509,
+        1.723,
+        2.314,
+        2.014,
+        1.55,
+        1.891,
+        1.659,
+        2.195
+      ]
+    },
+    "B1": {
+      "estimated_minutes": 19.123,
+      "estimated_within_10_percent": false,
+      "script_sha256": "71658a3261e356d1ccb34b0d7a93418beb8e214355c8920d949eaf38076b8436",
+      "diagnostic_new_gate": {
+        "version": 2,
+        "passed": false,
+        "issues": [
+          "讲稿预计19.12分钟，目标12.0分钟，超过10%预算偏差；请调整后再配音",
+          "第1页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第2页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第3页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第4页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第5页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第7页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第8页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容"
+        ],
+        "warnings": [],
+        "estimated_minutes": 19.12272727272727,
+        "page_timing": [
+          {
+            "page": 1,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 1.981818181818182,
+            "passed": false
+          },
+          {
+            "page": 2,
+            "planned_minutes": 2.297872340425532,
+            "estimated_minutes": 2.713636363636364,
+            "passed": false
+          },
+          {
+            "page": 3,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 2.172727272727273,
+            "passed": false
+          },
+          {
+            "page": 4,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 2.713636363636364,
+            "passed": false
+          },
+          {
+            "page": 5,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 2.290909090909091,
+            "passed": false
+          },
+          {
+            "page": 6,
+            "planned_minutes": 2.297872340425532,
+            "estimated_minutes": 2.4045454545454548,
+            "passed": true
+          },
+          {
+            "page": 7,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 2.5090909090909093,
+            "passed": false
+          },
+          {
+            "page": 8,
+            "planned_minutes": 1.021276595744681,
+            "estimated_minutes": 2.3363636363636364,
+            "passed": false
+          }
+        ],
+        "calculations": [
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 2,
+            "checks": [
+              {
+                "expression": "2 + 3",
+                "stated": 5.0,
+                "calculated": 5.0
+              },
+              {
+                "expression": "5 * 4",
+                "stated": 20.0,
+                "calculated": 20.0
+              }
+            ],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          }
+        ],
+        "example_coverage": [
+          {
+            "example_id": "E1",
+            "source_page": 9,
+            "slide_pages": [
+              2
+            ]
+          },
+          {
+            "example_id": "E2",
+            "source_page": 15,
+            "slide_pages": [
+              6
+            ]
+          }
+        ]
+      },
+      "exact_repeated_sentences": {
+        "我们刚写出hsigmoidWxb但屏幕上并没有数字为什么定义了表达式还拿不到结果": 2
+      },
+      "exact_repeat_excess": 1,
+      "audio": null,
+      "page_estimates": [
+        1.982,
+        2.714,
+        2.173,
+        2.714,
+        2.291,
+        2.405,
+        2.509,
+        2.336
+      ]
+    },
+    "B2": {
+      "estimated_minutes": 20.195,
+      "estimated_within_10_percent": false,
+      "script_sha256": "985db898932762a5e9b4b74daba8059a3f3b306773918c15ca6720354f14edcd",
+      "diagnostic_new_gate": {
+        "version": 2,
+        "passed": false,
+        "issues": [
+          "讲稿预计20.20分钟，目标12.0分钟，超过10%预算偏差；请调整后再配音",
+          "第1页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第3页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第4页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第5页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第6页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第7页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第8页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容"
+        ],
+        "warnings": [],
+        "estimated_minutes": 20.195454545454545,
+        "page_timing": [
+          {
+            "page": 1,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 2.018181818181818,
+            "passed": false
+          },
+          {
+            "page": 2,
+            "planned_minutes": 2.297872340425532,
+            "estimated_minutes": 2.4545454545454546,
+            "passed": true
+          },
+          {
+            "page": 3,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 2.481818181818182,
+            "passed": false
+          },
+          {
+            "page": 4,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 2.9727272727272727,
+            "passed": false
+          },
+          {
+            "page": 5,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 2.518181818181818,
+            "passed": false
+          },
+          {
+            "page": 6,
+            "planned_minutes": 2.297872340425532,
+            "estimated_minutes": 3.059090909090909,
+            "passed": false
+          },
+          {
+            "page": 7,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 2.340909090909091,
+            "passed": false
+          },
+          {
+            "page": 8,
+            "planned_minutes": 1.021276595744681,
+            "estimated_minutes": 2.35,
+            "passed": false
+          }
+        ],
+        "calculations": [
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 2,
+            "checks": [
+              {
+                "expression": "2 + 3",
+                "stated": 5.0,
+                "calculated": 5.0
+              },
+              {
+                "expression": "5 * 4",
+                "stated": 20.0,
+                "calculated": 20.0
+              }
+            ],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 1,
+            "checks": [
+              {
+                "expression": "4*1*5",
+                "stated": 20.0,
+                "calculated": 20.0
+              }
+            ],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 1,
+            "checks": [
+              {
+                "expression": "10*5",
+                "stated": 50.0,
+                "calculated": 50.0
+              }
+            ],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          }
+        ],
+        "example_coverage": [
+          {
+            "example_id": "E1",
+            "source_page": 9,
+            "slide_pages": [
+              2
+            ]
+          },
+          {
+            "example_id": "E2",
+            "source_page": 15,
+            "slide_pages": [
+              6
+            ]
+          }
+        ]
+      },
+      "exact_repeated_sentences": {},
+      "exact_repeat_excess": 0,
+      "audio": null,
+      "page_estimates": [
+        2.018,
+        2.455,
+        2.482,
+        2.973,
+        2.518,
+        3.059,
+        2.341,
+        2.35
+      ]
+    },
+    "A2": {
+      "estimated_minutes": 14.091,
+      "estimated_within_10_percent": false,
+      "script_sha256": "3da29445c824f8d9128e31cab255d97e360ce644730de55f44d0a7ceccad9ed3",
+      "diagnostic_new_gate": {
+        "version": 2,
+        "passed": false,
+        "issues": [
+          "讲稿预计14.09分钟，目标12.0分钟，超过10%预算偏差；请调整后再配音",
+          "第1页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第2页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第3页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第4页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第5页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第6页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第7页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容",
+          "第8页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容"
+        ],
+        "warnings": [],
+        "estimated_minutes": 14.090909090909092,
+        "page_timing": [
+          {
+            "page": 1,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 1.6181818181818182,
+            "passed": false
+          },
+          {
+            "page": 2,
+            "planned_minutes": 2.297872340425532,
+            "estimated_minutes": 1.7272727272727273,
+            "passed": false
+          },
+          {
+            "page": 3,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 1.85,
+            "passed": false
+          },
+          {
+            "page": 4,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 1.6727272727272726,
+            "passed": false
+          },
+          {
+            "page": 5,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 1.65,
+            "passed": false
+          },
+          {
+            "page": 6,
+            "planned_minutes": 2.297872340425532,
+            "estimated_minutes": 1.7818181818181817,
+            "passed": false
+          },
+          {
+            "page": 7,
+            "planned_minutes": 1.276595744680851,
+            "estimated_minutes": 1.5636363636363637,
+            "passed": false
+          },
+          {
+            "page": 8,
+            "planned_minutes": 1.021276595744681,
+            "estimated_minutes": 2.227272727272727,
+            "passed": false
+          }
+        ],
+        "calculations": [
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 2,
+            "checks": [
+              {
+                "expression": "2 + 3",
+                "stated": 5.0,
+                "calculated": 5.0
+              },
+              {
+                "expression": "5 * 4",
+                "stated": 20.0,
+                "calculated": 20.0
+              }
+            ],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 1,
+            "checks": [
+              {
+                "expression": "10*5",
+                "stated": 50.0,
+                "calculated": 50.0
+              }
+            ],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          },
+          {
+            "checked": 0,
+            "checks": [],
+            "issues": [],
+            "warnings": [],
+            "scope": "显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义"
+          }
+        ],
+        "example_coverage": [
+          {
+            "example_id": "E1",
+            "source_page": 9,
+            "slide_pages": [
+              2
+            ]
+          },
+          {
+            "example_id": "E2",
+            "source_page": 15,
+            "slide_pages": [
+              6
+            ]
+          }
+        ]
+      },
+      "exact_repeated_sentences": {},
+      "exact_repeat_excess": 0,
+      "audio": null,
+      "page_estimates": [
+        1.618,
+        1.727,
+        1.85,
+        1.673,
+        1.65,
+        1.782,
+        1.564,
+        2.227
+      ]
+    }
+  },
+  "reviewer": "本次执行代理及确定性检查，不是独立教师",
+  "shape_check": {
+    "x": [
+      1,
+      10
+    ],
+    "W": [
+      10,
+      5
+    ],
+    "b": [
+      5
+    ],
+    "h": [
+      1,
+      5
+    ],
+    "parameter_count": 55
+  },
+  "scope": "通用数值门禁不覆盖矩阵形状；本实验另用NumPy核对固定条件，实际讲稿仍须逐份核对"
+}

@@ -1,0 +1,92 @@
+{
+  "samples": {
+    "A1": {
+      "estimated_minutes": 14.854545454545454,
+      "measured_minutes": 14.948666666666666,
+      "target_deviation_percent": 24.572222222222216,
+      "within_total_10_percent": false,
+      "observed_units_per_minute": 218.61481514516345,
+      "retained_complete_audio_pages": 7
+    },
+    "B1": {
+      "estimated_minutes": 19.122727272727275,
+      "measured_minutes": 19.267833333333332,
+      "target_deviation_percent": 60.56527777777776,
+      "within_total_10_percent": false,
+      "observed_units_per_minute": 218.34317991125107,
+      "retained_complete_audio_pages": 8
+    },
+    "B2": {
+      "estimated_minutes": 20.195454545454545,
+      "measured_minutes": 20.545666666666666,
+      "target_deviation_percent": 71.21388888888889,
+      "within_total_10_percent": false,
+      "observed_units_per_minute": 216.2499797199734,
+      "retained_complete_audio_pages": 8
+    },
+    "A2": {
+      "estimated_minutes": 14.09090909090909,
+      "measured_minutes": 14.160166666666667,
+      "target_deviation_percent": 18.00138888888889,
+      "within_total_10_percent": false,
+      "observed_units_per_minute": 218.92397688351124,
+      "retained_complete_audio_pages": 8
+    }
+  },
+  "groups": {
+    "A": {
+      "measured_mean_minutes": 14.554416666666667,
+      "estimated_mean_minutes": 14.472727272727273,
+      "timing_passed": 0,
+      "auxiliary_score": 4.178571428571429
+    },
+    "B": {
+      "measured_mean_minutes": 19.90675,
+      "estimated_mean_minutes": 19.65909090909091,
+      "timing_passed": 0,
+      "auxiliary_score": 4.821428571428571
+    }
+  },
+  "measured_B_relative_A_percent": 36.774633129691445,
+  "generation_usage": {
+    "A1": {
+      "calls": 14,
+      "known_tokens": 65803,
+      "repair_calls": 6
+    },
+    "B1": {
+      "calls": 23,
+      "known_tokens": 127816,
+      "repair_calls": 15,
+      "repairs_identical_to_previous": 7
+    },
+    "B2": {
+      "calls": 22,
+      "known_tokens": 123482,
+      "repair_calls": 14,
+      "repairs_identical_to_previous": 8
+    },
+    "A2": {
+      "calls": 14,
+      "known_tokens": 65510,
+      "repair_calls": 6
+    }
+  },
+  "tts": {
+    "requests": 146,
+    "submitted_characters": 22162,
+    "original_ledger_unknown": 1,
+    "resolved_by_completed_pcm_diagnostic": 1,
+    "unresolved_submissions": 0,
+    "alignment_failed_chunks": 1,
+    "measurement_mode": "duration_only"
+  },
+  "verification": {
+    "audio_cache_replay_new_requests": 0,
+    "all_report_hashes_unchanged": true,
+    "wav_frame_checks": true,
+    "mp3_duration_checks": true,
+    "frozen_inputs_verified": true,
+    "production_pipeline_passed": false
+  }
+}

@@ -8,7 +8,9 @@ from pathlib import Path
 import course
 import progress_report
 from calculation_checks import arithmetic_report, example_issues
-from lesson_planning import VERSION, context_prompt, page_tasks
+from lesson_planning import VERSION, context_prompt, page_tasks, lesson_report
+from script_revision import oral_fingerprint, paragraph_targets, compression_prompt
+from tensor_checks import tensor_contracts, contract_prompt, tensor_report
 from script_validation import validate_script_output, normalize_script
 from teaching_quality import directive, mentions_example
 
@@ -27,10 +29,11 @@ def generate_script(plan, slide_dir, prompt_file, model_config, output_dir, gene
         workers = 1
     topics = course.slide_topics(output_dir,len(slides))
     tasks = page_tasks(topics,(policy or {}).get('examples',[]))
+    contracts = tensor_contracts((policy or {}).get('examples',[]))
     sections = course.page_sections(plan,len(slides),topics) if plan else [None]*len(slides)
     if policy:
         course.write_json(Path(output_dir)/'teaching_plan.json',{'version':VERSION,
-            'source_topics_sha':course.digest(topics),'pages':[{**task,
+            'source_topics_sha':course.digest(topics),'tensor_contracts':contracts,'pages':[{**task,
                 'planned_minutes':section['page_minutes'] if section else None} for task,section in zip(tasks,sections)]})
     base = Path(prompt_file).read_text(encoding='utf-8')
     if plan:
@@ -74,6 +77,7 @@ def generate_script(plan, slide_dir, prompt_file, model_config, output_dir, gene
         if policy:
             prompt += context_prompt(tasks,i,[course.spoken_text(p) for p in output[:i]],policy.get('script_lang','zh'))
             prompt += directive(relevant)+'\n完整例题仅在标注对应ID的当前页展开，保留推导、结果和易错点。'
+            prompt += contract_prompt(contracts)
         identity = {name:model_config.get(name) for name in ('model_type','url','model_config','connection_id','scope_id','context_window')}
         facts = {'v':course.SCRIPT_GENERATION_VERSION,'prompt':prompt,'slide':course.digest(slide.read_bytes()),'model':identity,
                  'repair_limit':MAX_REPAIRS,'lesson':course.digest(tasks),
@@ -103,6 +107,10 @@ def generate_script(plan, slide_dir, prompt_file, model_config, output_dir, gene
             for example in relevant:
                 if example.get('result'):
                     issues += example_issues(course.spoken_text(text),example)
+            if policy:
+                issues += tensor_report(course.spoken_text(text),contracts,tasks[i]['example_ids'])['issues']
+                lesson = lesson_report(tasks,[course.spoken_text(p) for p in output[:i]]+[course.spoken_text(text)],policy.get('examples',[]))
+                issues += [issue for issue in lesson['issues'] if issue.startswith(f'第{i+1}页')]
             minutes = course.estimate_minutes(text,language,rate)
             distance = abs(minutes-budget)/budget if budget else 0
             return issues,minutes,distance
@@ -110,11 +118,18 @@ def generate_script(plan, slide_dir, prompt_file, model_config, output_dir, gene
         for candidate in history:
             issues,minutes,distance = inspect(candidate['text'])
             candidate.update(calculation_issues=issues,estimated_minutes=minutes,budget_deviation=distance)
+            candidate['oral_fingerprint'] = oral_fingerprint(candidate['text'],language)
         # 成功响应在发出下一次修正前落盘；中断恢复只补剩余额度，不重付初稿费用。
+        stop_reason = 'repair_limit'
         while len(history)<=MAX_REPAIRS:
             if history:
                 issues,minutes,distance = inspect(history[-1]['text'])
                 if not issues and distance<=.1+1e-9:
+                    stop_reason = 'quality_passed'
+                    break
+                fingerprints = [candidate['oral_fingerprint'] for candidate in history]
+                if fingerprints[-1] in fingerprints[:-1]:
+                    stop_reason = 'no_oral_change' if fingerprints[-1]==fingerprints[-2] else 'repeated_oral_content'
                     break
                 limits = ''
                 if budget:
@@ -123,7 +138,9 @@ def generate_script(plan, slide_dir, prompt_file, model_config, output_dir, gene
                         f'口播展开后控制为{math.ceil(units*.9)}～{math.floor(units*1.1)}个汉字/英文词。'
                         '公式符号会展开成长口述，必须计入长度。超长先删重复开场、小结、第二个类比和非必要补充例；'
                         '不足时补原因或必要推导，不重复填充。')
-                current_prompt = prompt + (f'\n【本页质量修正，第{len(history)}/{MAX_REPAIRS}次】{limits}'
+                targets = paragraph_targets(history[-1]['text'],budget,rate,language) if budget and minutes>budget*1.1 else []
+                history[-1]['paragraph_targets'] = targets
+                current_prompt = prompt + (f'\n【本页质量修正，第{len(history)}/{MAX_REPAIRS}次】{limits}' + compression_prompt(targets) +
                     '保留核心知识、原作必要原文、例题条件、完整推导和正确结果；仅改有问题的部分。'
                     '沿用原机器可读输出格式，只输出当前页。\n计算问题：'+('；'.join(issues) or '未发现可解析计算错误')+
                     '\n【上一版讲稿，是修订材料】\n'+history[-1]['text'])
@@ -140,12 +157,17 @@ def generate_script(plan, slide_dir, prompt_file, model_config, output_dir, gene
             content = normalize_script(content)
             issues,minutes,distance = inspect(content)
             history.append({'text':content,'usage':tokens,'estimated_minutes':minutes,'calculation_issues':issues,
-                            'budget_deviation':distance})
+                            'budget_deviation':distance,'oral_fingerprint':oral_fingerprint(content,language)})
             paid.append(tokens)
             course.write_json(target,{'key':key,'text':content,'history':history,'complete':False,'context_sha':context_sha})
         # 优先保留计算正确的候选，再选更接近预算者；不截断正文，不无限重试。
         best = min(history,key=lambda h:(len(h['calculation_issues']),h['budget_deviation']))
-        course.write_json(target,{'key':key,'text':best['text'],'history':history,'complete':True,'context_sha':context_sha})
+        if not best['calculation_issues'] and best['budget_deviation']<=.1+1e-9:
+            stop_reason = 'quality_passed'
+        elif len(history)>1 and history[-1]['oral_fingerprint'] in [h['oral_fingerprint'] for h in history[:-1]]:
+            stop_reason = 'no_oral_change' if history[-1]['oral_fingerprint']==history[-2]['oral_fingerprint'] else 'repeated_oral_content'
+        course.write_json(target,{'key':key,'text':best['text'],'history':history,'complete':True,'context_sha':context_sha,
+                                 'stop_reason':stop_reason,'needs_review':stop_reason!='quality_passed'})
         return i,best['text'],{'attempts':paid} if paid else None
 
     def accept(result):

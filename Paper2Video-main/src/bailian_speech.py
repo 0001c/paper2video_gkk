@@ -285,6 +285,9 @@ def tts_pages(parsed, directory, snapshot, resume=True, client=None, force_pages
         if page_index in force_pages:
             part_dir = part_dir / ('repair-' + generation_id)
         part_dir.mkdir(parents=True, exist_ok=True)
+        # 版本升级会改变分块缓存键，但不能借此绕开旧版已受理/结果未知的请求。
+        if any(part_dir.glob('*.submission.json')):
+            raise ValueError('该页存在受理状态未知的配音分块；需人工核对，禁止因口述版本变化自动重提')
         page_pcm, segments, parts = bytearray(), [], []
         for part_index, chunk in enumerate(chunks(spoken)):
             part = part_dir / (digest({'identity': identity, 'text': chunk}) + '.wav')

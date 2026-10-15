@@ -45,7 +45,7 @@ def _rhs_value(rhs):
     clause = re.split(r'[,，；;。\n]',rhs)[0].strip()
     last = re.split(r'=|等于',clause)[-1].strip()
     match = re.match('('+NUMBER+r')(?![\d零〇一二两三四五六七八九十百千万点])',last)
-    if match and not re.match(r'\s*[+*/\-\u3400-\u9fff]',last[match.end():]):
+    if match and not re.match(r'\s*(?:[+*/\-]|加|减|乘|除|的?次方|平方|立方|路|条|倍|分之|项贡献|个分支|[A-Za-z0-9_])',last[match.end():]):
         return numeric(match[1])
     match = re.search(r'(?:结果|总和|总梯度)(?:是|为|等于)\s*('+NUMBER+')',rhs)
     if match:
@@ -63,7 +63,8 @@ def claims(text, variable, derivative=None):
         lhs = (rf'(?:∂\s*{out}\s*/\s*∂\s*{inp}|d\s*{out}\s*/\s*d\s*{inp}'
                rf'|{out}\s*对\s*{inp}\s*的?(?:偏导数?|导数)|{out}对于{inp}的?(?:偏导数?|导数))')
     values = []
-    for match in re.finditer(lhs+r'\s*(?:=|等于|是|为)\s*([^。；;\n]{1,160})',text):
+    # 零宽匹配保留同一句里重复出现的赋值，不能让首个 RHS 吞掉后一个矛盾结果。
+    for match in re.finditer(r'(?='+lhs+r'\s*(?:=|等于|是|为|[:：])\s*([^。；;\n]{1,160}))',text):
         value = _rhs_value(match[1])
         if value is not None:
             values.append(value)
@@ -147,5 +148,7 @@ def arithmetic_report(text):
                     issues.append(f'{label}写成{stated:g}，按给定函数计算应为{actual:g}')
         elif '例' in text[max(0,match.start()-30):match.start()]:
             warnings.append('补充函数例子缺少可解析的初值、更新值或结果，请核对新增数值与结论')
-    return {'checked':len(checks),'checks':checks,'issues':list(dict.fromkeys(issues)),
+    symbolic = re.findall(r'(?<![A-Za-z0-9_])(?:[A-Za-z][A-Za-z0-9_]*(?:\([A-Za-z]\))?|∂[^=。；]{1,20})\s*=\s*[^。；;\n，,]{1,100}',text)
+    uncovered = [expression for expression in symbolic if re.search(r'[A-Za-z]',expression.split('=',1)[-1])]
+    return {'checked':len(checks),'checks':checks,'issues':list(dict.fromkeys(issues)), 'uncovered':list(dict.fromkeys(uncovered)),
             'warnings':list(dict.fromkeys(warnings)), 'scope':'显式常数等式、已核验教材结果、可解析单变量损失更新；不覆盖全部数学语义'}

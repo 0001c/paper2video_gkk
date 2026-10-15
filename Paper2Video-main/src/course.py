@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 VERSION = 2
-SCRIPT_GENERATION_VERSION = 8
+SCRIPT_GENERATION_VERSION = 9
 
 
 def digest(value):
@@ -221,6 +221,14 @@ def teaching_review(pages, result_dir, policy):
     from teaching_quality import script_report
     topics = slide_topics(result_dir,len(pages))
     report = script_report(pages,timing_policy(policy,result_dir),topics)
+    report['revision_stops'] = []
+    for i, page in enumerate(pages):
+        cached = read_json(Path(result_dir)/'course_script'/f'{i}.json',{})
+        if cached.get('text')==page and cached.get('needs_review'):
+            reason = cached.get('stop_reason','repair_limit')
+            report['revision_stops'].append({'page':i+1,'reason':reason,'attempts':len(cached.get('history',[]))})
+            label = {'no_oral_change':'修订未改变口播','repeated_oral_content':'修订回到了已有口播','repair_limit':'已用完修订额度'}.get(reason,reason)
+            report['warnings'].append(f'第{i+1}页{label}，已停止自动请求，请按问题清单审核')
     for i in range(1,len(pages)):
         cached = read_json(Path(result_dir)/'course_script'/f'{i}.json',{})
         prefix = digest([spoken_text(page) for page in pages[:i]])
@@ -271,12 +279,14 @@ def timing_policy(policy, result_dir):
     """仅借用当前任务、同音色参数、同预算的已完成配音测量，不修改用户教案。"""
     if not policy or not policy.get('target_minutes'):
         return policy
+    from spoken_text import NORMALIZATION_VERSION
     calibrated = read_json(Path(result_dir)/'timing_calibration.json',{})
     calibrated = calibrated if isinstance(calibrated,dict) else {}
     measured = calibrated.get('measured_speech_rate')
     voice = _audio_voice(read_json(Path(result_dir)/'audio/manifest.json',{}))
     configured = policy.get('_configured_speech_rate',policy['speech_rate'])
-    if (voice and calibrated.get('voice_identity')==voice and calibrated.get('configured_speech_rate')==configured
+    if (voice and calibrated.get('normalization_version')==NORMALIZATION_VERSION
+            and calibrated.get('voice_identity')==voice and calibrated.get('configured_speech_rate')==configured
             and calibrated.get('plan_token')==policy.get('token') and calibrated.get('target_minutes')==policy['target_minutes']
             and type(measured) in (int,float) and 80<=measured<=400):
         return {**policy,'speech_rate':calibrated['measured_speech_rate'],'_configured_speech_rate':configured}
@@ -333,7 +343,9 @@ def require_audio_timing(plan, result_dir):
     voice = _audio_voice(read_json(Path(result_dir)/'audio/manifest.json',{}))
     rate = report['measured_speech_rate']
     if voice and rate is not None and 80<=rate<=400:
+        from spoken_text import NORMALIZATION_VERSION
         write_json(Path(result_dir)/'timing_calibration.json',{'voice_identity':voice,'plan_token':plan.get('token'),
+            'normalization_version':NORMALIZATION_VERSION,
             'configured_speech_rate':report['configured_speech_rate'],'target_minutes':plan.get('target_minutes'),
             'measured_speech_rate':rate,'measured_minutes':report['actual_minutes']})
     write_json(Path(result_dir)/'course_timing.json',report)

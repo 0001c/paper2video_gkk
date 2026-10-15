@@ -100,10 +100,10 @@ class TeachingChecks(unittest.TestCase):
         with self.assertRaises(RuntimeError): self.generate(model)
         self.assertEqual(len(course.read_json(self.root/'course_script/0.json')['history']),1)
         self.generate(model)
-        self.assertEqual(len(calls),4,'仅剩余两次修正，初稿不重发')
+        self.assertEqual(len(calls),3,'恢复后修订口播不变，初稿不重发且提前停止')
         self.assertIn('上一版讲稿',calls[2])
         self.generate(model)
-        self.assertEqual(len(calls),4,'耗尽修正额度后不能自动继续付费')
+        self.assertEqual(len(calls),3,'无效修订已停止，恢复时不能自动继续付费')
 
     def test_chained_and_spoken_results_and_contradictions(self):
         good=('e=3*2=6，∂e/∂a=2*1=2，∂e/∂b=2+3=5。',
@@ -140,7 +140,7 @@ class TeachingChecks(unittest.TestCase):
         for label in ('A1','B1','C1','A2','B2','C2'):
             raw=(frozen/label/'subtitle_w_cursor.txt').read_text('utf-8')
             report=teaching_quality.script_report(course.split_pages(raw),plan,topics)
-            self.assertFalse(any('例题E1' in s for s in report['issues']),(label,report['issues']))
+            self.assertFalse(any(s.startswith('例题E1') for s in report['issues']),(label,report['issues']))
             if label=='C2': self.assertTrue(any('2.56' in s for s in report['issues']))
 
     def test_example_weighted_time_keeps_section_totals_and_reports_local_overrun(self):

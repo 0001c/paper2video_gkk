@@ -7,8 +7,13 @@ import { Help, Section } from './Section';
 import type { SubtitleStyle } from './subtitleStyle';
 
 type Review = { version: string; pages: string[]; editable: boolean;
+  oral_previews?: (string | null)[];
   teaching_tasks?: { title: string; role: string; goal: string; handoff_question: string | null }[];
   teaching?: { passed: boolean; issues: string[]; warnings: string[];
+    lesson_ledger?: { pages: { page: number; question_id: string; question_status: string;
+      knowledge: { id: string; text: string; status: string; evidence: string | null }[] }[];
+      pending_questions: { id: string; asked_page: number; answer_page: number | null; quote: string; status: string }[] } | null;
+    tensor_contracts?: { example_id: string; source_page: number | null; symbols: Record<string, number[]> }[];
     example_coverage: { example_id: string; source_page: number | null; slide_pages: number[] }[] } | null;
   timing: { estimated_minutes: number; actual_minutes: number | null; target_minutes: number | null;
     configured_speech_rate?: number; estimate_speech_rate?: number;
@@ -54,6 +59,8 @@ export function ReviewPanel({ jobId, apiKey, apiBase, modelConfig, modelOrigin, 
   }, (e) => setError(errorMessage(e)));
   const timing = review?.timing;
   const task = review?.teaching_tasks?.[selected];
+  const ledger = review?.teaching?.lesson_ledger;
+  const checklist = ledger?.pages.find((page) => page.page === selected + 1);
   const teachingNeedsSave = !!review?.teaching && pages.join('\n') !== review.pages.join('\n');
   const delta = timing?.actual_minutes != null && timing.target_minutes ? (timing.actual_minutes - timing.target_minutes) / timing.target_minutes : null;
   const estimatedDelta = timing?.target_minutes ? (timing.estimated_minutes - timing.target_minutes) / timing.target_minutes : null;
@@ -79,6 +86,15 @@ export function ReviewPanel({ jobId, apiKey, apiBase, modelConfig, modelOrigin, 
         <a href={`/api/jobs/${jobId}/files/slide_imgs/${selected + 1}.png?v=${review.version}`} target="_blank" rel="noreferrer"><img alt={`第 ${selected + 1} 页课件`} src={`/api/jobs/${jobId}/files/slide_imgs/${selected + 1}.png?v=${review.version}`} /></a>
         <div className="field"><div className="field-title"><label htmlFor="review-script">第 {selected + 1} 页讲稿与光标目标</label><Help title="讲稿输出格式" important>每行保留“讲稿 | 光标目标”，目标引用本页可见文字；没有目标写 no。页面分隔由系统维护。</Help></div><textarea id="review-script" rows={14} maxLength={20000} disabled={!review.editable || busy} value={pages[selected] ?? ""} onChange={(e) => { setPages(pages.map((p, i) => i === selected ? e.target.value : p)); setAccepted(false); setSuccess(""); }} />
         {task && <p className="hint">讲解任务 · {task.role}：{task.goal}。{task.handoff_question ? `下一页承接问题：${task.handoff_question}` : "本页收束全课问题。"}</p>}
+        {checklist && <details><summary>本页教学核对清单 · {checklist.question_id} {checklist.question_status}</summary>
+          <p className="hint">前文最多一句承接。原文出现只表示有证据，需核对是否解释清楚；转述与跨页回答请人工确认。</p>
+          <ul>{checklist.knowledge.map((fact) => <li key={fact.id}>{fact.id}：{fact.text} · {fact.status}</li>)}</ul>
+          {ledger?.pending_questions.filter((q) => q.asked_page === selected + 1 || q.answer_page === selected + 1).map((q) => <p className="hint" key={q.id}>第 {q.asked_page} 页提出：{q.quote} · {q.answer_page ? `第 ${q.answer_page} 页负责` : '待指定负责页'} · {q.status}</p>)}
+        </details>}
+        {!!review.teaching?.tensor_contracts?.length && <details><summary>整课符号与形状约束</summary>
+          {review.teaching.tensor_contracts.map((c) => <p className="hint" key={c.example_id}>例题 {c.example_id} · 源文第 {c.source_page ?? '未标记'} 页：{Object.entries(c.symbols).map(([name, dims]) => `${name} [${dims.join(', ')}]`).join('；')}</p>)}
+        </details>}
+        {review.oral_previews && <details><summary>实际口播预览（保存后更新）</summary><p>{review.oral_previews[selected] ?? '含不支持的公式，请先改为明确口述。'}</p><p className="hint">代码中的点、下划线会明确读出；展示原文和光标引用保持原格式，云时间戳仍逐字校验。</p></details>}
         {timing?.pages[selected] && <p className="hint">本页预算 {timing.pages[selected].planned_minutes.toFixed(1)} 分钟，讲稿估算 {timing.pages[selected].estimated_minutes.toFixed(1)} 分钟{timing.pages[selected].actual_seconds != null ? `，实际音频 ${(timing.pages[selected].actual_seconds! / 60).toFixed(1)} 分钟` : ""}（保存后更新估算）。</p>}
         </div>
       </div>

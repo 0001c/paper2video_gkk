@@ -179,13 +179,13 @@ def main():
             calls.append(kwargs)
             return '根据教材解释新的内容。 | no', {'total_tokens': 1}
         output, _ = course.generate_script(plan, slides, job['config']['script_prompt_path'], {'model': 'stub'}, result, generator)
-        check(len(calls) == 12 and all(len(c['image_paths']) == 1 for c in calls), '教学讲稿按单页顺序请求并保存，每页最多两次质量修正')
+        check(len(calls) == 8 and all(len(c['image_paths']) == 1 for c in calls), '教学讲稿按单页顺序保存，修订口播不变后每页提前停止')
         check(all('教材原文' in c['prompt_text'] and '本页目标约' in c['prompt_text'] and '80~120' not in c['prompt_text'] for c in calls), '长讲稿使用正文和时长预算，移除短讲解限制')
         course.generate_script(plan, slides, job['config']['script_prompt_path'], {'model': 'stub'}, result, generator)
-        check(len(calls) == 12, '重新准备复用已经完成的讲稿页')
+        check(len(calls) == 8, '重新准备复用已经完成的讲稿页')
         script.write_text(output, encoding='utf-8')
         course.generate_script(plan, slides, job['config']['script_prompt_path'], {'model': 'stub'}, result, generator, selected=[1])
-        check(len(calls) == 15, '模型只重写选定的一页并有界修正时长')
+        check(len(calls) == 10, '模型只重写选定页，修订口播不变后停止')
         import speech_gen as speech
         original = speech.synth_page_qwen3tts
         voice = result / 'ref.wav'

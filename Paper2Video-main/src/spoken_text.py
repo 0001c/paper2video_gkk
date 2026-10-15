@@ -3,7 +3,7 @@
 import re
 import unicodedata
 
-NORMALIZATION_VERSION = 1
+NORMALIZATION_VERSION = 2
 _DIGITS = '零一二三四五六七八九'
 _READINGS = {'α': '阿尔法', 'β': '贝塔', 'γ': '伽马', 'δ': '德尔塔', 'η': '伊塔',
              'θ': '西塔', 'λ': '兰姆达', 'μ': '缪', 'σ': '西格玛', 'ε': '艾普西龙',
@@ -12,7 +12,8 @@ _READINGS = {'α': '阿尔法', 'β': '贝塔', 'γ': '伽马', 'δ': '德尔塔
              '/': '除以', '<': '小于', '>': '大于', '_': '下标', '²': '平方', '³': '立方',
              '∑': '求和', '∏': '连乘', '√': '平方根', '∞': '无穷', '∈': '属于', '|': '竖线'}
 _READINGS.update({chr(0x2080 + i): '下标' + value for i, value in enumerate(_DIGITS)})
-_TOKEN = re.compile(r'\\[A-Za-z]+|\d+(?:\.\d+)?%?|[' + re.escape(''.join(_READINGS)) + r'\-]')
+_IDENTIFIER = r'(?<![A-Za-z0-9_])(?:[A-Za-z][A-Za-z0-9_]*\.)+[A-Za-z_][A-Za-z0-9_]*|(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z][A-Za-z0-9]*)+'
+_TOKEN = re.compile(_IDENTIFIER + r'|\\[A-Za-z]+|\d+(?:\.\d+)?%?|[' + re.escape(''.join(_READINGS)) + r'\-]')
 _LATEX = {'alpha': 'α', 'beta': 'β', 'gamma': 'γ', 'delta': 'δ', 'eta': 'η',
           'theta': 'θ', 'lambda': 'λ', 'mu': 'μ', 'sigma': 'σ', 'epsilon': 'ε',
           'partial': '∂', 'nabla': '∇', 'times': '×', 'div': '÷', 'leq': '≤', 'geq': '≥'}
@@ -58,6 +59,13 @@ def prepare_spoken(text, language='zh'):
         for index in range(cursor, match.start()):
             append(text[index], index, index + 1)
         token = match.group()
+        if re.fullmatch(_IDENTIFIER, token):
+            # 保留字母大小写；点/下划线明确发音，逐字符映射回展示原文。
+            for offset, char in enumerate(token):
+                value = {'.': '点', '_': '下划线'}.get(char, _DIGITS[int(char)] if char.isdecimal() else char)
+                append(value, match.start() + offset, match.start() + offset + 1)
+            cursor = match.end()
+            continue
         if token.startswith('\\'):
             name = token[1:]
             if name not in _LATEX:

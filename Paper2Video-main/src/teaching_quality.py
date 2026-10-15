@@ -142,6 +142,19 @@ def script_report(pages, plan=None, topics=None):
     for i, check in enumerate(calculations, 1):
         issues.extend('第{}页{}'.format(i, issue) for issue in check['issues'])
         warnings.extend('第{}页{}'.format(i, warning) for warning in check['warnings'])
+        warnings.extend(f'第{i}页算式未被通用数值检查覆盖（例题约束另行核对）：{item}' for item in check['uncovered'])
+    from lesson_planning import page_tasks, lesson_report
+    from tensor_checks import tensor_contracts, tensor_report
+    tasks = page_tasks(topics, examples) if topics else []
+    lesson = lesson_report(tasks,spoken,examples) if topics else None
+    if lesson:
+        issues.extend(lesson['issues'])
+        warnings.extend(lesson['warnings'])
+    contracts = tensor_contracts(examples)
+    tensors = [tensor_report(text,contracts,tasks[i]['example_ids'] if i<len(tasks) else ()) for i,text in enumerate(spoken)]
+    for i, check in enumerate(tensors,1):
+        issues.extend(f'第{i}页{issue}' for issue in check['issues'])
+        warnings.extend(f'第{i}页张量未覆盖：{item}' for item in check['uncovered'])
     estimate = None
     page_timing = []
     if plan:
@@ -160,5 +173,6 @@ def script_report(pages, plan=None, topics=None):
                 page_timing.append({'page':i,'planned_minutes':section['page_minutes'],'estimated_minutes':minutes,'passed':passed})
                 if not passed:
                     issues.append('第{}页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容'.format(i))
-    return {'version':2,'passed':not issues,'issues':issues,'warnings':warnings,'estimated_minutes':estimate,
-            'page_timing':page_timing,'calculations':calculations,'example_coverage':coverage}
+    return {'version':3,'passed':not issues,'issues':list(dict.fromkeys(issues)),'warnings':list(dict.fromkeys(warnings)),'estimated_minutes':estimate,
+            'page_timing':page_timing,'calculations':calculations,'example_coverage':coverage,
+            'lesson_ledger':lesson,'tensor_contracts':contracts,'tensor_checks':tensors}

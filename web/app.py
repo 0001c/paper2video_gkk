@@ -313,14 +313,22 @@ def _review_snapshot(job):
     teaching_policy = course.read_json(result/'teaching_contract.json') or plan
     teaching = course.teaching_review(pages,result,teaching_policy)
     from lesson_planning import page_tasks, VERSION as teaching_plan_version
+    from spoken_text import NORMALIZATION_VERSION, prepare_spoken
+    oral_previews = []
+    for page in pages:
+        try:
+            oral_previews.append(prepare_spoken(course.spoken_text(page), language)[0])
+        except ValueError:
+            oral_previews.append(None)
     tasks = page_tasks(course.slide_topics(result,len(pages)),(teaching_policy or {}).get('examples',[])) if teaching_policy else []
     version = course.digest({"script": script.read_bytes().hex(), "slides": [course.digest(p.read_bytes()) for p in slides],
                              "plan": plan, 'teaching':teaching_policy,
                              'slides_pdf':course.digest((result/'slides_rendered.pdf').read_bytes()) if (result/'slides_rendered.pdf').is_file() else None,
                              "voice": (job.get("config") or {}).get("voice"), 'teaching_plan_version':teaching_plan_version,
+                             'normalization_version':NORMALIZATION_VERSION,
                              'timing_calibration':course.read_json(result/'timing_calibration.json')})
     return {"version": version, "pages": pages, "plan": course.public_plan(plan) if plan else None,
-            "timing": report, 'teaching':teaching, 'teaching_tasks':tasks,
+            "timing": report, 'teaching':teaching, 'teaching_tasks':tasks, 'oral_previews':oral_previews,
             "status": job.get("status"), "editable": _rerun_plan(job)["can_rerun"]}
 
 

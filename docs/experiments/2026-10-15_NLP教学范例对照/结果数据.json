@@ -1,0 +1,454 @@
+{
+  "samples": {
+    "A1": {
+      "estimated_minutes": 10.55,
+      "per_page_estimated_minutes": [
+        1.414,
+        2.077,
+        2.25,
+        1.532,
+        1.5,
+        1.777
+      ],
+      "duration_within_10_percent": false,
+      "characters": 1715,
+      "knowledge": {
+        "label": "A1",
+        "correct_with_evidence": 10,
+        "total": 12,
+        "answer_correct": 12,
+        "exact_evidence_count": 10
+      },
+      "valid_review_count": 2,
+      "rubric_mean_1_to_5": 4,
+      "rubric": {
+        "accuracy": 3.5,
+        "explanation": 4,
+        "worked_example": 4.5,
+        "misconception": 4,
+        "question_closure": 4,
+        "coherence": 4,
+        "oral": 4
+      },
+      "teaching_report": {
+        "version": 1,
+        "passed": false,
+        "issues": [
+          "例题E1未完整兑现已核验结果 e=6、∂e/∂a=2、∂e/∂b=5；请在讲稿明确列式，不只承诺演示",
+          "讲稿预计10.55分钟，目标8.0分钟，超过10%预算偏差；请调整后再配音"
+        ],
+        "warnings": [],
+        "estimated_minutes": 10.55,
+        "example_coverage": [
+          {
+            "example_id": "E1",
+            "source_page": 15,
+            "slide_pages": [
+              5
+            ]
+          }
+        ]
+      },
+      "generation_calls": 11,
+      "script_sha256": "9f9877ddb55cbcfdf514a505bd279662fa9974a9e6bd1f3af758eb20a754c97e"
+    },
+    "B1": {
+      "estimated_minutes": 10.336,
+      "per_page_estimated_minutes": [
+        1.845,
+        2.0,
+        1.636,
+        1.945,
+        1.245,
+        1.664
+      ],
+      "duration_within_10_percent": false,
+      "characters": 1813,
+      "knowledge": {
+        "label": "B1",
+        "correct_with_evidence": 10,
+        "total": 12,
+        "answer_correct": 12,
+        "exact_evidence_count": 10
+      },
+      "valid_review_count": 2,
+      "rubric_mean_1_to_5": 4.857,
+      "rubric": {
+        "accuracy": 5,
+        "explanation": 5,
+        "worked_example": 5,
+        "misconception": 4.5,
+        "question_closure": 5,
+        "coherence": 5,
+        "oral": 4.5
+      },
+      "teaching_report": {
+        "version": 1,
+        "passed": false,
+        "issues": [
+          "例题E1未完整兑现已核验结果 e=6、∂e/∂a=2、∂e/∂b=5；请在讲稿明确列式，不只承诺演示",
+          "例题E1的 ∂e/∂b 有与本地核验不一致的数值",
+          "讲稿预计10.34分钟，目标8.0分钟，超过10%预算偏差；请调整后再配音"
+        ],
+        "warnings": [],
+        "estimated_minutes": 10.336363636363636,
+        "example_coverage": [
+          {
+            "example_id": "E1",
+            "source_page": 15,
+            "slide_pages": [
+              5
+            ]
+          }
+        ]
+      },
+      "generation_calls": 12,
+      "script_sha256": "6ba1a9b44db9c39d3a316480e41c96fed9df2911a269d804da869969a9a8718e"
+    },
+    "C1": {
+      "estimated_minutes": 11.927,
+      "per_page_estimated_minutes": [
+        2.277,
+        1.718,
+        2.159,
+        2.073,
+        1.55,
+        2.15
+      ],
+      "duration_within_10_percent": false,
+      "characters": 2004,
+      "knowledge": {
+        "label": "C1",
+        "correct_with_evidence": 11,
+        "total": 12,
+        "answer_correct": 12,
+        "exact_evidence_count": 11
+      },
+      "valid_review_count": 2,
+      "rubric_mean_1_to_5": 4.643,
+      "rubric": {
+        "accuracy": 5,
+        "explanation": 4.5,
+        "worked_example": 5,
+        "misconception": 5,
+        "question_closure": 4.5,
+        "coherence": 4.5,
+        "oral": 4
+      },
+      "teaching_report": {
+        "version": 1,
+        "passed": false,
+        "issues": [
+          "例题E1未完整兑现已核验结果 e=6、∂e/∂a=2、∂e/∂b=5；请在讲稿明确列式，不只承诺演示",
+          "讲稿预计11.93分钟，目标8.0分钟，超过10%预算偏差；请调整后再配音"
+        ],
+        "warnings": [],
+        "estimated_minutes": 11.927272727272728,
+        "example_coverage": [
+          {
+            "example_id": "E1",
+            "source_page": 15,
+            "slide_pages": [
+              5
+            ]
+          }
+        ]
+      },
+      "generation_calls": 12,
+      "script_sha256": "89e523a2515ec268435ca808e96e4567d9f33fad1a5b3070408fde0f1579d723"
+    },
+    "A2": {
+      "estimated_minutes": 10.591,
+      "per_page_estimated_minutes": [
+        1.568,
+        1.295,
+        2.264,
+        2.159,
+        1.4,
+        1.905
+      ],
+      "duration_within_10_percent": false,
+      "characters": 1771,
+      "knowledge": {
+        "label": "A2",
+        "correct_with_evidence": 10,
+        "total": 12,
+        "answer_correct": 12,
+        "exact_evidence_count": 10
+      },
+      "valid_review_count": 1,
+      "rubric_mean_1_to_5": 4.143,
+      "rubric": {
+        "accuracy": 5,
+        "explanation": 4,
+        "worked_example": 5,
+        "misconception": 4,
+        "question_closure": 4,
+        "coherence": 4,
+        "oral": 3
+      },
+      "teaching_report": {
+        "version": 1,
+        "passed": false,
+        "issues": [
+          "例题E1未完整兑现已核验结果 e=6、∂e/∂a=2、∂e/∂b=5；请在讲稿明确列式，不只承诺演示",
+          "讲稿预计10.59分钟，目标8.0分钟，超过10%预算偏差；请调整后再配音"
+        ],
+        "warnings": [],
+        "estimated_minutes": 10.590909090909092,
+        "example_coverage": [
+          {
+            "example_id": "E1",
+            "source_page": 15,
+            "slide_pages": [
+              5
+            ]
+          }
+        ]
+      },
+      "generation_calls": 11,
+      "script_sha256": "d49f4c1366e47d37fff7168cf4bfac1e4d730e298e2ea23ef0e0d8b84f3cdfc1"
+    },
+    "B2": {
+      "estimated_minutes": 9.95,
+      "per_page_estimated_minutes": [
+        1.409,
+        1.8,
+        1.536,
+        2.091,
+        1.305,
+        1.809
+      ],
+      "duration_within_10_percent": false,
+      "characters": 1732,
+      "knowledge": {
+        "label": "B2",
+        "correct_with_evidence": 9,
+        "total": 12,
+        "answer_correct": 11,
+        "exact_evidence_count": 9
+      },
+      "valid_review_count": 1,
+      "rubric_mean_1_to_5": 4.143,
+      "rubric": {
+        "accuracy": 5,
+        "explanation": 4,
+        "worked_example": 5,
+        "misconception": 4,
+        "question_closure": 4,
+        "coherence": 4,
+        "oral": 3
+      },
+      "teaching_report": {
+        "version": 1,
+        "passed": false,
+        "issues": [
+          "例题E1未完整兑现已核验结果 e=6、∂e/∂a=2、∂e/∂b=5；请在讲稿明确列式，不只承诺演示",
+          "讲稿预计9.95分钟，目标8.0分钟，超过10%预算偏差；请调整后再配音"
+        ],
+        "warnings": [],
+        "estimated_minutes": 9.95,
+        "example_coverage": [
+          {
+            "example_id": "E1",
+            "source_page": 15,
+            "slide_pages": [
+              5
+            ]
+          }
+        ]
+      },
+      "generation_calls": 11,
+      "script_sha256": "16dd68e4bfeacc997b9419e07b02d31dd98e2fbd8db02a0bf072808163cecdf9"
+    },
+    "C2": {
+      "estimated_minutes": 11.482,
+      "per_page_estimated_minutes": [
+        2.2,
+        1.955,
+        2.123,
+        1.436,
+        1.877,
+        1.891
+      ],
+      "duration_within_10_percent": false,
+      "characters": 2027,
+      "knowledge": {
+        "label": "C2",
+        "correct_with_evidence": 8,
+        "total": 12,
+        "answer_correct": 12,
+        "exact_evidence_count": 8
+      },
+      "valid_review_count": 1,
+      "rubric_mean_1_to_5": 4.714,
+      "rubric": {
+        "accuracy": 5,
+        "explanation": 5,
+        "worked_example": 4,
+        "misconception": 5,
+        "question_closure": 5,
+        "coherence": 5,
+        "oral": 4
+      },
+      "teaching_report": {
+        "version": 1,
+        "passed": false,
+        "issues": [
+          "例题E1未完整兑现已核验结果 e=6、∂e/∂a=2、∂e/∂b=5；请在讲稿明确列式，不只承诺演示",
+          "例题E1的 ∂e/∂b 有与本地核验不一致的数值",
+          "讲稿预计11.48分钟，目标8.0分钟，超过10%预算偏差；请调整后再配音"
+        ],
+        "warnings": [],
+        "estimated_minutes": 11.481818181818182,
+        "example_coverage": [
+          {
+            "example_id": "E1",
+            "source_page": 15,
+            "slide_pages": [
+              5
+            ]
+          }
+        ]
+      },
+      "generation_calls": 12,
+      "script_sha256": "d8e2d159d9f5cdaa13a1537c6ca36d3c55623b4d27249f1a6014f9e87b082760"
+    }
+  },
+  "groups": {
+    "A": {
+      "rubric_mean_1_to_5": 4.072,
+      "rubric": {
+        "accuracy": 4.25,
+        "explanation": 4,
+        "worked_example": 4.75,
+        "misconception": 4,
+        "question_closure": 4,
+        "coherence": 4,
+        "oral": 3.5
+      },
+      "estimated_minutes": [
+        10.55,
+        10.591
+      ],
+      "knowledge_answer_correct": [
+        12,
+        12
+      ],
+      "knowledge_correct_with_evidence": [
+        10,
+        10
+      ]
+    },
+    "B": {
+      "rubric_mean_1_to_5": 4.5,
+      "rubric": {
+        "accuracy": 5,
+        "explanation": 4.5,
+        "worked_example": 5,
+        "misconception": 4.25,
+        "question_closure": 4.5,
+        "coherence": 4.5,
+        "oral": 3.75
+      },
+      "estimated_minutes": [
+        10.336,
+        9.95
+      ],
+      "knowledge_answer_correct": [
+        12,
+        11
+      ],
+      "knowledge_correct_with_evidence": [
+        10,
+        9
+      ]
+    },
+    "C": {
+      "rubric_mean_1_to_5": 4.678,
+      "rubric": {
+        "accuracy": 5,
+        "explanation": 4.75,
+        "worked_example": 4.5,
+        "misconception": 5,
+        "question_closure": 4.75,
+        "coherence": 4.75,
+        "oral": 4
+      },
+      "estimated_minutes": [
+        11.927,
+        11.482
+      ],
+      "knowledge_answer_correct": [
+        12,
+        12
+      ],
+      "knowledge_correct_with_evidence": [
+        11,
+        8
+      ]
+    }
+  },
+  "usage": {
+    "qwen3.8-flash": {
+      "calls": 10,
+      "responses_with_usage": 10,
+      "prompt_tokens": 43219,
+      "completion_tokens": 8987,
+      "total_tokens": 52206
+    },
+    "qwen3-vl-plus": {
+      "calls": 69,
+      "responses_with_usage": 69,
+      "prompt_tokens": 276877,
+      "completion_tokens": 36268,
+      "total_tokens": 313145
+    },
+    "deepseek-flash": {
+      "calls": 2,
+      "responses_with_usage": 0,
+      "prompt_tokens": null,
+      "completion_tokens": null,
+      "total_tokens": null
+    }
+  },
+  "unknown_usage_requests": [
+    {
+      "label": "knowledge-A1",
+      "model": "deepseek-flash",
+      "state": "submission_unknown"
+    },
+    {
+      "label": "knowledge-nt-A1",
+      "model": "deepseek-flash",
+      "state": "submission_unknown"
+    }
+  ],
+  "valid_blind_comparisons": 3,
+  "excluded_blind_comparisons": 1,
+  "blind_rankings": [
+    [
+      "C1",
+      "B1",
+      "A1"
+    ],
+    [
+      "B1",
+      "C1",
+      "A1"
+    ],
+    [
+      "C2",
+      "A2",
+      "B2"
+    ]
+  ],
+  "limitations": [
+    "每组仅两次生成",
+    "同一qwen3.8-flash评审，与生成模型同家族，不是独立教师盲审",
+    "固定代理整理课件与核对后摘录，不是整章端到端生成",
+    "时长为220字词每分钟的口播估算，未经TTS实测",
+    "没有学生学习效果测量",
+    "未进行多视频或跨教师泛化实验"
+  ]
+}

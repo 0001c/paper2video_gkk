@@ -1,0 +1,243 @@
+{
+  "reviewer": "本次执行代理；不是独立教师、不是穷尽性错误统计",
+  "frozen_input_hashes_verified": true,
+  "samples": {
+    "A1": {
+      "script_sha256": "9f9877ddb55cbcfdf514a505bd279662fa9974a9e6bd1f3af758eb20a754c97e",
+      "pages": 6,
+      "estimated_minutes": 10.55,
+      "duration_within_10_percent": false,
+      "production_teaching_report": {
+        "version": 1,
+        "passed": false,
+        "issues": [
+          "例题E1未完整兑现已核验结果 e=6、∂e/∂a=2、∂e/∂b=5；请在讲稿明确列式，不只承诺演示",
+          "讲稿预计10.55分钟，目标8.0分钟，超过10%预算偏差；请调整后再配音"
+        ],
+        "warnings": [],
+        "estimated_minutes": 10.55,
+        "example_coverage": [
+          {
+            "example_id": "E1",
+            "source_page": 15,
+            "slide_pages": [
+              5
+            ]
+          }
+        ]
+      }
+    },
+    "B1": {
+      "script_sha256": "6ba1a9b44db9c39d3a316480e41c96fed9df2911a269d804da869969a9a8718e",
+      "pages": 6,
+      "estimated_minutes": 10.336,
+      "duration_within_10_percent": false,
+      "production_teaching_report": {
+        "version": 1,
+        "passed": false,
+        "issues": [
+          "例题E1未完整兑现已核验结果 e=6、∂e/∂a=2、∂e/∂b=5；请在讲稿明确列式，不只承诺演示",
+          "例题E1的 ∂e/∂b 有与本地核验不一致的数值",
+          "讲稿预计10.34分钟，目标8.0分钟，超过10%预算偏差；请调整后再配音"
+        ],
+        "warnings": [],
+        "estimated_minutes": 10.336363636363636,
+        "example_coverage": [
+          {
+            "example_id": "E1",
+            "source_page": 15,
+            "slide_pages": [
+              5
+            ]
+          }
+        ]
+      }
+    },
+    "C1": {
+      "script_sha256": "89e523a2515ec268435ca808e96e4567d9f33fad1a5b3070408fde0f1579d723",
+      "pages": 6,
+      "estimated_minutes": 11.927,
+      "duration_within_10_percent": false,
+      "production_teaching_report": {
+        "version": 1,
+        "passed": false,
+        "issues": [
+          "例题E1未完整兑现已核验结果 e=6、∂e/∂a=2、∂e/∂b=5；请在讲稿明确列式，不只承诺演示",
+          "讲稿预计11.93分钟，目标8.0分钟，超过10%预算偏差；请调整后再配音"
+        ],
+        "warnings": [],
+        "estimated_minutes": 11.927272727272728,
+        "example_coverage": [
+          {
+            "example_id": "E1",
+            "source_page": 15,
+            "slide_pages": [
+              5
+            ]
+          }
+        ]
+      }
+    },
+    "C2": {
+      "script_sha256": "d8e2d159d9f5cdaa13a1537c6ca36d3c55623b4d27249f1a6014f9e87b082760",
+      "pages": 6,
+      "estimated_minutes": 11.482,
+      "duration_within_10_percent": false,
+      "production_teaching_report": {
+        "version": 1,
+        "passed": false,
+        "issues": [
+          "例题E1未完整兑现已核验结果 e=6、∂e/∂a=2、∂e/∂b=5；请在讲稿明确列式，不只承诺演示",
+          "例题E1的 ∂e/∂b 有与本地核验不一致的数值",
+          "讲稿预计11.48分钟，目标8.0分钟，超过10%预算偏差；请调整后再配音"
+        ],
+        "warnings": [],
+        "estimated_minutes": 11.481818181818182,
+        "example_coverage": [
+          {
+            "example_id": "E1",
+            "source_page": 15,
+            "slide_pages": [
+              5
+            ]
+          }
+        ]
+      }
+    },
+    "B2": {
+      "script_sha256": "16dd68e4bfeacc997b9419e07b02d31dd98e2fbd8db02a0bf072808163cecdf9",
+      "pages": 6,
+      "estimated_minutes": 9.95,
+      "duration_within_10_percent": false,
+      "production_teaching_report": {
+        "version": 1,
+        "passed": false,
+        "issues": [
+          "例题E1未完整兑现已核验结果 e=6、∂e/∂a=2、∂e/∂b=5；请在讲稿明确列式，不只承诺演示",
+          "讲稿预计9.95分钟，目标8.0分钟，超过10%预算偏差；请调整后再配音"
+        ],
+        "warnings": [],
+        "estimated_minutes": 9.95,
+        "example_coverage": [
+          {
+            "example_id": "E1",
+            "source_page": 15,
+            "slide_pages": [
+              5
+            ]
+          }
+        ]
+      }
+    },
+    "A2": {
+      "script_sha256": "d49f4c1366e47d37fff7168cf4bfac1e4d730e298e2ea23ef0e0d8b84f3cdfc1",
+      "pages": 6,
+      "estimated_minutes": 10.591,
+      "duration_within_10_percent": false,
+      "production_teaching_report": {
+        "version": 1,
+        "passed": false,
+        "issues": [
+          "例题E1未完整兑现已核验结果 e=6、∂e/∂a=2、∂e/∂b=5；请在讲稿明确列式，不只承诺演示",
+          "讲稿预计10.59分钟，目标8.0分钟，超过10%预算偏差；请调整后再配音"
+        ],
+        "warnings": [],
+        "estimated_minutes": 10.590909090909092,
+        "example_coverage": [
+          {
+            "example_id": "E1",
+            "source_page": 15,
+            "slide_pages": [
+              5
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "recalculated_examples": [
+    {
+      "sample": "A1",
+      "page": 2,
+      "formula": "J(w)=(w-2)^2+0.5*sin(3*w)",
+      "claim": "w=2附近浅谷、w约4.2有更深谷",
+      "calculated": {
+        "J(2)": -0.13970774909946293,
+        "J(4.2)": 4.856811523610569
+      },
+      "verdict": "错误：给定4.2点的函数值高于2点，所举深谷例子不成立"
+    },
+    {
+      "sample": "C2",
+      "page": 1,
+      "formula": "J(w)=(w-3)^2; w=5; eta=.1",
+      "claim": "w_new=4.6，损失从4降至1.96",
+      "calculated": {
+        "gradient": 4,
+        "w_new": 4.6,
+        "old_loss": 4,
+        "new_loss": 2.5599999999999987
+      },
+      "verdict": "错误：新损失为2.56，不是1.96"
+    },
+    {
+      "sample": "C2",
+      "page": 1,
+      "claim": "负号统一两种情形，确保每一步都降低损失",
+      "counterexample": {
+        "J": "(w-3)^2",
+        "w": 5,
+        "eta": 2,
+        "gradient": 4,
+        "w_new": -3,
+        "old_loss": 4,
+        "new_loss": 36
+      },
+      "verdict": "缺少适当步长条件；正学习率和负梯度方向不保证任意有限步长都下降"
+    }
+  ],
+  "exact_quote_findings": [
+    {
+      "sample": "C2",
+      "page": 1,
+      "quote": "损失从4降至1.96",
+      "issue": "算术错误；正确新损失为2.56。"
+    },
+    {
+      "sample": "C2",
+      "page": 1,
+      "quote": "确保每一步都降低损失",
+      "issue": "有限步长下降需要条件；正学习率并不足够。"
+    },
+    {
+      "sample": "A2",
+      "page": 2,
+      "quote": "其中负梯度 ∂J/∂w",
+      "issue": "负梯度的符号漏写负号；同句公式前半部分有减号。"
+    },
+    {
+      "sample": "A2",
+      "page": 2,
+      "quote": "只能保证收敛到某个局部最优解",
+      "issue": "过度保证收敛到局部最优；未给出所需假设。"
+    },
+    {
+      "sample": "B2",
+      "page": 2,
+      "quote": "只能保证找到‘当前位置附近最低的坑’",
+      "issue": "过度保证得到局部最优；未给出所需假设。"
+    },
+    {
+      "sample": "C1",
+      "page": 6,
+      "quote": "只能找到局部最小值",
+      "issue": "将不保证全局最优过度简化为只能找到局部最小值。"
+    }
+  ],
+  "local_optimum_counterexample": {
+    "function": "f(x)=x^3",
+    "initial_x": 0,
+    "gradient": 0,
+    "result": "更新停在0；0不是局部最小值，不能无条件保证找到局部最优。"
+  }
+}

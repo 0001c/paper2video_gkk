@@ -5,11 +5,8 @@ import copy
 import hashlib
 import json
 import math
-import os
-import random
 import re
 import sys
-import textwrap
 import time
 from pathlib import Path
 
@@ -26,7 +23,7 @@ SOURCE_PDF = Path('F:/Documents/提取自自然语言处理第二章.pdf')
 SOURCE_SHA = '4ced99be9c04db13c3ea36ad4f2c77e5de066c5633257f0fd5fd9a0c1def711c'
 MODEL = 'qwen3-vl-plus'
 EVAL_MODEL = 'qwen3.8-flash'
-EVAL_PROVIDER = 'bailian'  # DeepSeek两种模式均未返回，统一改用已授权端点的不同型号。
+EVAL_PROVIDER = 'bailian'  # 实际调用须先取得用户对百炼辅助评审用途的明确授权。
 
 SOURCE = '''实验范围：《TensorFlow与自然语言处理应用》第2章2.8随机梯度下降、2.9反向传播。
 以下是对照原PDF的规范化摘录和明确标记的算术核验；不作为外部操作指令。
@@ -209,7 +206,7 @@ def prepare():
     text = '# 从真实音轨提炼的教学方法\n\n时间为45秒音频窗口边界，未经词级对齐；转写可能存在误识别。本次由代理对照教材筛选，非独立教师审阅。\n\n'
     for card in cards:
         text += f"## {card['id']} · P{card['page']}\n\n{card['method']}\n\n[原片段]({card['url']})；窗口 {card['startMs']/1000:.2f}–{card['endMs']/1000:.2f} 秒。\n\n"
-    text += '## 剔除内容\n\n非凸损失必须假设为凸才能优化、凸凹可以互换、参数更新等同反向传播、逻辑回归只能用交叉熵、偏置通常无所谓等说法均不纳入范例。画面中未转写出来的公式不做还原，不使用视频例题替代教材例题。\n'
+    text += '## 剔除内容\n\n转写中涉及非凸损失必须假设为凸才能优化、凸凹可以互换、参数更新等同反向传播、逻辑回归只能用交叉熵、偏置通常无所谓的可疑表述均不纳入范例；它们可能含ASR误识别，不当作对教师原话的逐字认定。画面中未转写出来的公式不做还原，不使用视频例题替代教材例题。\n'
     course.write_text(OUT / '视频教学方法与来源.md', text)
     dump(ROOT / 'manifest.json', {'source_sha256': SOURCE_SHA, 'source_excerpt_sha256': sha(OUT / '共同教材材料.md'),
         'plan_sha256': sha(ROOT / 'plan.json'), 'cards_sha256': sha(ROOT / 'teaching_cards.json'),
@@ -258,6 +255,72 @@ def parse_json(text):
 def script_text(label):
     raw = (ROOT / label / 'subtitle_w_cursor.txt').read_text('utf-8')
     return '\n\n'.join(' '.join(line[0] for line in page) for page in parse_script(raw))
+
+
+def local_audit():
+    """离线复算和逐字定位；不把代理阅读冒充独立教师审查。"""
+    manifest = course.read_json(ROOT / 'manifest.json')
+    assert sha(SOURCE_PDF) == manifest['source_sha256']
+    assert sha(OUT / '共同教材材料.md') == manifest['source_excerpt_sha256']
+    assert sha(ROOT / 'plan.json') == manifest['plan_sha256']
+    assert sha(ROOT / 'teaching_cards.json') == manifest['cards_sha256']
+    assert [sha(ROOT / 'common_slides' / f'{i}.png') for i in range(6)] == manifest['slides_sha256']
+    samples = {}
+    for label in ('A1', 'B1', 'C1', 'C2', 'B2', 'A2'):
+        raw = (ROOT / label / 'subtitle_w_cursor.txt').read_text('utf-8')
+        pages = parse_script(raw)
+        assert len(pages) == 6
+        valid, why = validate_script_output(raw, 6)
+        assert valid, why
+        minutes = sum(course.estimate_minutes(p, 'zh', 220) for p in course.split_pages(raw))
+        samples[label] = {'script_sha256': sha(ROOT / label / 'subtitle_w_cursor.txt'),
+            'pages': 6, 'estimated_minutes': round(minutes, 3),
+            'duration_within_10_percent': abs(minutes - 8) <= .8,
+            'production_teaching_report': course.read_json(ROOT / label / 'teaching_report.json')}
+        # 展示文件只清除末尾空白，口播正文不改。
+        path = OUT / f'{label}_讲稿.md'
+        course.write_text(path, path.read_text('utf-8').rstrip() + '\n')
+    checks = course.read_json(ROOT / 'independent_math_checks.json')
+    assert checks[0]['calculated']['J(4.2)'] > checks[0]['calculated']['J(2)']
+    assert math.isclose((4.6 - 3) ** 2, 2.56)
+    assert (-3 - 3) ** 2 == 36
+    quoted = [
+        ('C2', 1, '损失从4降至1.96', '算术错误；正确新损失为2.56。'),
+        ('C2', 1, '确保每一步都降低损失', '有限步长下降需要条件；正学习率并不足够。'),
+        ('A2', 2, '其中负梯度 ∂J/∂w', '负梯度的符号漏写负号；同句公式前半部分有减号。'),
+        ('A2', 2, '只能保证收敛到某个局部最优解', '过度保证收敛到局部最优；未给出所需假设。'),
+        ('B2', 2, '只能保证找到‘当前位置附近最低的坑’', '过度保证得到局部最优；未给出所需假设。'),
+        ('C1', 6, '只能找到局部最小值', '将不保证全局最优过度简化为只能找到局部最小值。'),
+    ]
+    findings = []
+    for label, page, quote, issue in quoted:
+        content = parse_script((ROOT / label / 'subtitle_w_cursor.txt').read_text('utf-8'))[page - 1]
+        assert quote in ' '.join(row[0] for row in content), (label, quote)
+        findings.append({'sample': label, 'page': page, 'quote': quote, 'issue': issue})
+    # 可微函数f(x)=x^3，从x=0开始梯度下降停在0，但0不是局部最小值。
+    assert 3 * 0 ** 2 == 0 and (-.1) ** 3 < 0 < .1 ** 3
+    result = {'reviewer': '本次执行代理；不是独立教师、不是穷尽性错误统计',
+        'frozen_input_hashes_verified': True, 'samples': samples,
+        'recalculated_examples': checks, 'exact_quote_findings': findings,
+        'local_optimum_counterexample': {'function': 'f(x)=x^3', 'initial_x': 0,
+            'gradient': 0, 'result': '更新停在0；0不是局部最小值，不能无条件保证找到局部最优。'}}
+    dump(OUT / '离线复核数据.json', result)
+    dump(OUT / '输入指纹.json', manifest)
+    metadata = course.read_json(ROOT / 'video/metadata.json')
+    sources = []
+    for page in (26, 27):
+        path = ROOT / 'video' / f'p{page}_transcript.json'
+        transcript = course.read_json(path)
+        segments = transcript['segments']
+        assert transcript['completed'] and segments[0]['startMs'] == 0
+        assert all(a['endMs'] == b['startMs'] for a, b in zip(segments, segments[1:]))
+        assert sha(ROOT / 'video' / f'p{page}.m4a') == transcript['identity']['audio_sha256']
+        sources.append({'part': transcript['part'], 'identity': transcript['identity'],
+                        'transcript_sha256': sha(path), 'audio_duration_ms': segments[-1]['endMs'],
+                        'windows': len(segments), 'characters': sum(len(s['text']) for s in segments)})
+    dump(OUT / '视频来源指纹.json', {'bvid': metadata['bvid'], 'title': metadata['title'],
+        'owner': metadata['ownerName'], 'local_asr': True, 'parts': sources})
+    print(json.dumps({k: v['estimated_minutes'] for k, v in samples.items()}, ensure_ascii=False))
 
 
 def evaluate():
@@ -313,6 +376,8 @@ def evaluate():
             raw, _ = api(f'blind-bailian-r{repeat}-order{order}', [{'role': 'user', 'content': rubric}], EVAL_PROVIDER, EVAL_MODEL)
             judged = parse_json(raw)
             assert len(judged['versions']) == 3 and set(judged['ranking']) == {'1', '2', '3'}
+            assert {v['id'] for v in judged['versions']} == set(mapping)
+            errors = []
             for version in judged['versions']:
                 assert version['id'] in mapping
                 assert set(version['scores']) == {'accuracy', 'explanation', 'worked_example', 'misconception', 'question_closure', 'coherence', 'oral'}
@@ -320,9 +385,15 @@ def evaluate():
                 for field in ('strength_quote', 'weakness_quote'):
                     quote = version[field]
                     if quote and re.sub(r'\s+', '', quote) not in re.sub(r'\s+', '', scripts[version['id']]):
-                        raise ValueError('评审引文不属于对应讲稿；保留响应供核对')
-            dump(evaluation / f'blind-r{repeat}-order{order}.json', {'mapping': mapping, **judged})
-            print(f'BLIND r{repeat} order{order}: ' + ' > '.join(mapping[i] for i in judged['ranking']), flush=True)
+                        errors.append({'id': version['id'], 'field': field, 'quote': quote})
+            if errors:
+                dump(evaluation / f'invalid-blind-r{repeat}-order{order}.json',
+                     {'valid': False, 'excluded_reason': '引文不属于对应讲稿，整次评分排除；不重抽',
+                      'errors': errors, 'mapping': mapping, **judged})
+                print(f'INVALID BLIND r{repeat} order{order}: 引文归属校验失败，排除评分', flush=True)
+            else:
+                dump(evaluation / f'blind-r{repeat}-order{order}.json', {'mapping': mapping, **judged})
+                print(f'BLIND r{repeat} order{order}: ' + ' > '.join(mapping[i] for i in judged['ranking']), flush=True)
     dump(evaluation / 'knowledge-summary.json', summary)
 
 
@@ -333,7 +404,8 @@ def summarize():
     evaluation = ROOT / 'evaluation'
     for path in sorted(evaluation.glob('blind-r*-order*.json')):
         judgments.append(course.read_json(path))
-    assert len(judgments) == 4
+    invalid = [course.read_json(p) for p in sorted(evaluation.glob('invalid-blind-r*-order*.json'))]
+    assert len(judgments) + len(invalid) == 4 and judgments
     requests = [course.read_json(p) for p in (ROOT / 'requests').glob('*.json')
                 if not p.name.endswith('.request.json')]
     for repeat in (1, 2):
@@ -349,23 +421,26 @@ def summarize():
                 for version in judged['versions']:
                     if judged['mapping'][version['id']] == label:
                         reviews.append(version)
-            assert len(reviews) == 2
+            assert len(reviews) <= 2
             summary[label] = {'estimated_minutes': round(sum(times), 3),
                 'per_page_estimated_minutes': [round(t, 3) for t in times],
                 'duration_within_10_percent': abs(sum(times) - 8) <= .8,
                 'characters': len(re.findall(r'[\u3400-\u9fff]', text)),
                 'knowledge': {k: v for k, v in knowledge.items() if k != 'rows'},
-                'rubric_mean_1_to_5': round(statistics.mean(v for r in reviews for v in r['scores'].values()), 3),
-                'rubric': {key: statistics.mean(r['scores'][key] for r in reviews) for key in reviews[0]['scores']},
+                'valid_review_count': len(reviews),
+                'rubric_mean_1_to_5': round(statistics.mean(v for r in reviews for v in r['scores'].values()), 3) if reviews else None,
+                'rubric': {key: statistics.mean(r['scores'][key] for r in reviews) for key in reviews[0]['scores']} if reviews else {},
                 'teaching_report': course.read_json(ROOT / label / 'teaching_report.json'),
                 'generation_calls': sum(r['label'].startswith('generate-' + label + '-') for r in requests),
                 'script_sha256': sha(ROOT / label / 'subtitle_w_cursor.txt')}
     group_stats = {}
     for group in 'ABC':
         rows = [summary[group + str(r)] for r in (1, 2)]
-        group_stats[group] = {'rubric_mean_1_to_5': round(statistics.mean(r['rubric_mean_1_to_5'] for r in rows), 3),
-            'rubric': {key: statistics.mean(r['rubric'][key] for r in rows) for key in rows[0]['rubric']},
+        rated = [r for r in rows if r['valid_review_count']]
+        group_stats[group] = {'rubric_mean_1_to_5': round(statistics.mean(r['rubric_mean_1_to_5'] for r in rated), 3),
+            'rubric': {key: statistics.mean(r['rubric'][key] for r in rated) for key in rated[0]['rubric']},
             'estimated_minutes': [r['estimated_minutes'] for r in rows],
+            'knowledge_answer_correct': [r['knowledge']['answer_correct'] for r in rows],
             'knowledge_correct_with_evidence': [r['knowledge']['correct_with_evidence'] for r in rows]}
     usage = {}
     unknown_requests = []
@@ -373,40 +448,53 @@ def summarize():
         if not r.get('usage'):
             unknown_requests.append({'label': r['label'], 'model': r['model'], 'state': r['state']})
         model = r.get('model', 'unknown')
-        usage.setdefault(model, {'calls': 0, 'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0})
+        usage.setdefault(model, {'calls': 0, 'responses_with_usage': 0, 'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0})
         usage[model]['calls'] += 1
+        usage[model]['responses_with_usage'] += bool(r.get('usage'))
         for name in ('prompt_tokens', 'completion_tokens', 'total_tokens'):
             usage[model][name] += r.get('usage', {}).get(name, 0)
+    for row in usage.values():
+        if not row['responses_with_usage']:
+            for name in ('prompt_tokens', 'completion_tokens', 'total_tokens'):
+                row[name] = None
     result = {'samples': summary, 'groups': group_stats, 'usage': usage, 'unknown_usage_requests': unknown_requests,
+              'valid_blind_comparisons': len(judgments), 'excluded_blind_comparisons': len(invalid),
               'blind_rankings': [[j['mapping'][i] for i in j['ranking']] for j in judgments],
               'limitations': ['每组仅两次生成', '同一qwen3.8-flash评审，与生成模型同家族，不是独立教师盲审',
                               '固定代理整理课件与核对后摘录，不是整章端到端生成',
                               '时长为220字词每分钟的口播估算，未经TTS实测',
                               '没有学生学习效果测量', '未进行多视频或跨教师泛化实验']}
     dump(OUT / '结果数据.json', result)
+    ledger_keys = ('label', 'identity', 'model', 'state', 'response_id', 'finish_reason', 'usage',
+                   'elapsed_seconds', 'error_type', 'local_client_stopped', 'experiment_role')
+    dump(OUT / '调用用量台账.json', [{k: r[k] for k in ledger_keys if k in r} for r in requests])
     dump(OUT / '匿名评审明细.json', judgments)
+    dump(OUT / '无效评审记录.json', invalid)
     dump(OUT / '知识问答明细.json', [course.read_json(p) for p in sorted(evaluation.glob('knowledge-*.json')) if p.name != 'knowledge-summary.json'])
     text = '# 三组对照实验实际结果\n\n'
     text += '教材：《TensorFlow与自然语言处理应用》第二章2.8–2.9；原PDF第11–17页，印刷页25–31。固定6页内容锚点课件、目标8分钟预算、220字词/分钟。各组是否实际达标另列，不能将相同目标说成相同实际时长。视频参考为BV1KSh1zvEpY的P26/P27，共1588.949秒本地Qwen3-ASR转写。\n\n'
     text += 'A沿用当前教材模板与course.generate_script；B增加共同教学规划；C在B上增加从真实音轨筛选的5张教学方法卡。三组均用同一规范化教材摘录、例题答案、图片、受众、模型qwen3-vl-plus与temperature=0.3，均保留当前最多一次时长修正。生成传输由实验适配器记录，不是完整网页端到端实测。每组两次；首次A/B/C，第二次C/B/A。\n\n'
-    text += '| 样本 | 知识正确且逐字证据有效 | 估算分钟 | 总时长±10% | 辅助评审均分/5 | 生成调用（含修正） |\n|---|---:|---:|---|---:|---:|\n'
+    text += '| 样本 | 选择题答对 | 答对且逐字证据有效 | 估算分钟 | 总时长±10% | 辅助评审均分/5 | 生成调用（含修正） |\n|---|---:|---:|---:|---|---:|---:|\n'
     for label, row in summary.items():
-        text += f"| {label} | {row['knowledge']['correct_with_evidence']}/12 | {row['estimated_minutes']:.2f} | {'是' if row['duration_within_10_percent'] else '否'} | {row['rubric_mean_1_to_5']:.2f} | {row['generation_calls']} |\n"
+        score = f"{row['rubric_mean_1_to_5']:.2f}（n={row['valid_review_count']}）" if row['valid_review_count'] else '无有效评分'
+        text += f"| {label} | {row['knowledge']['answer_correct']}/12 | {row['knowledge']['correct_with_evidence']}/12 | {row['estimated_minutes']:.2f} | {'是' if row['duration_within_10_percent'] else '否'} | {score} | {row['generation_calls']} |\n"
+    text += '\n选择题由同一评审模型依据讲稿作答，是内容覆盖的辅助检查，不是学生测验。无效引用包括省略号拼接、改写等；因此“答对且证据有效”的差异可能来自评审引用格式，不能直接当成讲稿知识差异。完整逐题引文、正确答案与验证结果另存知识问答明细。固定题库不覆盖全部新增例子，即使12题全对也不代表讲稿事实全对。\n'
     names = {'accuracy': '准确性', 'explanation': '概念解释', 'worked_example': '例题分步', 'misconception': '误区诊断',
              'question_closure': '设问解答', 'coherence': '衔接', 'oral': '口语自然与简洁'}
-    text += '\n## 分维度辅助评审\n\n分数来自同一qwen3.8-flash模型的两种匿名排列、两轮生成，共4次比较；与生成模型同家族，不是4名独立评审，也不是学生学习成绩。DeepSeek的默认及显式非思考预检均未及时返回，保留两次用量未知的记录，未使用其评分。\n\n| 维度/5 | A | B | C |\n|---|---:|---:|---:|\n'
+    text += f'\n## 分维度辅助评审\n\n同一qwen3.8-flash模型的两种匿名排列、两轮生成，共尝试4次比较；有效{len(judgments)}次，引文归属失败排除{len(invalid)}次。无效比较整次不计分，原响应另存；未重抽分数。组均分先在每个样本内平均有效排列，再对有评分的两轮样本等权平均。与生成模型同家族，不是4名独立评审，也不是学生学习成绩。DeepSeek的默认及显式非思考预检均未及时返回，保留两次用量未知的记录，未使用其评分。\n\n| 维度/5 | A | B | C |\n|---|---:|---:|---:|\n'
     for key, name in names.items():
         text += f"| {name} | " + ' | '.join(f"{group_stats[g]['rubric'][key]:.2f}" for g in 'ABC') + ' |\n'
     text += '\n匿名排列结果：\n\n' + '\n'.join('- ' + ' > '.join(j['mapping'][i] for i in j['ranking']) for j in judgments)
     text += '\n\n## 实际用量\n\n| 请求模型 | 调用数 | 输入tokens | 输出tokens | 总tokens |\n|---|---:|---:|---:|---:|\n'
     for model, row in usage.items():
-        text += f"| {model} | {row['calls']} | {row['prompt_tokens']} | {row['completion_tokens']} | {row['total_tokens']} |\n"
+        counts = ' | '.join(str(row[key]) if row[key] is not None else '未知' for key in ('prompt_tokens', 'completion_tokens', 'total_tokens'))
+        text += f"| {model} | {row['calls']} | {counts} |\n"
     text += '\n已知用量来自提供方真实usage，包括已记录的时长修正；本报告未查实时单价，不把历史价估算当作本次账单。音轨转写使用本地模型，没有云ASR调用。本轮没有配音或生成成片。\n\n'
     if unknown_requests:
         text += '另有请求未返回usage，实际用量与费用未知，不能把表内已知tokens当成完整账单：\n\n' + '\n'.join('- ' + r['label'] + '（' + r['state'] + '）' for r in unknown_requests) + '\n\n'
     text += '## 边界与复现\n\n' + '\n'.join('- ' + item for item in result['limitations'])
     text += '\n\n原PDF未改动；共同材料经过代理对照源页规范化，所有版本得到相同修正，不能将其收益归给视频。视频方法卡由本次代理筛选，未经独立教师审核；引用时间是实际音频切片窗口，不是词级对齐时间。视频中可疑的专业断言未进入C组。知识题库生成前冻结，答题模型看不到答案与教材；所有计分引文均匹配对应讲稿。匿名评审引文亦已逐字核对。\n\n'
-    text += '复现入口：`scripts/experiments/nlp_teaching_compare.py`；阶段prepare、freeze_questions、generate、evaluate、summarize。原音轨、时间窗口转写、输入指纹、完整提示词、原始响应、逐页缓存与用量留存在`jobs/_validation/nlp_teaching_2026-10-15/`（Git忽略目录）。请求受理不明不会自动重发；再次运行成功请求会复用原响应。\n'
+    text += '复现入口：`scripts/experiments/nlp_teaching_compare.py`；阶段prepare、freeze_questions、generate、local_audit、evaluate、summarize。原音轨、时间窗口转写、输入指纹、完整文本提示词、原始响应、逐页缓存与用量留存在`jobs/_validation/nlp_teaching_2026-10-15/`（Git忽略目录）。图片以指纹留证，原图另存；百炼请求额外设置enable_thinking=false。请求受理不明不会自动重发；再次运行成功请求会复用原响应。再次执行prepare会重建PDF及输入清单，可能改变文件字节；如需复用本次缓存，请保留现有冻结目录。\n'
     course.write_text(OUT / '结果汇总.md', text)
     comparison = '# 关键段落对照（第一次生成）\n\n原始生成口播，未进行人工润色。完整讲稿另见A1/B1/C1。\n\n'
     for page_index in (0, 4):
@@ -415,7 +503,7 @@ def summarize():
             raw = (ROOT / f'{group}1/subtitle_w_cursor.txt').read_text('utf-8')
             page = parse_script(raw)[page_index]
             comparison += f'### {group}\n\n' + '\n\n'.join(line[0] for line in page) + '\n\n'
-    course.write_text(OUT / '关键段落对照.md', comparison)
+    course.write_text(OUT / '关键段落对照.md', comparison.rstrip() + '\n')
     print(json.dumps({'groups': group_stats, 'usage': usage}, ensure_ascii=False, indent=2))
 
 
@@ -465,13 +553,13 @@ def generate():
             display = f'# {group}{repeat} · 8分钟微课讲稿\n\n'
             for i, page in enumerate(pages):
                 display += f'## {i+1}. {SLIDES[i][0]}\n\n' + '\n\n'.join(s[0] for s in page) + '\n\n'
-            course.write_text(OUT / f'{group}{repeat}_讲稿.md', display)
+            course.write_text(OUT / f'{group}{repeat}_讲稿.md', display.rstrip() + '\n')
             print(f'COMPLETE {group}{repeat}', flush=True)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('phase', choices=['prepare', 'freeze_questions', 'generate', 'evaluate', 'summarize'])
+    parser.add_argument('phase', choices=['prepare', 'freeze_questions', 'generate', 'local_audit', 'evaluate', 'summarize'])
     args = parser.parse_args()
     globals()[args.phase]()
 

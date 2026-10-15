@@ -1,0 +1,46 @@
+{
+  "bvid": "BV1KSh1zvEpY",
+  "title": "【2025版】动手学自然语言处理NLP系列！包含中文分词、命名实体识别、深度学习神经网络、机器学习、语言模型等基础知识+文本分类等NLP实战项目，就怕你学不会！",
+  "owner": "AI算法工程师exia",
+  "local_asr": true,
+  "parts": [
+    {
+      "part": {
+        "cid": "31996708977",
+        "page": 26,
+        "title": "5.3 梯度下降",
+        "durationMs": 840000
+      },
+      "identity": {
+        "audio_sha256": "7a6bcd2846c6e0baa69855a9ce18af3036bd3fb128bf3482c57b5af3e7ce23f8",
+        "model": "Qwen/Qwen3-ASR-0.6B",
+        "chunk_seconds": 45,
+        "language": "Chinese",
+        "timestamp_kind": "audio_window_not_word_alignment"
+      },
+      "transcript_sha256": "54788516addcd7fc7fb9ae058e20c48d1f389805e2c0a794ab053d1ee66b38dd",
+      "audio_duration_ms": 839168,
+      "windows": 19,
+      "characters": 5248
+    },
+    {
+      "part": {
+        "cid": "31996709148",
+        "page": 27,
+        "title": "5.4 反向传播",
+        "durationMs": 750000
+      },
+      "identity": {
+        "audio_sha256": "14e68bd2a8354742301df84528584a27c7f10e80358d672360b609f104bf08e4",
+        "model": "Qwen/Qwen3-ASR-0.6B",
+        "chunk_seconds": 45,
+        "language": "Chinese",
+        "timestamp_kind": "audio_window_not_word_alignment"
+      },
+      "transcript_sha256": "d112dd091288398ed17f5fd7aeaac3e3306319b6189d98a212ce678ff7079a30",
+      "audio_duration_ms": 749781,
+      "windows": 17,
+      "characters": 4256
+    }
+  ]
+}

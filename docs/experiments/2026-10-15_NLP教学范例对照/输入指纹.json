@@ -1,0 +1,20 @@
+{
+  "source_sha256": "4ced99be9c04db13c3ea36ad4f2c77e5de066c5633257f0fd5fd9a0c1def711c",
+  "source_excerpt_sha256": "79db49b29dcd0a824798c8aa5b369232668fd82f2e85be8efb63167787692869",
+  "plan_sha256": "a9c4b540e38e399734884900c1783c925c3c1be4ce74cf4382c4f43cbcc40e11",
+  "cards_sha256": "9455ae5c55e682a9eeb0dddd8010f045ce649ac65e874e54bfb18f409aed1b8c",
+  "slides_sha256": [
+    "9ce6fcd3f49a22252656d583e82eaddad34ddd2cbc6ae6ffb6bdedc911eae03f",
+    "6b396299bfb5bf560f551891e24b60a3a855d75010f5d9766cb376b057801181",
+    "5884c2bd432da840c22bab49e422af405b7017e8f620741e731624a744498a6d",
+    "207e122cf622c331f8d7a1b760e25c096f0148895b0415f643dacef7b1d9160d",
+    "6fbe5c239b5b96f5d51273fa3d0a4761370bc011bd71d527c596aea714854b28",
+    "08e5ca58405eb13c14e09e7d4d491ac5f8f8c6467c07fca9223fb8293d46bb8c"
+  ],
+  "model": "qwen3-vl-plus",
+  "temperature": 0.3,
+  "target_minutes": 8,
+  "repeats": 2,
+  "generation": "current course.generate_script with instrumented OpenAI transport; fixed content anchor slides",
+  "frozen_before_generation": true
+}

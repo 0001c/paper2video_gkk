@@ -1,0 +1,632 @@
+[
+  {
+    "label": "A1",
+    "correct_with_evidence": 10,
+    "total": 12,
+    "rows": [
+      {
+        "id": "Q1",
+        "answer": "A",
+        "quote": "关键一步是参数更新公式：w_new = w - eta * dJ/dw。这里 eta 必须大于 0...为什么减号？因为负梯度指向损失下降最快的方向",
+        "expected": "A",
+        "evidence_exact": false,
+        "passed": false
+      },
+      {
+        "id": "Q2",
+        "answer": "C",
+        "quote": "关键一步是参数更新公式：w_new = w - eta * dJ/dw。这里 eta 必须大于 0...为什么减号？因为负梯度指向损失下降最快的方向",
+        "expected": "C",
+        "evidence_exact": false,
+        "passed": false
+      },
+      {
+        "id": "Q3",
+        "answer": "B",
+        "quote": "η 过大，比如 1.0，参数可能越过最低点，在山谷两侧来回震荡，甚至冲出山谷导致损失发散上升。",
+        "expected": "B",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q4",
+        "answer": "D",
+        "quote": "神经网络的损失函数通常是高度非凸的，存在大量局部极小值和鞍点。因此梯度下降只能收敛到某个局部最优解，无法保证全局最优。",
+        "expected": "D",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q5",
+        "answer": "A",
+        "quote": "注意：求导（反向传播）和更新参数是两个独立环节——前者算出‘该往哪走’，后者决定‘迈多大步’。",
+        "expected": "A",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q6",
+        "answer": "B",
+        "quote": "链式法则在单条路径上表现为局部导数相乘：比如从b到c再到e，贡献是∂c/∂b × ∂e/∂c。",
+        "expected": "B",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q7",
+        "answer": "D",
+        "quote": "当存在多条独立路径时，各路径对总导数的贡献必须相加，不能相乘或忽略任一路径。",
+        "expected": "D",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q8",
+        "answer": "C",
+        "quote": "a=2, b=1时，c=a+b=3, d=b+1=2, e=6；",
+        "expected": "C",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q9",
+        "answer": "A",
+        "quote": "∂e/∂a = ∂e/∂c·∂c/∂a = 2×1 = 2；",
+        "expected": "A",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q10",
+        "answer": "D",
+        "quote": "而∂e/∂b = ∂e/∂c·∂c/∂b + ∂e/∂d·∂d/∂b = 2×1 + 3×1 = 5",
+        "expected": "D",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q11",
+        "answer": "B",
+        "quote": "b通过c和d两条路径影响e，漏掉任一路径都会出错。",
+        "expected": "B",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q12",
+        "answer": "C",
+        "quote": "这种多个输入、单一标量输出的结构，正是反向模式自动微分最高效的应用场景：一次反向遍历即可获得所有输入的偏导。",
+        "expected": "C",
+        "evidence_exact": true,
+        "passed": true
+      }
+    ],
+    "answer_correct": 12,
+    "exact_evidence_count": 10
+  },
+  {
+    "label": "A2",
+    "correct_with_evidence": 10,
+    "total": 12,
+    "rows": [
+      {
+        "id": "Q1",
+        "answer": "A",
+        "quote": "导数为负，说明增大参数反而能降损失，减去一个负数就等价于增加它。",
+        "expected": "A",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q2",
+        "answer": "C",
+        "quote": "导数为正，说明当前参数增大时损失上升，我们就该减小它；",
+        "expected": "C",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q3",
+        "answer": "B",
+        "quote": "η 过大，例如 0.8，容易越过最低点，导致损失反弹、参数震荡，甚至发散到无穷大。",
+        "expected": "B",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q4",
+        "answer": "D",
+        "quote": "梯度下降只能保证收敛到某个局部最优解，无法确保是全局最优。",
+        "expected": "D",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q5",
+        "answer": "A",
+        "quote": "特别注意：‘求梯度’与‘参数更新’是两个独立环节。... 反向传播负责计算梯度。 ... 优化器只接收已算好的梯度值，执行w ← w − η·∇J；它不参与求导。",
+        "expected": "A",
+        "evidence_exact": false,
+        "passed": false
+      },
+      {
+        "id": "Q6",
+        "answer": "B",
+        "quote": "当一个输入变量只通过一条路径影响输出时,比如a→c→e,它的偏导就是各段局部导数相乘",
+        "expected": "B",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q7",
+        "answer": "D",
+        "quote": "但更常见的是多条路径并存。... 这时b对e的总影响必须把两条路径的贡献分别算出后相加,不能相乘。",
+        "expected": "D",
+        "evidence_exact": false,
+        "passed": false
+      },
+      {
+        "id": "Q8",
+        "answer": "C",
+        "quote": "先做前向计算：令c等于a加b，得3；d等于b加1，得2；最终e等于c乘d，结果是6。",
+        "expected": "C",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q9",
+        "answer": "A",
+        "quote": "接着链式法则：a只通向c，所以de/da等于de/dc乘以dc/da，即2乘1，结果是2。",
+        "expected": "A",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q10",
+        "answer": "D",
+        "quote": "而b不同：它既影响c，又影响d。从c路径贡献2×1=2，从d路径贡献3×1=3，总和是5。",
+        "expected": "D",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q11",
+        "answer": "B",
+        "quote": "关键就在这里：b经过两条路径影响e，必须把两路贡献相加，不能漏项，更不能相乘——这是链式法则在多路径图中的核心规则。",
+        "expected": "B",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q12",
+        "answer": "C",
+        "quote": "这种策略在多个输入、单个标量输出的情形下优势显著——神经网络的损失函数正是如此：成千上万参数输入,一个标量损失输出,反向模式天然匹配。",
+        "expected": "C",
+        "evidence_exact": true,
+        "passed": true
+      }
+    ],
+    "answer_correct": 12,
+    "exact_evidence_count": 10
+  },
+  {
+    "label": "B1",
+    "correct_with_evidence": 10,
+    "total": 12,
+    "rows": [
+      {
+        "id": "Q1",
+        "answer": "A",
+        "quote": "导数为负时，w增大让损失变小，我们反而要增大w",
+        "expected": "A",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q2",
+        "answer": "C",
+        "quote": "因为导数dJ/dw为正时，说明w增大让损失变大，那我们就该减小w",
+        "expected": "C",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q3",
+        "answer": "B",
+        "quote": "而如果 η 过大，比如 1.0，一步就跨过最低点，甚至冲到对面山坡，导致损失值上下剧烈震荡；更糟的是，可能彻底发散，数值爆炸、训练失败。",
+        "expected": "B",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q4",
+        "answer": "D",
+        "quote": "因此，梯度下降只能保证你沿着当前斜坡向下走，却不能保证最终停在全局最深的那个坑里——它找到的是局部最优解，而非全局最优。",
+        "expected": "D",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q5",
+        "answer": "A",
+        "quote": "注意，‘求梯度’和‘用梯度更新参数’是两个独立步骤。...优化器只负责执行更新公式 w ← w − η·∂J/∂w，它不关心梯度怎么来的；而反向传播专精于回答‘∂J/∂w 等于多少’。",
+        "expected": "A",
+        "evidence_exact": false,
+        "passed": false
+      },
+      {
+        "id": "Q6",
+        "answer": "B",
+        "quote": "当影响路径唯一时，链式法则要求局部导数相乘：若e依赖c，c依赖a，则∂e/∂a = ∂e/∂c × ∂c/∂a。",
+        "expected": "B",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q7",
+        "answer": "D",
+        "quote": "而当存在多条独立路径，比如b既通过c=a+b又通过d=b+1影响e，总梯度就是各路径贡献之和：∂e/∂b = (∂e/∂c)(∂c/∂b) + (∂e/∂d)(∂d/∂b)。",
+        "expected": "D",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q8",
+        "answer": "C",
+        "quote": "先做前向计算：令 c = a + b = 3，d = b + 1 = 2，于是 e = c × d = 6。",
+        "expected": "C",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q9",
+        "answer": "A",
+        "quote": "a 只通过 c 影响 e，所以 ∂e/∂a = (∂e/∂c) × (∂c/∂a) = 2 × 1 = 2。",
+        "expected": "A",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q10",
+        "answer": "D",
+        "quote": "因此总偏导 ∂e/∂b = 2 + 3 = 5。",
+        "expected": "D",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q11",
+        "answer": "B",
+        "quote": "b 却不同——它同时进入 c 和 d 两条路径：经 c 的贡献是 2 × 1 = 2，经 d 的贡献是 3 × 1 = 3。 ...注意：这里必须相加，不能相乘；漏掉任一路径就会出错。",
+        "expected": "B",
+        "evidence_exact": false,
+        "passed": false
+      },
+      {
+        "id": "Q12",
+        "answer": "C",
+        "quote": "这种反向模式特别适合神经网络训练场景：我们有成千上万个权重作为输入，却只关心一个标量损失值作为输出。",
+        "expected": "C",
+        "evidence_exact": true,
+        "passed": true
+      }
+    ],
+    "answer_correct": 12,
+    "exact_evidence_count": 10
+  },
+  {
+    "label": "B2",
+    "correct_with_evidence": 9,
+    "total": 12,
+    "rows": [
+      {
+        "id": "Q1",
+        "answer": "A",
+        "quote": "关键更新公式是 w_new = w - eta * dJ/dw。 这里eta必须大于0...为什么是减号？因为梯度指向上升最快方向，负梯度才指向下降最快方向",
+        "expected": "A",
+        "evidence_exact": false,
+        "passed": false
+      },
+      {
+        "id": "Q2",
+        "answer": "B",
+        "quote": "关键更新公式是 w_new = w - eta * dJ/dw。 这里eta必须大于0...为什么是减号？因为梯度指向上升最快方向，负梯度才指向下降最快方向",
+        "expected": "C",
+        "evidence_exact": false,
+        "passed": false
+      },
+      {
+        "id": "Q3",
+        "answer": "B",
+        "quote": "η 过大，一步跨得太远，可能直接越过最低点，甚至在山谷两侧来回反弹，导致震荡或彻底发散。",
+        "expected": "B",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q4",
+        "answer": "D",
+        "quote": "梯度下降只能保证找到‘当前位置附近最低的坑’，即局部最优解，无法确保那是全局最低点。",
+        "expected": "D",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q5",
+        "answer": "A",
+        "quote": "反向传播负责前者（求导），更新公式执行后者（更新）...优化器则接收这些梯度，执行参数更新：w ← w − η·∇J(w)。",
+        "expected": "A",
+        "evidence_exact": false,
+        "passed": false
+      },
+      {
+        "id": "Q6",
+        "answer": "B",
+        "quote": "链式法则在单条路径上很简单：局部导数相乘。例如从输出e回传到中间变量c，再传到输入a，就是∂e/∂c × ∂c/∂a。",
+        "expected": "B",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q7",
+        "answer": "D",
+        "quote": "这时b对e的影响必须把两条路径的贡献加起来：∂e/∂b = ∂e/∂c·∂c/∂b + ∂e/∂d·∂d/∂b。",
+        "expected": "D",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q8",
+        "answer": "C",
+        "quote": "先做前向计算：令 c = a + b = 3，d = b + 1 = 2，于是 e = c × d = 6。",
+        "expected": "C",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q9",
+        "answer": "A",
+        "quote": "a 只通过 c 影响 e，所以 ∂e/∂a = (∂e/∂c) × (∂c/∂a) = 2 × 1 = 2。",
+        "expected": "A",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q10",
+        "answer": "D",
+        "quote": "而 b 同时进入 c 和 d 两条路径：经 c 贡献 (∂e/∂c)(∂c/∂b) = 2 × 1 = 2，经 d 贡献 (∂e/∂d)(∂d/∂b) = 3 × 1 = 3，总和为 5。",
+        "expected": "D",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q11",
+        "answer": "B",
+        "quote": "注意：b 经过两条路径影响 e；不要漏项——这是反向传播的核心规则，多路径贡献必须相加，绝不能相乘或忽略任一通路。",
+        "expected": "B",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q12",
+        "answer": "C",
+        "quote": "这种模式特别适合‘多个输入、标量输出’的情形——神经网络的损失函数J正是标量，而成千上万个权重是输入。反向模式因此成为深度学习的标准选择。",
+        "expected": "C",
+        "evidence_exact": true,
+        "passed": true
+      }
+    ],
+    "answer_correct": 11,
+    "exact_evidence_count": 9
+  },
+  {
+    "label": "C1",
+    "correct_with_evidence": 11,
+    "total": 12,
+    "rows": [
+      {
+        "id": "Q1",
+        "answer": "A",
+        "quote": "若dJ/dw = -2，说明w增大时损失下降，我们就该增大w——减去负数，等价于加上正数，w自然变大。",
+        "expected": "A",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q2",
+        "answer": "C",
+        "quote": "若当前dJ/dw = +3，说明w增大时损失上升，那我们就该减小w——公式里减去正数，正好实现w变小",
+        "expected": "C",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q3",
+        "answer": "B",
+        "quote": "如果 η 过大，比如 1.0，可能一步跨过谷底，下一次又跳到对面山坡，造成震荡，甚至越跑越远、彻底发散。",
+        "expected": "B",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q4",
+        "answer": "D",
+        "quote": "这里必须强调：负梯度只保证局部下降，不保证全局最优。因为神经网络的损失函数通常是‘非凸’的",
+        "expected": "D",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q5",
+        "answer": "A",
+        "quote": "反向传播只是高效计算梯度的手段，它本身不执行更新——更新是独立的一步，由公式 w_new = w - η·∂J/∂w 完成。",
+        "expected": "A",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q6",
+        "answer": "B",
+        "quote": "沿同一条路径，局部导数要相乘。例如从e到c再到a：e ← c ← a，那么∂e/∂a = (∂e/∂c) × (∂c/∂a)。",
+        "expected": "B",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q7",
+        "answer": "D",
+        "quote": "而当多个路径汇向同一个变量，比如b同时连到c和d，再共同影响e，就必须把每条路径的贡献加起来",
+        "expected": "D",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q8",
+        "answer": "C",
+        "quote": "先做前向计算：令 c = a + b = 3，d = b + 1 = 2，那么 e = c * d = 6。",
+        "expected": "C",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q9",
+        "answer": "A",
+        "quote": "输入 a 只通向 c，再由 c 通向 e，路径唯一，所以 de/da = (de/dc) × (dc/da) = 2 × 1 = 2。",
+        "expected": "A",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q10",
+        "answer": "D",
+        "quote": "最终 ∂e/∂b 是两路贡献之和：2 + 3 = 5。",
+        "expected": "D",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q11",
+        "answer": "B",
+        "quote": "而 b 不同：它同时参与生成 c 和 d，因此有两条独立路径影响 e。... 最终 ∂e/∂b 是两路贡献之和：2 + 3 = 5。这里的关键易错点是——多路径必须相加，绝不能相乘，也不能遗漏任一路径。",
+        "expected": "B",
+        "evidence_exact": false,
+        "passed": false
+      },
+      {
+        "id": "Q12",
+        "answer": "C",
+        "quote": "这种模式特别适合多个输入、单个标量输出的情形，比如神经网络的损失函数：它接收大量权重作为输入，但只输出一个数值。反向传播正是利用这一结构高效求出全部梯度。",
+        "expected": "C",
+        "evidence_exact": true,
+        "passed": true
+      }
+    ],
+    "answer_correct": 12,
+    "exact_evidence_count": 11
+  },
+  {
+    "label": "C2",
+    "correct_with_evidence": 8,
+    "total": 12,
+    "rows": [
+      {
+        "id": "Q1",
+        "answer": "A",
+        "quote": "当dJ/dw < 0，w增大时损失下降，我们应增大w",
+        "expected": "A",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q2",
+        "answer": "C",
+        "quote": "当dJ/dw > 0，说明w增大时损失上升，我们应减小w",
+        "expected": "C",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q3",
+        "answer": "B",
+        "quote": "而η过大，比如1.0，参数可能一步跨过谷底，冲到对面高坡，损失反而上升；下一轮又反向跳回，形成震荡；更严重时直接发散，损失爆炸增长。",
+        "expected": "B",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q4",
+        "answer": "D",
+        "quote": "这里必须强调：负梯度只保证局部下降，不保证全局最优。神经网络的损失函数通常是‘非凸’的...算法可能停在某个浅谷里，而非最深的那个。",
+        "expected": "D",
+        "evidence_exact": false,
+        "passed": false
+      },
+      {
+        "id": "Q5",
+        "answer": "A",
+        "quote": "注意：求梯度与参数更新是两个独立环节。...反向传播只是高效计算梯度的算法，它本身不执行更新；更新是独立步骤，由学习率控制步长大小。",
+        "expected": "A",
+        "evidence_exact": false,
+        "passed": false
+      },
+      {
+        "id": "Q6",
+        "answer": "B",
+        "quote": "链式法则给出明确规则：沿着一条路径走，每一步的局部导数必须相乘。",
+        "expected": "B",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q7",
+        "answer": "D",
+        "quote": "但如果一个变量通向输出有多条独立路径——比如 b 同时进入 c 和 d——那么各路径对输出的贡献必须相加，不能相乘，也不能遗漏。",
+        "expected": "D",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q8",
+        "answer": "C",
+        "quote": "先做前向计算：c = a + b = 3，d = b + 1 = 2，e = c * d = 6。",
+        "expected": "C",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q9",
+        "answer": "A",
+        "quote": "a 只连到 c，所以 ∂e/∂a = (∂e/∂c) × (∂c/∂a) = 2 × 1 = 2。",
+        "expected": "A",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q10",
+        "answer": "D",
+        "quote": "因此总偏导 ∂e/∂b = 2 + 3 = 5。",
+        "expected": "D",
+        "evidence_exact": true,
+        "passed": true
+      },
+      {
+        "id": "Q11",
+        "answer": "B",
+        "quote": "而 b 同时连到 c 和 d，形成两条独立路径...漏掉任一路径都会导致梯度错误",
+        "expected": "B",
+        "evidence_exact": false,
+        "passed": false
+      },
+      {
+        "id": "Q12",
+        "answer": "C",
+        "quote": "这种从标量输出反推各输入影响的方式，天然适配神经网络的结构：成千上万个权重作为输入，最终汇聚为一个标量损失值。...关键技巧在于复用中间结果",
+        "expected": "C",
+        "evidence_exact": false,
+        "passed": false
+      }
+    ],
+    "answer_correct": 12,
+    "exact_evidence_count": 8
+  }
+]

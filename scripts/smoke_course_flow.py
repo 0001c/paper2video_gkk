@@ -111,6 +111,10 @@ def main():
         web._save_job(job)
         snapshot = client.get('/api/jobs/' + job['id'] + '/review').json()
         check(snapshot['editable'] and len(snapshot['pages']) == 4, '审核页读取课件和原始讲稿')
+        check(len(snapshot['teaching_tasks']) == 4 and all(t['goal'] for t in snapshot['teaching_tasks']), '审核页提供每页讲解任务和后页衔接')
+        check(facts['script_generation_version'] == course.SCRIPT_GENERATION_VERSION
+              and web.artifact_cache.deck_key(facts) != web.artifact_cache.deck_key({**facts,'script_generation_version':5}),
+              '整套课件讲稿缓存也按新教学生成规则隔离')
         edit = {'version': snapshot['version'], 'pages': [*snapshot['pages'][:-1], '已修改的例题解释。 | no']}
         route = '/api/jobs/' + job['id'] + '/review'
         check(client.put(route, json={**edit, 'unknown': 1}).status_code == 422, '讲稿写入拒绝未知字段')
@@ -175,13 +179,13 @@ def main():
             calls.append(kwargs)
             return '根据教材解释新的内容。 | no', {'total_tokens': 1}
         output, _ = course.generate_script(plan, slides, job['config']['script_prompt_path'], {'model': 'stub'}, result, generator)
-        check(len(calls) == 8 and all(len(c['image_paths']) == 1 for c in calls), '长讲稿分单页请求并保存，每页最多一次时长修正')
+        check(len(calls) == 12 and all(len(c['image_paths']) == 1 for c in calls), '教学讲稿按单页顺序请求并保存，每页最多两次质量修正')
         check(all('教材原文' in c['prompt_text'] and '本页目标约' in c['prompt_text'] and '80~120' not in c['prompt_text'] for c in calls), '长讲稿使用正文和时长预算，移除短讲解限制')
         course.generate_script(plan, slides, job['config']['script_prompt_path'], {'model': 'stub'}, result, generator)
-        check(len(calls) == 8, '重新准备复用已经完成的讲稿页')
+        check(len(calls) == 12, '重新准备复用已经完成的讲稿页')
         script.write_text(output, encoding='utf-8')
         course.generate_script(plan, slides, job['config']['script_prompt_path'], {'model': 'stub'}, result, generator, selected=[1])
-        check(len(calls) == 10, '模型只重写选定的一页并有界修正时长')
+        check(len(calls) == 15, '模型只重写选定的一页并有界修正时长')
         import speech_gen as speech
         original = speech.synth_page_qwen3tts
         voice = result / 'ref.wav'
@@ -257,6 +261,15 @@ def main():
                 raise AssertionError('审核未暂停')
             except SystemExit as exc:
                 check(exc.code == 0 and (result / 'course_review.json').is_file(), '真实流水线在配音和合片前暂停审核')
+            timing_plan=Path(work,'timing_plan.json')
+            course.write_json(timing_plan,plan)
+            sys.argv=['pipeline.py','--stage','["3"]','--paper_latex_root',str(latex),
+                      '--result_dir',str(result),'--course_plan',str(timing_plan),'--generate_talking','False']
+            try:
+                runpy.run_path(str(ROOT/'Paper2Video-main/src/pipeline.py'),run_name='__main__')
+                raise AssertionError('不完整或超时音频不应进入合片')
+            except ValueError as exc:
+                check('音频时长未通过合片前验收' in str(exc),'直接续跑合片也不能绕过真实音频时长验收')
         finally:
             sys.argv = original_argv
             for name, module in original_modules.items():

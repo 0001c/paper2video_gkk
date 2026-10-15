@@ -441,6 +441,9 @@ def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=
                     cached = manifest[str(slide_idx)] = restored
                     course.write_json(manifest_path, manifest)
             if not forced and _valid_local_audio(speech_result_path, cached, key):
+                if cached.get('voice_identity') != voice_key:
+                    manifest[str(slide_idx)] = {**cached,'voice_identity':voice_key}
+                    course.write_json(manifest_path,manifest)
                 print("[course] 第 {} 页音频复用".format(slide_idx + 1), flush=True)
             else:
                 # 长页主动分段，失败保留已完成段；避免一次生成数分钟语音。
@@ -488,7 +491,7 @@ def tts_per_slide(model_type, script_path, speech_save_dir, ref_audio, ref_text=
                 temporary = speech_result_path + '.tmp.wav'
                 sf.write(temporary, merged, sr)
                 os.replace(temporary, speech_result_path)
-                manifest[str(slide_idx)] = {"key": key, "text_sha": course.digest(subtitle),
+                manifest[str(slide_idx)] = {"key": key, "text_sha": course.digest(subtitle),'voice_identity':voice_key,
                     "wav_sha": course.digest(Path(speech_result_path).read_bytes()), "seconds": len(merged) / sr,
                     **({'repair_generation': generation_id} if slide_idx in force_pages else {})}
                 course.write_json(manifest_path, manifest)

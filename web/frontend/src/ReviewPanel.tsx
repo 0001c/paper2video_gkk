@@ -7,9 +7,11 @@ import { Help, Section } from './Section';
 import type { SubtitleStyle } from './subtitleStyle';
 
 type Review = { version: string; pages: string[]; editable: boolean;
+  teaching_tasks?: { title: string; role: string; goal: string; handoff_question: string | null }[];
   teaching?: { passed: boolean; issues: string[]; warnings: string[];
     example_coverage: { example_id: string; source_page: number | null; slide_pages: number[] }[] } | null;
   timing: { estimated_minutes: number; actual_minutes: number | null; target_minutes: number | null;
+    configured_speech_rate?: number; estimate_speech_rate?: number;
     pages: { planned_minutes: number; estimated_minutes: number; actual_seconds: number | null; section: string }[] } | null };
 
 export function ReviewPanel({ jobId, apiKey, apiBase, modelConfig, modelOrigin, voice, subtitleStyle, concurrency, cursors, cursorStyle, cursorScale, onJob, onSaved }: {
@@ -51,6 +53,7 @@ export function ReviewPanel({ jobId, apiKey, apiBase, modelConfig, modelOrigin, 
     else onJob(data.job_id);
   }, (e) => setError(errorMessage(e)));
   const timing = review?.timing;
+  const task = review?.teaching_tasks?.[selected];
   const teachingNeedsSave = !!review?.teaching && pages.join('\n') !== review.pages.join('\n');
   const delta = timing?.actual_minutes != null && timing.target_minutes ? (timing.actual_minutes - timing.target_minutes) / timing.target_minutes : null;
   const estimatedDelta = timing?.target_minutes ? (timing.estimated_minutes - timing.target_minutes) / timing.target_minutes : null;
@@ -63,6 +66,7 @@ export function ReviewPanel({ jobId, apiKey, apiBase, modelConfig, modelOrigin, 
     {!review && !error && <p role="status">正在读取审核内容…</p>}
     {review && <>
       {timing && <div className="notice info"><span>讲稿预算约 {timing.estimated_minutes} 分钟{timing.target_minutes ? ` · 目标 ${timing.target_minutes} 分钟` : ""}{timing.actual_minutes != null ? ` · 已合成音频 ${timing.actual_minutes} 分钟` : " · 实际时长将在音频生成后显示"}{delta != null ? ` · 偏差 ${(delta * 100).toFixed(1)}%` : ""}</span></div>}
+      {timing?.estimate_speech_rate != null && timing.configured_speech_rate != null && timing.estimate_speech_rate !== timing.configured_speech_rate && <p className="hint">时长估算已按本课音色实测语速校准为每分钟约 {timing.estimate_speech_rate} 字词。</p>}
       {review.teaching && <div aria-live="polite">
         {review.teaching.issues.map((issue) => <p className="notice warn" key={issue}>{issue}</p>)}
         {review.teaching.warnings.map((warning) => <p className="hint" key={warning}>{warning}</p>)}
@@ -74,6 +78,7 @@ export function ReviewPanel({ jobId, apiKey, apiBase, modelConfig, modelOrigin, 
       <div className="review-grid">
         <a href={`/api/jobs/${jobId}/files/slide_imgs/${selected + 1}.png?v=${review.version}`} target="_blank" rel="noreferrer"><img alt={`第 ${selected + 1} 页课件`} src={`/api/jobs/${jobId}/files/slide_imgs/${selected + 1}.png?v=${review.version}`} /></a>
         <div className="field"><div className="field-title"><label htmlFor="review-script">第 {selected + 1} 页讲稿与光标目标</label><Help title="讲稿输出格式" important>每行保留“讲稿 | 光标目标”，目标引用本页可见文字；没有目标写 no。页面分隔由系统维护。</Help></div><textarea id="review-script" rows={14} maxLength={20000} disabled={!review.editable || busy} value={pages[selected] ?? ""} onChange={(e) => { setPages(pages.map((p, i) => i === selected ? e.target.value : p)); setAccepted(false); setSuccess(""); }} />
+        {task && <p className="hint">讲解任务 · {task.role}：{task.goal}。{task.handoff_question ? `下一页承接问题：${task.handoff_question}` : "本页收束全课问题。"}</p>}
         {timing?.pages[selected] && <p className="hint">本页预算 {timing.pages[selected].planned_minutes.toFixed(1)} 分钟，讲稿估算 {timing.pages[selected].estimated_minutes.toFixed(1)} 分钟{timing.pages[selected].actual_seconds != null ? `，实际音频 ${(timing.pages[selected].actual_seconds! / 60).toFixed(1)} 分钟` : ""}（保存后更新估算）。</p>}
         </div>
       </div>

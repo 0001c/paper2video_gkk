@@ -1,8 +1,9 @@
 """教材例题来源、可验证算术与讲稿预算；不执行源文本代码，不调用模型。"""
 import ast
 import hashlib
+import math
 import re
-from spoken_text import plain_text, prepare_spoken
+from spoken_text import prepare_spoken
 
 
 def mentions_example(text, example_id):
@@ -24,18 +25,27 @@ def _calculate(expression, values):
             value, gradient = visit(node.operand)
             sign = -1 if isinstance(node.op,ast.USub) else 1
             value, gradient = value*sign,{key:part*sign for key,part in gradient.items()}
-        elif isinstance(node,ast.BinOp) and isinstance(node.op,(ast.Add,ast.Sub,ast.Mult,ast.Div)):
+        elif isinstance(node,ast.BinOp) and isinstance(node.op,(ast.Add,ast.Sub,ast.Mult,ast.Div,ast.Pow)):
             left, dl = visit(node.left)
             right, dr = visit(node.right)
             if isinstance(node.op,ast.Add): value, factors = left+right,(1,1)
             elif isinstance(node.op,ast.Sub): value, factors = left-right,(1,-1)
             elif isinstance(node.op,ast.Mult): value, factors = left*right,(right,left)
-            else: value, factors = left/right,(1/right,-left/right**2)
+            elif isinstance(node.op,ast.Div): value, factors = left/right,(1/right,-left/right**2)
+            else:
+                if dr or not right.is_integer() or abs(right) > 8:
+                    raise ValueError('幂次仅支持绝对值不超过8的常整数')
+                value, factors = left**right,(right*left**(right-1) if right else 0,0)
             gradient = {key:dl.get(key,0)*factors[0]+dr.get(key,0)*factors[1] for key in values}
             steps.append('{} = {:g}'.format(ast.unparse(node),value))
+        elif isinstance(node,ast.Call) and isinstance(node.func,ast.Name) and node.func.id in ('sin','cos') and len(node.args) == 1 and not node.keywords:
+            argument, derivative = visit(node.args[0])
+            value = math.sin(argument) if node.func.id == 'sin' else math.cos(argument)
+            factor = math.cos(argument) if node.func.id == 'sin' else -math.sin(argument)
+            gradient = {key:part*factor for key,part in derivative.items()}
         else:
             raise ValueError('例题仅支持源文给值的四则表达式')
-        if abs(value) > 1e12:
+        if not math.isfinite(value) or abs(value) > 1e12 or any(not math.isfinite(v) or abs(v)>1e12 for v in gradient.values()):
             raise ValueError('例题数值超限')
         return value, gradient
     value, gradients = visit(tree.body)
@@ -123,19 +133,17 @@ def script_report(pages, plan=None, topics=None):
             issues.append('例题{}缺少中间层到输出层的逐层讲解'.format(example['id']))
         if hits and example.get('result'):
             result = example['result']
-            expected = ['{}={:g}'.format(result['variable'],result['value'])] + ['∂{}/∂{}={:g}'.format(result['variable'],key,value) for key,value in result['gradients'].items()]
-            normalized = plain_text(' '.join(oral[i-1] or '' for i in hits if i <= len(oral)))
-            missing = [equation for equation in expected if not re.search(re.escape(plain_text(prepare_spoken(equation)[0]))+r'(?![零〇一二两三四五六七八九十百千万亿点\d])',normalized)]
-            if missing:
-                issues.append('例题{}未完整兑现已核验结果 {}；请在讲稿明确列式，不只承诺演示'.format(example['id'],'、'.join(missing)))
-            for equation in expected:
-                lhs, value = equation.split('=')
-                pattern = r'(?<![A-Za-z0-9])'+r'\s*'.join(re.escape(part) for part in lhs)+r'\s*=\s*([-+]?\d+(?:\.\d+)?)'
-                if any(float(found) != float(value) for found in re.findall(pattern,lesson)):
-                    issues.append('例题{}的 {} 有与本地核验不一致的数值'.format(example['id'],lhs))
+            from calculation_checks import example_issues
+            issues.extend(example_issues(lesson, example))
         if example.get('numeric_inputs_given') is False:
             warnings.append(example['note'])
+    from calculation_checks import arithmetic_report
+    calculations = [arithmetic_report(text) for text in spoken]
+    for i, check in enumerate(calculations, 1):
+        issues.extend('第{}页{}'.format(i, issue) for issue in check['issues'])
+        warnings.extend('第{}页{}'.format(i, warning) for warning in check['warnings'])
     estimate = None
+    page_timing = []
     if plan:
         rate = plan['speech_rate']
         if all(text is not None for text in oral):
@@ -143,4 +151,14 @@ def script_report(pages, plan=None, topics=None):
         target = plan.get('target_minutes')
         if target and estimate is not None and abs(estimate-target) > target*0.1:
             issues.append('讲稿预计{:.2f}分钟，目标{}分钟，超过10%预算偏差；请调整后再配音'.format(estimate,target))
-    return {'version':1,'passed':not issues,'issues':issues,'warnings':warnings,'estimated_minutes':estimate,'example_coverage':coverage}
+        if target and plan.get('sections') and spoken:
+            import course
+            budgets = course.page_sections(plan,len(spoken),topics)
+            for i, (text, section) in enumerate(zip(oral,budgets),1):
+                minutes = (len(re.findall(r'[\u3400-\u9fff]',text))+len(re.findall(r'[A-Za-z0-9]+',text)))/rate if text is not None else None
+                passed = minutes is not None and abs(minutes-section['page_minutes']) <= section['page_minutes']*.1 + 1e-9
+                page_timing.append({'page':i,'planned_minutes':section['page_minutes'],'estimated_minutes':minutes,'passed':passed})
+                if not passed:
+                    issues.append('第{}页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容'.format(i))
+    return {'version':2,'passed':not issues,'issues':issues,'warnings':warnings,'estimated_minutes':estimate,
+            'page_timing':page_timing,'calculations':calculations,'example_coverage':coverage}

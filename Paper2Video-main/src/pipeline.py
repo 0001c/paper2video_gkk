@@ -440,6 +440,8 @@ if __name__ == '__main__':
         time_second["tts"] = [step3_1_time-step2_time]
         print("Speech Generation", step3_1_time-step2_time)
         release_models(('tts', 'asr'))
+        if course_plan:
+            course.require_audio_timing(course_plan,args.result_dir)
         
         ## Step 3-2: Cursor Generation
         os.environ["PYTHONHASHSEED"] = "random"        
@@ -459,6 +461,8 @@ if __name__ == '__main__':
     ## Step 4: Talking Video Generation（数字人，可关闭）
     start_time = time.time() # start time
     if "3" in stage or  "0" in stage:
+        if course_plan:
+            course.require_audio_timing(course_plan,args.result_dir)
         tmp_merage_dir = path.join(args.result_dir, "merage")
         tmp_merage_1 = path.join(args.result_dir, "1_merage.mp4")
         image_height, image_width = read_image_size(path.join(slide_image_dir, '1.png'))

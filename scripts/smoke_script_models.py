@@ -128,7 +128,8 @@ def main():
             course.write_json(result / 'course_script/0.json', corrupt)
             rewrite_calls.clear()
             course.generate_script(None, slides, prompt, {}, result, rewrite_page, generation_id='rewrite-all')
-            assert rewrite_calls == [0], '非文本缓存内容也应视为缺页'
+            assert rewrite_calls == [], '完成字段损坏时应从已保存候选恢复，不能重复付费'
+            assert isinstance(course.read_json(result / 'course_script/0.json')['text'], str)
             # 替换失败不能截断原文件，历史讲稿可回溯。
             atomic = tmp / 'atomic.txt'
             atomic.write_text('旧讲稿 | no', encoding='utf-8')

@@ -41,9 +41,11 @@ class ScriptBudgetChecks(unittest.TestCase):
 
     def test_failed_duration_still_reaches_teaching_gate_without_infinite_retries(self):
         text, _ = self.generate(['长' * 400 + '。 | no'])
-        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(len(self.calls), 3)
         from teaching_quality import script_report
         self.assertFalse(script_report(course.split_pages(text), self.args[0])['passed'])
+        course.generate_script(*self.args,workers=1)
+        self.assertEqual(len(self.calls),3,'未达预算的已完成候选也不能在恢复时自动继续付费')
 
     def test_auto_duration_and_valid_custom_duration_do_not_pay_for_repair(self):
         self.generate(['简' * 200 + '。 | no'])

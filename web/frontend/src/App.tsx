@@ -24,6 +24,7 @@ import { defaultSubtitleStyle, readSubtitleStyle, type SubtitleStyle } from "./s
 import { Help, Section } from './Section';
 import { SourceReview } from './SourceReview';
 import { JobHistory, type HistoryJob } from './JobHistory';
+import { ViewPages, ViewTabs, type ViewId } from './ViewNavigation';
 
 /* ─────────────────────────────────────────────────────────────
    接口层。三个注意点：
@@ -406,9 +407,9 @@ export default function App() {
   const [sysError, setSysError] = useState("");
   const [jobsError, setJobsError] = useState("");
   const [filesError, setFilesError] = useState("");
-  const [view, setView] = useState<"new" | "detail" | "history">(loadView);
+  const [view, setView] = useState<ViewId>(loadView);
   useEffect(() => { saveView(view); }, [view]);
-  const detailRef = useRef<HTMLElement>(null);
+  const navigationRef = useRef<HTMLElement>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitHintVisible, setSubmitHintVisible] = useState(false);
   const [submitPhase, setSubmitPhase] = useState("");
@@ -547,7 +548,7 @@ export default function App() {
     }
   }, [job?.id, job?.status, job?.qa_next_job_id, selectJob]);
   useEffect(() => {
-    if (view === "detail") detailRef.current?.scrollIntoView({
+    if (view === "detail") navigationRef.current?.scrollIntoView({
       behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start",
     });
   }, [view, jobId]);
@@ -1091,11 +1092,7 @@ export default function App() {
         </details>
       </header>
 
-      <nav className="view-tabs" aria-label="任务导航">
-        <button type="button" aria-pressed={view === "new"} onClick={() => setView("new")}>新建任务</button>
-        <button type="button" aria-pressed={view === "detail"} disabled={!jobId} onClick={() => setView("detail")}>任务详情</button>
-        <button type="button" aria-pressed={view === "history"} onClick={() => setView("history")}>任务记录</button>
-      </nav>
+      <ViewTabs view={view} hasJob={!!jobId} onChange={setView} navRef={navigationRef} />
       <NotificationSettings />
       {(initError || sysError) && (
         <div className="notice err" role="alert">
@@ -1103,7 +1100,8 @@ export default function App() {
           <Button variant="outline" loading={initializing} onClick={initialize}>重新连接</Button>
         </div>
       )}
-      <div hidden={view !== "new"}>
+      <ViewPages view={view}>
+      <div>
       <div className="workspace-heading"><div><p className="eyebrow">NEW PROJECT</p><div className="draft-caption"><h2>编排新任务</h2><Help title="新任务草稿">这里的设置只用于新任务，不会更改已创建的任务。文字设置自动保存为本机草稿，文件需要重新选择。</Help></div></div><span className="draft-status">本机草稿</span></div>
       <p className="workspace-instruction">先上传并预览素材，再依次确认语言、模型与音色。完成设置后，在“生成与审核”中检查并创建任务。</p>
       {(!paperFile && initialDraft.paperName || !portraitFile && initialDraft.portraitName) && (
@@ -1597,7 +1595,7 @@ export default function App() {
       </div>
 
       {/* 已创建任务的详情与新任务草稿独立 */}
-      <section className="section" ref={detailRef} hidden={view !== "detail"}>
+      <section className="section">
         <div className="section-head">
           <h2 className="section-title">任务详情</h2>
           <span className="section-note">{jobId || "尚未选择任务"}</span>
@@ -1844,7 +1842,7 @@ export default function App() {
       </section>
 
       {/* ⑤ 任务记录（P1）：续跑是省钱主力，界面上不做就浪费了 */}
-      <section className="section" hidden={view !== "history"}>
+      <section className="section">
         <div className="section-head">
           <h2 className="section-title">任务记录</h2>
           <span className="section-note">按初始任务分组 · 展开查看重新生成与续跑记录</span>
@@ -1857,6 +1855,7 @@ export default function App() {
         )}
       </section>
 
+      </ViewPages>
       <Dialog
         header="确认继续生成视频"
         visible={!!rerunPlan}

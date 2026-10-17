@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { Button, Dialog, MessagePlugin, Radio, RadioGroup, Select } from "tdesign-react";
+import { Button, Dialog, MessagePlugin, Popup, Radio, RadioGroup, Select } from "tdesign-react";
 import { loadCredentials, loadDraft, loadJobId, loadView, saveDraft, saveJobId, saveView } from "./storage";
 import { api, applyTemplate, errorMessage, runExclusive } from "./flow";
 import { CoursePanel, defaultCourse, type CourseSettings, type CoursePlan } from "./CoursePanel";
@@ -23,6 +23,7 @@ import { SubtitleSettings } from "./SubtitleSettings";
 import { defaultSubtitleStyle, readSubtitleStyle, type SubtitleStyle } from "./subtitleStyle";
 import { Help, Section } from './Section';
 import { SourceReview } from './SourceReview';
+import { JobHistory, type HistoryJob } from './JobHistory';
 
 /* ─────────────────────────────────────────────────────────────
    接口层。三个注意点：
@@ -409,6 +410,7 @@ export default function App() {
   useEffect(() => { saveView(view); }, [view]);
   const detailRef = useRef<HTMLElement>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [submitHintVisible, setSubmitHintVisible] = useState(false);
   const [submitPhase, setSubmitPhase] = useState("");
   const submitLock = useRef(false);
   const ingestLock = useRef(false);
@@ -498,7 +500,7 @@ export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [artifacts, setArtifacts] = useState<any[]>([]);
   // P1：任务记录 + 逐页素材
-  const [jobs, setJobs] = useState<any[]>([]);
+  const [jobs, setJobs] = useState<HistoryJob[]>([]);
   const [pages, setPages] = useState<any | null>(null);
   const [rerunning, setRerunning] = useState(false);
   // ④ 音色。四种来源最终都归结为"一份参考音频 + 它的参考文本"：
@@ -1582,12 +1584,12 @@ export default function App() {
           {`${activeCount} 个任务执行中 · ${queuedCount} 个排队中`}
         </p>
         <div className="actions">
+          <Popup trigger="hover" visible={submitHintVisible} onVisibleChange={setSubmitHintVisible} placement="top" destroyOnClose overlayClassName="submit-hint-popup" content={<span role="status">{missing.length ? `还需：${missing.join("；")}` : ingesting || voiceBusy ? "正在准备素材，请稍候" : "素材已就绪，可以创建新任务"}</span>}>
+          <span className="submit-trigger" tabIndex={!ready || submitting ? 0 : undefined} aria-label={!ready || submitting ? '查看生成任务准备情况' : undefined} onFocus={() => setSubmitHintVisible(true)} onBlur={() => setSubmitHintVisible(false)} onKeyDown={event => { if (event.key === 'Escape') setSubmitHintVisible(false); }}>
           <Button theme="primary" loading={submitting} disabled={!ready || submitting} onClick={submit}>
             {submitting ? submitPhase || "正在准备…" : "生成课件与讲稿"}
           </Button>
-          <span className="hint" role="status">
-            {missing.length ? `还需：${missing.join("；")}` : ingesting || voiceBusy ? "正在准备素材，请稍候" : "素材已就绪，可以创建新任务"}
-          </span>
+          </span></Popup>
         </div>
       </Section>
       </div>
@@ -1845,59 +1847,13 @@ export default function App() {
       <section className="section" hidden={view !== "history"}>
         <div className="section-head">
           <h2 className="section-title">任务记录</h2>
-          <span className="section-note">继续前检查有效缓存与更新范围</span>
+          <span className="section-note">按初始任务分组 · 展开查看重新生成与续跑记录</span>
         </div>
         {jobsError && <div className="notice err" role="alert">任务记录读取失败：{jobsError}；每 5 秒自动重试。</div>}
         {jobs.length === 0 ? (
           <div className="hint">还没有任务。</div>
         ) : (
-          <div className="jobtable">
-            {jobs.map((j) => (
-              <div className={"jobrow" + (j.id === jobId ? " active" : "")} key={j.id}>
-                <span className={"dot " + dotOf(j.status)} />
-                <div className="job-identity">
-                <span className="jfile" title={j.source_name || "未记录文件名"}>
-                  {j.source_name || "旧任务未记录文件名"}
-                </span>
-                <span className="jid">{j.id}</span>
-                </div>
-                <div className="job-context">
-                <span className="jphase">
-                  {j.phase}
-                  {j.elapsed_min ? ` · ${j.elapsed_min} min` : ""}
-                </span>
-                <span className="jcfg">
-                  {j.config?.slide_lang}/{j.config?.script_lang}
-                  {j.config?.stages ? ` · stage ${j.config.stages.join("")}` : ""}
-                  {j.config?.reuse_script ? " · 复用讲稿" : ""}
-                  {j.resumed_from ? " · 续跑" : ""}
-                  {/* 音色：任务记录里显示用了哪个 —— 否则事后只能靠听或翻 run.log */}
-                  {j.config?.voice && j.config.voice.kind !== "default"
-                    ? ` · 音色 ${
-                        j.config.voice.voice
-                        || (j.config.voice.kind === "design" ? "自定义" : "上传")
-                      }`
-                    : ""}
-                </span>
-                </div>
-                <span className="jactions">
-                  <button type="button" className="linkbtn" onClick={() => selectJob(j.id)}>
-                    查看
-                  </button>
-                  {["done", "failed", "canceled"].includes(j.status) && (
-                    <button
-                      type="button"
-                      className="linkbtn"
-                      disabled={rerunning}
-                      onClick={() => prepareRerun(j.id)}
-                    >
-                      {j.status === "done" ? "重新合成视频" : "继续生成视频"}
-                    </button>
-                  )}
-                </span>
-              </div>
-            ))}
-          </div>
+          <JobHistory jobs={jobs} selectedId={jobId} rerunning={rerunning} onSelect={selectJob} onRerun={prepareRerun} dotOf={dotOf} />
         )}
       </section>
 

@@ -66,7 +66,7 @@ export function CoursePanel({ ingestId, settings, onSettings, slideCount, script
         }} />{s.title} <span className="hint">{s.chars} 字符</span>
       </label>)}</div>
     </Section>}
-    <div className="grid grid-2">
+    <div className="grid grid-2 course-fields">
       <div className="field"><label htmlFor="course-mode">成片播放时长</label><select id="course-mode" value={settings.duration_mode} onChange={(e) => update({ duration_mode: e.target.value as "auto" | "custom", sections: undefined })}>
         <option value="auto">自动分配（审核教案时可调整）</option><option value="custom">自定义目标分钟数</option>
       </select></div>

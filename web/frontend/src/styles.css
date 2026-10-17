@@ -271,6 +271,9 @@ html, body {
 .editorial-help[data-important='true'] { color: var(--paper-help-ink); }
 .field label.field-title, .field-title { display: flex; align-items: center; gap: 3px; margin-bottom: 8px; }
 .field-title > label { margin-bottom: 0; }
+.course-fields > .field > label, .course-fields > .field > .field-title { display: flex; align-items: center; min-height: 28px; margin: 0 0 8px; }
+.course-fields .field-title > label { margin: 0; }
+.course-fields > .field > input, .course-fields > .field > select { height: 40px; line-height: 1.5; }
 .editorial-help-popup .t-popup__content { width: 300px; max-width: calc(100vw - 32px); padding: 16px; border: 1px solid var(--paper-rule); border-radius: 5px; box-shadow: 0 6px 18px rgb(0 0 0 / .08); color: var(--paper-ink); background: var(--paper-surface); font: 12px/1.7 var(--font-sans); }
 .editorial-help-popup strong { display: block; font-size: 12px; font-weight: 600; }
 .editorial-help-copy { margin-top: 8px; color: var(--paper-ink-soft); }
@@ -622,6 +625,9 @@ details > :last-child { margin-bottom: 0; }
   padding-top: 8px; flex-wrap: wrap;
 }
 .actions .spacer { flex: 1; }
+.submit-trigger { display: inline-flex; align-items: center; justify-content: center; border-radius: var(--td-radius-default); }
+.submit-trigger > .t-button:disabled { pointer-events: none; }
+.submit-hint-popup .t-popup__content { max-width: min(400px, calc(100vw - 32px)); padding: 12px 16px; color: var(--paper-ink); background: var(--paper-surface); border: 1px solid var(--paper-rule); font: 12px/1.8 var(--font-sans); overflow-wrap: anywhere; }
 .saved-voice-choice { align-items: start; }
 .saved-voice-choice .field-title { height: 28px; margin-bottom: 8px; }
 .saved-voice-choice .field-title > label { margin-bottom: 0; }
@@ -798,7 +804,21 @@ video { width: 100%; border-radius: var(--td-radius-default); background: #000; 
 }
 
 /* ── P1：任务记录 ── */
-.jobtable { display: grid; gap: var(--space-2); }
+.jobtable { display: grid; gap: var(--space-4); }
+.job-family { min-width: 0; border: 1px solid var(--paper-rule); border-radius: 8px; background: var(--paper-surface); overflow: hidden; }
+.job-family > .jobrow { border: 0; border-radius: 0; }
+.job-origin-label { color: var(--paper-accent); font-size: 11px; font-weight: 600; }
+.job-parent-ref { font-size: 11px; color: var(--paper-ink-soft); overflow-wrap: anywhere; }
+.job-parent-link { padding: 0; border: 0; background: transparent; color: var(--paper-accent); font: 11px var(--font-mono); cursor: pointer; overflow-wrap: anywhere; text-align: left; }
+.job-parent-link:hover:not(:disabled) { text-decoration: underline; }
+.job-parent-link:disabled { color: var(--paper-ink-faint); cursor: default; }
+.job-origin-note { padding: 0 16px; color: var(--paper-warn); font-size: 12px; }
+.job-descendants { margin: 0; border: 0; border-top: 1px solid var(--paper-rule); border-radius: 0; }
+.job-descendants > summary { border-radius: 0; }
+.job-children { display: grid; gap: 16px; margin: 0; padding: 0; list-style: none; }
+.job-child { position: relative; min-width: 0; margin-left: calc(var(--job-depth) * 16px); padding-left: 16px; border-left: 2px solid var(--paper-rule-strong); }
+.job-child::before { content: ''; position: absolute; left: 0; top: 35px; width: 16px; height: 1px; background: var(--paper-rule-strong); }
+.job-depth-label { display: block; margin-bottom: 4px; font-size: 11px; color: var(--paper-ink-faint); }
 .jobrow {
   display: grid;
   grid-template-columns: 8px minmax(0, 1.3fr) minmax(0, 1fr) 160px;

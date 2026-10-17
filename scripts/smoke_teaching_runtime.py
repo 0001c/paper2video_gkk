@@ -76,6 +76,8 @@ def main():
     check(len(ledger['pages']) == 8 and all(p['knowledge'] for p in ledger['pages']), '审核返回逐页知识清单')
     check(any(q['answer_page'] and '待核对' in q['status'] for q in ledger['pending_questions']),
           '跨页承诺保留负责页和待核对状态')
+    check(not any(q['answer_page'] == 13 for q in ledger['pending_questions']),
+          '教材第13页引用不误作课件负责页，真实跨页承诺保留')
     contracts = review['teaching']['tensor_contracts']
     check(any(c['symbols'].get('x') == [1, 10] and c['symbols'].get('W') == [10, 5]
               and c['symbols'].get('b') == [5] for c in contracts), '整课形状含教材 x、W、b 约束')

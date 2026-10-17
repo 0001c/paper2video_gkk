@@ -2,7 +2,7 @@
 import re
 import json
 
-VERSION = 3
+VERSION = 4
 
 
 def _compact(text):
@@ -110,10 +110,13 @@ def promises(tasks, spoken):
     result = []
     for i, text in enumerate(spoken):
         for sentence in re.split(r'(?<=[。！？!?])\s*', text):
-            if not re.search(r'下一页|下页|第\s*\d+\s*页|后面|稍后', sentence) or not re.search(r'讲|解释|回答|解决|推导|核对|计算|得到|展开|看', sentence):
+            # 教材页码是来源定位，不是课件负责页；同句若另有真实承诺仍需保留。
+            target = re.sub(r'(?:教材|课本|原书|源文|原文|书中|PDF)\s*(?:PDF\s*)?第\s*\d+\s*(?:[–—-]\s*\d+\s*)?页',
+                            '', sentence, flags=re.I)
+            if not re.search(r'下一页|下页|第\s*\d+\s*页|后面|稍后', target) or not re.search(r'讲|解释|回答|解决|推导|核对|计算|得到|展开|看', target):
                 continue
-            explicit = re.search(r'第\s*(\d+)\s*页', sentence)
-            owner = int(explicit[1]) if explicit else (i+2 if re.search(r'下一页|下页', sentence) else None)
+            explicit = re.search(r'第\s*(\d+)\s*页', target)
+            owner = int(explicit[1]) if explicit else (i+2 if re.search(r'下一页|下页', target) else None)
             result.append({'id': f'P{i+1}.Q{len(result)+1}', 'asked_page': i+1, 'quote': sentence.strip(),
                            'answer_page': owner, 'planned_topic': tasks[owner-1]['title'] if owner and 0 < owner <= len(tasks) else None,
                            'status': '待指定负责页' if owner is None else ('到页待核对回答' if owner <= len(spoken) else '待后页回答')})

@@ -11,7 +11,7 @@ sys.path[:0] = [str(ROOT), str(ROOT/'Paper2Video-main/src')]
 import course
 import bailian_speech as speech
 from calculation_checks import claims, example_issues, arithmetic_report
-from lesson_planning import page_tasks, lesson_report, context_prompt
+from lesson_planning import page_tasks, lesson_report, context_prompt, promises
 from script_revision import oral_fingerprint, paragraph_targets
 from spoken_text import prepare_spoken, plain_text, NORMALIZATION_VERSION
 from tensor_checks import tensor_contracts, tensor_report, matmul, broadcast
@@ -80,6 +80,18 @@ class RefinementChecks(unittest.TestCase):
         self.assertTrue(any('前文原式证据' in warning for warning in recalled['warnings']))
         matched=lesson_report(tasks,['我们定义z=(a+b)*c。','上一页我们写出z=(a+b)*c。'])
         self.assertTrue(matched['pages'][1]['recalls'][0]['evidence_found'])
+
+    def test_source_page_citations_are_not_cross_page_promises(self):
+        tasks = page_tasks(['引入\n问题', '会话\n执行', '总结\n检查'])
+        spoken = ['教材第13页曾笼统说启动Session会自动计算梯度。'
+                  '教材 PDF 第14–16页解释占位符。原书第9—10页展开计算。'
+                  '我们在第3页核对这个结果。教材第13页提到了会话，下一页我们解释执行过程。'
+                  '稍后解释资源管理。我们在第12页回答最后的问题。']
+        pending = promises(tasks, spoken)
+        self.assertEqual([q['answer_page'] for q in pending], [3, 2, None, 12])
+        self.assertIn('教材第13页', pending[1]['quote'])
+        report = lesson_report(tasks, spoken)
+        self.assertEqual(sum('未指定有效负责页' in w for w in report['warnings']), 2)
 
     def test_tensor_order_output_and_reverse_reason(self):
         contracts=tensor_contracts([SHAPE_EXAMPLE])

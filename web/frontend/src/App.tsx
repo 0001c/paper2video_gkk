@@ -1103,6 +1103,7 @@ export default function App() {
       )}
       <div hidden={view !== "new"}>
       <div className="workspace-heading"><div><p className="eyebrow">NEW PROJECT</p><div className="draft-caption"><h2>编排新任务</h2><Help title="新任务草稿">这里的设置只用于新任务，不会更改已创建的任务。文字设置自动保存为本机草稿，文件需要重新选择。</Help></div></div><span className="draft-status">本机草稿</span></div>
+      <p className="workspace-instruction">先上传并预览素材，再依次确认语言、模型与音色。完成设置后，在“生成与审核”中检查并创建任务。</p>
       {(!paperFile && initialDraft.paperName || !portraitFile && initialDraft.portraitName) && (
         <div className="notice info">
           <span>已恢复文字设置。浏览器不能恢复文件选择，请重新选择
@@ -1611,10 +1612,13 @@ export default function App() {
           ) : null}
         </div>
         {jobId && !job && !streamError && <p role="status">正在读取任务详情…</p>}
-        {job && <ModelCosts url={`/api/jobs/${job.id}/model-costs`} />}
-        {job && (job.config?.model_config?.avatar.mode === "api" || !!job.remote_tasks?.items.length) && <RemoteTasks jobId={job.id} status={job.status} details={job.remote_tasks} />}
         {streamError && <div className="notice err" role="alert"><span>{streamError}，请到任务记录选择其他任务。</span></div>}
         {streamState === "retrying" && !job && <div className="notice warn">连接失败，正在重试。请检查服务是否运行。</div>}
+        {job && <div className="task-overview"><div><span className="eyebrow">当前阶段</span><strong>{p?.phase || job.phase || job.status}</strong></div><p>{running ? '正在处理，可在下方查看生成进度。页面关闭后任务仍会继续。' : job.config?.review_before_render ? '先在下方核对课件、教学清单与口播，再保存并确认生成。' : job.status === 'done' ? '视频已生成，可查看成片、下载文件或核对逐页素材。' : '可查看进度与日志，核对已有素材后继续处理。'}</p></div>}
+        {filesError && <div className="notice err" role="alert"><span>产物读取失败：{filesError}</span><Button variant="outline" onClick={() => setFilesVersion((value) => value + 1)}>重试读取</Button></div>}
+        {job?.notification?.status === 'failed' && <p className="notice warn" role="status">{job.notification.error}</p>}
+        {job?.status === 'failed' && job.phase_key === 'struct' && <div className="notice warn source-failure"><p>正文结构化未完成。若日志提示缺失字形，请对照源页修正，再以新素材创建任务。</p><SourceReview key={job.id} ingestId={job.id} onSaved={useCorrectedSource} /></div>}
+        {job && <Section key={`settings-${job.id}`} title="任务设置与服务记录" compact defaultOpen={false} summary="字幕、模型、费用与历史版本">
         {job?.config && (
           <p className="hint">
             此任务：{job.config.slide_lang}/{job.config.script_lang}
@@ -1625,13 +1629,10 @@ export default function App() {
             <br />这是创建时保存的配置，新建任务中的修改不影响它。
           </p>
         )}
-        {filesError && <div className="notice err" role="alert"><span>产物读取失败：{filesError}</span><Button variant="outline" onClick={() => setFilesVersion((value) => value + 1)}>重试读取</Button></div>}
         {job && <SubtitleSettings value={taskSubtitleStyle} disabled={!!running} onChange={(value) => setTaskSubtitleOverride({ jobId: job.id, value })} />}
         {job && taskModels && <EvaluationSettings value={taskModels} task disabled={!!running} onChange={(value) => setTaskOverride({ jobId: job.id, value })} />}
         {job && <VideoVersions jobId={job.id} refreshKey={`${job.status}-${filesVersion}-${job.qa_next_job_id ?? ''}`} />}
-        {job?.notification?.status === 'failed' && <p className="notice warn" role="status">{job.notification.error}</p>}
         {job && !running && <p className="hint">字幕样式修改将用于下一次审核合片或续跑，不会立即改变已有视频。</p>}
-        {job?.status === 'failed' && job.phase_key === 'struct' && <div className="notice warn source-failure"><p>正文结构化未完成。若日志提示缺失字形，请对照源页修正，再以新素材创建任务。</p><SourceReview key={job.id} ingestId={job.id} onSaved={useCorrectedSource} /></div>}
         {job?.config?.model_config_origin === "v2" && job.config.model_config && taskModels && <TaskModelSettings key={`models-${job.id}`}
           jobId={job.id} portraitPath={job.ref_img} snapshot={job.config.model_config} value={taskModels} connections={job.config.model_connections} options={opts?.model_configuration}
           voice={taskVoice} voiceResource={taskVoiceResource} onVoice={(resource) => setTaskVoiceOverride({ jobId: job.id, voice: resource ? { kind: 'cloud', resource_id: resource.resource_id } : { kind: 'default' }, resource })}
@@ -1642,6 +1643,9 @@ export default function App() {
             <div className="field"><label htmlFor="legacy-base">旧任务 API Base</label><input id="legacy-base" value={apiBase} onChange={(event) => setApiBase(event.target.value)} /></div></div>
           <Button variant="text" onClick={() => { setApiKey(""); setApiBase(""); }}>清空本次凭据</Button>
         </details>}
+        <ModelCosts url={`/api/jobs/${job.id}/model-costs`} />
+        {(job.config?.model_config?.avatar.mode === "api" || !!job.remote_tasks?.items.length) && <RemoteTasks jobId={job.id} status={job.status} details={job.remote_tasks} />}
+        </Section>}
         {job && !running && visiblePages?.pages?.length > 0 && <ReviewPanel key={`review-${job.id}`} jobId={job.id} apiKey={apiKey} apiBase={apiBase}
           modelConfig={taskModels} modelOrigin={job.config?.model_config_origin} voice={taskVoice} subtitleStyle={taskSubtitleStyle} concurrency={job.config?.script_concurrency ?? 3} cursors={opts?.cursors ?? []} cursorStyle={job.config?.cursor_style ?? 'classic-red'} cursorScale={job.config?.cursor_scale ?? 1} onJob={selectJob} onSaved={() => setFilesVersion((v) => v + 1)} />}
 
@@ -1650,7 +1654,7 @@ export default function App() {
           attempt={job.config?.qa_attempt} value={taskModels} subtitleStyle={taskSubtitleStyle} busy={!!running} hasScript={!!visiblePages?.script_txt} hasVideo={!job.config?.review_before_render && visibleArtifacts.some((item) => item.name === '3_merage.mp4')} onJob={selectJob} />}
 
         {job && (
-          <div style={{ marginTop: 18 }}>
+          <Section key={`progress-${job.id}-${!!running}`} title="生成进度" compact defaultOpen={!!running} summary={`${p?.phase || job.phase || job.status} · ${pct}%`}>
             <div className="statusline">
               <span className={"dot " + (job.status === "done" ? "ok" : job.status === "failed" ? "err" : "run")} />
               <span>{p?.phase || job.phase || job.status}</span>
@@ -1718,8 +1722,8 @@ export default function App() {
               </div>
             )}
 
-            {p?.tail?.length ? <div className="logtail">{p.tail.join("\n")}</div> : null}
-          </div>
+            {p?.tail?.length ? <details><summary>运行日志 · 最近 {p.tail.length} 行</summary><div className="logtail">{p.tail.join("\n")}</div></details> : null}
+          </Section>
         )}
 
         {/* 产物区**运行中也渲染**。原先外层是 `artifacts.length > 0 &&`，
@@ -1740,14 +1744,14 @@ export default function App() {
               )}
             </div>
             {visibleArtifacts.length > 0 ? (
-              <div className="artifacts">
+              <details><summary>下载生成文件 · {visibleArtifacts.length} 项</summary><div className="artifacts">
                 {visibleArtifacts.map((a) => (
                   <a key={a.name} href={`/api/jobs/${jobId}/files/${encodeURIComponent(a.name)}`} target="_blank" rel="noreferrer">
                     <span>{a.name}</span>
                     <span className="sz">{a.size_mb} MB</span>
                   </a>
                 ))}
-              </div>
+              </div></details>
             ) : (
               <div className="hint">
                 产物会在各阶段结束后陆续出现在这里（运行中也能看到已生成的部分）。
@@ -1776,7 +1780,7 @@ export default function App() {
         {/* P1 逐页素材浏览：服务端已把命名规则不一致的产物索引到一起
             （幻灯片 1.png 起、音频 0.wav 起、数字人还多一层参考图目录）。 */}
         {visiblePages?.total > 0 && (
-          <div style={{ marginTop: 22 }}>
+          <Section title="逐页素材" compact defaultOpen={false} summary={`${visiblePages.total} 页 · 课件、音频与讲稿`}>
             <div className="statusline" style={{ marginBottom: 6 }}>
               <span className="dot ok" />
               <span>逐页素材</span>
@@ -1833,7 +1837,7 @@ export default function App() {
                 </div>
               ))}
             </div>
-          </div>
+          </Section>
         )}
       </section>
 
@@ -1851,10 +1855,13 @@ export default function App() {
             {jobs.map((j) => (
               <div className={"jobrow" + (j.id === jobId ? " active" : "")} key={j.id}>
                 <span className={"dot " + dotOf(j.status)} />
-                <span className="jid">{j.id}</span>
+                <div className="job-identity">
                 <span className="jfile" title={j.source_name || "未记录文件名"}>
                   {j.source_name || "旧任务未记录文件名"}
                 </span>
+                <span className="jid">{j.id}</span>
+                </div>
+                <div className="job-context">
                 <span className="jphase">
                   {j.phase}
                   {j.elapsed_min ? ` · ${j.elapsed_min} min` : ""}
@@ -1872,6 +1879,7 @@ export default function App() {
                       }`
                     : ""}
                 </span>
+                </div>
                 <span className="jactions">
                   <button type="button" className="linkbtn" onClick={() => selectJob(j.id)}>
                     查看

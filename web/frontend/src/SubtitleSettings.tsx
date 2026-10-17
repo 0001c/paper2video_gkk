@@ -14,7 +14,7 @@ export function SubtitleSettings({ value, onChange, disabled = false }: {
     ["margin_horizontal", "左右安全边距", 2, 20, 1, `${value.margin_horizontal}%`],
     ["margin_bottom", "距底部", 1, 15, 1, `${value.margin_bottom}%`],
   ] as const;
-  return <Section title="字幕样式" compact summary={value.enabled ? "自动换行 · 可自定义" : "不烧录字幕"}
+  return <Section title="字幕样式" compact defaultOpen={false} summary={value.enabled ? "自动换行 · 可自定义" : "不烧录字幕"}
     help="字幕始终自动换行，字号随成片高度缩放。只影响合片，不改变讲稿、配音或时间轴。字体以服务端安装情况为准，预览仅作示意。">
     <fieldset className="subtitle-settings" disabled={disabled}>
       <legend className="sr-only">字幕自定义配置</legend>

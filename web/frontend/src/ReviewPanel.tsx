@@ -72,24 +72,34 @@ export function ReviewPanel({ jobId, apiKey, apiBase, modelConfig, modelOrigin, 
     {success && <p className="notice ok" role="status">{success}</p>}
     {!review && !error && <p role="status">正在读取审核内容…</p>}
     {review && <>
-      {timing && <div className="notice info"><span>讲稿预算约 {timing.estimated_minutes} 分钟{timing.target_minutes ? ` · 目标 ${timing.target_minutes} 分钟` : ""}{timing.actual_minutes != null ? ` · 已合成音频 ${timing.actual_minutes} 分钟` : " · 实际时长将在音频生成后显示"}{delta != null ? ` · 偏差 ${(delta * 100).toFixed(1)}%` : ""}</span></div>}
+      <ol className="review-guide" aria-label="审核步骤"><li><span>01</span>对照课件与讲稿</li><li><span>02</span>核对清单与口播</li><li><span>03</span>保存后确认生成</li></ol>
+      {timing && <div className="review-metrics" aria-label="时长概览">
+        <div><span>讲稿估算</span><strong>{timing.estimated_minutes}<small> 分钟</small></strong></div>
+        <div><span>课程目标</span><strong>{timing.target_minutes ?? '—'}<small>{timing.target_minutes ? ' 分钟' : ' 未设置'}</small></strong></div>
+        <div><span>已合成音频</span><strong>{timing.actual_minutes ?? '—'}<small>{timing.actual_minutes != null ? ' 分钟' : ' 生成后显示'}</small></strong></div>
+      </div>}
       {timing?.estimate_speech_rate != null && timing.configured_speech_rate != null && timing.estimate_speech_rate !== timing.configured_speech_rate && <p className="hint">时长估算已按本课音色实测语速校准为每分钟约 {timing.estimate_speech_rate} 字词。</p>}
       {review.teaching && <div aria-live="polite">
-        {review.teaching.issues.map((issue) => <p className="notice warn" key={issue}>{issue}</p>)}
-        {review.teaching.warnings.map((warning) => <p className="hint" key={warning}>{warning}</p>)}
-        {review.teaching.example_coverage.map((example) => <p className="hint" key={example.example_id}>例题 {example.example_id} · 源文{example.source_page ? `第 ${example.source_page} 页` : "页码未标记"} · {example.slide_pages.length ? `课件第 ${example.slide_pages.join("、")} 页` : "待补充课件步骤"}</p>)}
+        <p className={`notice ${review.teaching.passed ? 'ok' : 'warn'}`} role="status">{review.teaching.passed ? '教学检查已通过，请继续逐页核对。' : `教学检查有 ${review.teaching.issues.length} 项需处理。请展开检查详情，修改并保存讲稿后再确认生成。`}</p>
+        <details className="review-diagnostics"><summary>教学检查详情 · {review.teaching.issues.length} 项问题 / {review.teaching.warnings.length} 项提示</summary>
+          {!!review.teaching.issues.length && <><h3 className="detail-label">需要处理</h3><ul className="review-issue-list">{review.teaching.issues.map((issue) => <li key={issue}>{issue}</li>)}</ul></>}
+          {!!review.teaching.warnings.length && <><h3 className="detail-label">人工核对提示</h3><ul className="review-issue-list">{review.teaching.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></>}
+          {!!review.teaching.example_coverage.length && <><h3 className="detail-label">例题覆盖</h3>{review.teaching.example_coverage.map((example) => <p className="hint" key={example.example_id}>例题 {example.example_id} · 源文{example.source_page ? `第 ${example.source_page} 页` : "页码未标记"} · {example.slide_pages.length ? `课件第 ${example.slide_pages.join("、")} 页` : "待补充课件步骤"}</p>)}</>}
+        </details>
       </div>}
       {delta != null && Math.abs(delta) > 0.1 && <p className="notice warn">实际时长超出目标 ±10%。可调整相应页讲稿，再重新配音合片；系统不会强行放慢语音或重复内容。</p>}
       {delta == null && estimatedDelta != null && Math.abs(estimatedDelta) > 0.1 && <p className="notice warn">当前讲稿估算与目标相差 {(estimatedDelta * 100).toFixed(1)}%。请在配音前检查讲稿是否覆盖教学内容，并按需要补充讲解或调整长度；此估算仍需用实际音频校准。</p>}
       <div className="field"><label htmlFor="review-page">查看页码</label><select id="review-page" value={selected} disabled={busy} onChange={(e) => setSelected(Number(e.target.value))}>{pages.map((_, i) => <option key={i} value={i}>第 {i + 1} 页{timing?.pages[i] ? ` · ${timing.pages[i].section}` : ""}</option>)}</select></div>
       <div className="review-grid">
-        <a href={`/api/jobs/${jobId}/files/slide_imgs/${selected + 1}.png?v=${review.version}`} target="_blank" rel="noreferrer"><img alt={`第 ${selected + 1} 页课件`} src={`/api/jobs/${jobId}/files/slide_imgs/${selected + 1}.png?v=${review.version}`} /></a>
+        <figure className="review-slide"><a href={`/api/jobs/${jobId}/files/slide_imgs/${selected + 1}.png?v=${review.version}`} target="_blank" rel="noreferrer"><img alt={`第 ${selected + 1} 页课件`} src={`/api/jobs/${jobId}/files/slide_imgs/${selected + 1}.png?v=${review.version}`} /></a><figcaption>第 {selected + 1} 页课件 · 点击查看大图</figcaption></figure>
         <div className="field"><div className="field-title"><label htmlFor="review-script">第 {selected + 1} 页讲稿与光标目标</label><Help title="讲稿输出格式" important>每行保留“讲稿 | 光标目标”，目标引用本页可见文字；没有目标写 no。页面分隔由系统维护。</Help></div><textarea id="review-script" rows={14} maxLength={20000} disabled={!review.editable || busy} value={pages[selected] ?? ""} onChange={(e) => { setPages(pages.map((p, i) => i === selected ? e.target.value : p)); setAccepted(false); setSuccess(""); }} />
-        {task && <p className="hint">讲解任务 · {task.role}：{task.goal}。{task.handoff_question ? `下一页承接问题：${task.handoff_question}` : "本页收束全课问题。"}</p>}
+        {task && <details><summary>本页讲解任务 · {task.role}</summary><p>{task.goal}</p><p className="hint">{task.handoff_question ? `下一页承接问题：${task.handoff_question}` : "本页收束全课问题。"}</p></details>}
         {checklist && <details><summary>本页教学核对清单 · {checklist.question_id} {checklist.question_status}</summary>
           <p className="hint">前文最多一句承接。原文出现只表示有证据，需核对是否解释清楚；转述与跨页回答请人工确认。</p>
           <ul>{checklist.knowledge.map((fact) => <li key={fact.id}>{fact.id}：{fact.text} · {fact.status}</li>)}</ul>
+          <h4 className="detail-label">待核对承诺</h4>
           {ledger?.pending_questions.filter((q) => q.asked_page === selected + 1 || q.answer_page === selected + 1).map((q) => <p className="hint" key={q.id}>第 {q.asked_page} 页提出：{q.quote} · {q.answer_page ? `第 ${q.answer_page} 页负责` : '待指定负责页'} · {q.status}</p>)}
+          {!ledger?.pending_questions.some((q) => q.asked_page === selected + 1 || q.answer_page === selected + 1) && <p className="hint">本页没有待核对的跨页承诺。</p>}
         </details>}
         {!!review.teaching?.tensor_contracts?.length && <details><summary>整课符号与形状约束</summary>
           {review.teaching.tensor_contracts.map((c) => <p className="hint" key={c.example_id}>例题 {c.example_id} · 源文第 {c.source_page ?? '未标记'} 页：{Object.entries(c.symbols).map(([name, dims]) => `${name} [${dims.join(', ')}]`).join('；')}</p>)}
@@ -98,9 +108,9 @@ export function ReviewPanel({ jobId, apiKey, apiBase, modelConfig, modelOrigin, 
         {timing?.pages[selected] && <p className="hint">本页预算 {timing.pages[selected].planned_minutes.toFixed(1)} 分钟，讲稿估算 {timing.pages[selected].estimated_minutes.toFixed(1)} 分钟{timing.pages[selected].actual_seconds != null ? `，实际音频 ${(timing.pages[selected].actual_seconds! / 60).toFixed(1)} 分钟` : ""}（保存后更新估算）。</p>}
         </div>
       </div>
-      <label className="checkrow"><input type="checkbox" checked={refreshPrompt} disabled={!review.editable || busy} onChange={(e) => setRefreshPrompt(e.target.checked)} />重写时使用当前内容类型的最新讲稿模板（替换任务旧提示词）</label>
       <div className="actions"><Button variant="outline" disabled={!review.editable || busy} onClick={() => apply("save")}>保存全部讲稿修改</Button><Button variant="outline" disabled={!review.editable || busy || (modelOrigin !== 'v2' && !apiKey.trim())} onClick={() => apply("regenerate")}>调用模型重写本页</Button></div>
-      <CursorPicker options={cursors} style={style} scale={scale} disabled={!review.editable || busy} onStyle={(value) => { setStyle(value); setAccepted(false); }} onScale={(value) => { setScale(value); setAccepted(false); }} />
+      <label className="checkrow"><input type="checkbox" checked={refreshPrompt} disabled={!review.editable || busy} onChange={(e) => setRefreshPrompt(e.target.checked)} />重写本页时使用最新讲稿模板</label>
+      <details><summary>视频光标设置</summary><CursorPicker options={cursors} style={style} scale={scale} disabled={!review.editable || busy} onStyle={(value) => { setStyle(value); setAccepted(false); }} onScale={(value) => { setScale(value); setAccepted(false); }} /></details>
       <label className="checkrow"><input type="checkbox" checked={accepted} disabled={!review.editable || busy} onChange={(e) => setAccepted(e.target.checked)} />{modelConfig?.evaluation?.enabled ? '已核对全部内容，手动确认继续（问答未通过时也继续）' : '已核对所有课件和讲稿，确认开始配音与合片'}</label>
       {teachingNeedsSave && <p className="hint">讲稿已修改，请先保存，重新核验例题与时长预算。</p>}
       <div className="actions"><Button theme="primary" loading={busy} disabled={!review.editable || !accepted || busy || teachingNeedsSave || review.teaching?.passed === false} onClick={() => apply("render")}>确认并生成配音视频</Button></div>

@@ -18,7 +18,7 @@ export function EvaluationSettings({ value, onChange, task = false, disabled = f
       ...(name === 'video' ? { standard_threshold: updated.video.threshold, minimum_threshold: Math.min(policy.minimum_threshold, updated.video.threshold) } : {}) });
   };
   return <Section anchor={task ? undefined : 'evaluation'} number={task ? undefined : '07'} title={task ? '此任务的评估配置' : '评估配置'} compact={task}
-    summary={policy.enabled ? `已选 ${selected} 项 · 分别设置通过线` : '已关闭'} defaultOpen={!task} important
+    summary={policy.enabled ? `已选 ${selected} 项 · 分别设置通过线` : '已关闭'} defaultOpen={false} important
     help="选择需要评价的部分，各项独立判断；所有勾选项目通过才算成片通过。评价异常时暂停复核，未选项目不调用评价模型。每次修复前保存成片、讲稿、配置与评价快照，新成片另存版本。">
     <fieldset className="evaluation-settings" disabled={disabled}>
       <legend className="sr-only">评估项目与通过门槛</legend>

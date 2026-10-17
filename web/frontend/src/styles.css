@@ -284,7 +284,7 @@ details { min-width: 0; margin-block: var(--space-3); padding: 0 var(--space-4);
 details[open] { padding-bottom: var(--space-4); }
 details > summary { display: flex; align-items: center; gap: var(--space-3); min-height: 48px; margin-inline: calc(-1 * var(--space-4)); padding: var(--space-3) var(--space-4); border-radius: 7px; color: var(--paper-ink); font: 600 13px/1.6 var(--font-sans); cursor: pointer; list-style: none; }
 details > summary::-webkit-details-marker { display: none; }
-details > summary::after { content: ''; width: 8px; height: 8px; margin-left: auto; margin-right: 3px; flex: none; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); }
+details > summary::after { content: ''; width: 8px; height: 8px; margin-left: auto; margin-right: 3px; flex: none; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform var(--section-duration) ease; }
 details[open] > summary { margin-bottom: var(--space-4); border-bottom: 1px solid var(--paper-rule); border-radius: 7px 7px 0 0; }
 details[open] > summary::after { transform: rotate(45deg); }
 details > summary:hover { background: var(--paper-hover); }
@@ -292,6 +292,26 @@ details > summary:focus-visible, .section-toggle:focus-visible { outline: 2px so
 details details { background: var(--paper-surface); }
 details p, details li { font-size: 13px; line-height: 1.8; }
 details > :last-child { margin-bottom: 0; }
+/* 原生折叠保留语义与键盘操作；关闭时延后隐藏内容，展开和收起均按真实高度过渡。
+   间距放入同一动画盒，避免 summary 外边距与 details 内边距在切换时跳变。 */
+@supports (interpolate-size: allow-keywords) and selector(details::details-content) {
+  details { interpolate-size: allow-keywords; }
+  details[open] { padding-bottom: 0; }
+  details > summary { border-bottom: 1px solid transparent; }
+  details[open] > summary { margin-bottom: 0; border-bottom-color: var(--paper-rule); }
+  details::details-content {
+    display: flow-root;
+    block-size: 0;
+    padding-block: 0;
+    overflow: clip;
+    opacity: 0;
+    transition: block-size var(--section-duration) cubic-bezier(.4, 0, .2, 1),
+      padding-block var(--section-duration) cubic-bezier(.4, 0, .2, 1),
+      opacity var(--section-duration) ease,
+      content-visibility var(--section-duration) allow-discrete;
+  }
+  details[open]::details-content { block-size: auto; padding-block: var(--space-4); opacity: 1; }
+}
 .section-content > :first-child { margin-top: 0; }
 .section-content > :last-child { margin-bottom: 0; }
 .section-content > .editorial-section-compact { margin-top: var(--space-3); }
@@ -954,7 +974,7 @@ video { width: 100%; border-radius: var(--td-radius-default); background: #000; 
 @media (max-width: 680px) { .cursor-choices { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 640px) { .review-grid { grid-template-columns: 1fr; } .course-table th, .course-table td { padding: 6px 4px; } }
 @media (prefers-reduced-motion: reduce) {
-  .section-reveal { --section-duration: 0s; }
+  :root { --section-duration: 0s; }
   html { scroll-behavior: auto; }
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }

@@ -984,6 +984,58 @@ video { width: 100%; border-radius: var(--td-radius-default); background: #000; 
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
 
+/* 课件视觉方案：样片保持自身配色，操作区域沿用工作台的明暗主题。 */
+.ppt-intro { margin: 0 0 var(--space-4); color: var(--paper-ink-soft); font-size: 13px; }
+.ppt-theme-picker { min-width: 0; padding: 0; margin: 0 0 var(--space-5); border: 0; }
+.ppt-theme-picker legend { margin-bottom: var(--space-2); color: var(--paper-ink-soft); font-size: 12px; }
+.ppt-theme-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-3); }
+.ppt-theme-choice { position: relative; display: flex; flex-direction: column; align-items: stretch; gap: var(--space-2); min-width: 0; padding: var(--space-2); border: 1px solid var(--paper-rule); border-radius: 6px; background: var(--paper-surface); cursor: pointer; transition: border-color .2s ease, background-color .2s ease; }
+.ppt-theme-choice:hover { border-color: var(--paper-accent-soft); background: var(--paper-hover); }
+.ppt-theme-choice[data-selected="true"] { border-color: var(--paper-accent); box-shadow: inset 0 0 0 1px var(--paper-accent); }
+.ppt-theme-choice input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.ppt-theme-choice:has(input:focus-visible) { outline: 2px solid var(--paper-accent); outline-offset: 3px; }
+.ppt-theme-thumbnail { display: block; overflow: hidden; border-radius: 3px; }
+.ppt-theme-thumbnail .ppt-slide { border: 0; border-radius: 0; }
+.ppt-theme-name { position: relative; display: flex; align-items: center; justify-content: center; min-height: 24px; color: var(--paper-ink); font-size: 13px; font-weight: 600; text-align: center; }
+.ppt-theme-check { position: absolute; right: var(--space-1); color: var(--paper-accent); }
+.ppt-theme-description { color: var(--paper-ink-soft); font-size: 11px; text-align: center; }
+.ppt-workbench { display: grid; grid-template-columns: minmax(0, 1.8fr) minmax(232px, 1fr); align-items: start; gap: var(--space-5); }
+.ppt-preview-column { min-width: 0; }
+.ppt-preview-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2); margin-bottom: var(--space-3); min-height: 36px; }
+.ppt-page-switch { display: inline-flex; align-items: center; gap: var(--space-1); padding: var(--space-1); border: 1px solid var(--paper-rule); border-radius: 5px; background: var(--paper-fold); }
+.ppt-page-switch button { display: inline-flex; align-items: center; justify-content: center; min-height: 30px; padding: var(--space-1) var(--space-3); border: 0; border-radius: 3px; color: var(--paper-ink-soft); background: transparent; font: inherit; font-size: 12px; cursor: pointer; transition: background-color .2s ease, color .2s ease; }
+.ppt-page-switch button[aria-pressed="true"] { color: var(--paper-on-accent); background: var(--paper-accent); }
+.ppt-page-switch button:focus-visible { outline: 2px solid var(--paper-accent); outline-offset: 2px; }
+.ppt-slide { display: block; width: 100%; height: auto; overflow: hidden; border: 1px solid var(--paper-rule-strong); border-radius: 5px; }
+.ppt-preview-note { margin: var(--space-3) 0 0; font-size: 12px; }
+.ppt-adjustments { padding: var(--space-4); border: 1px solid var(--paper-rule); border-radius: 5px; background: var(--paper-fold); }
+.ppt-adjustment-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); margin-bottom: var(--space-3); font-size: 13px; }
+.ppt-adjustment-head .linkbtn { min-height: 28px; margin: 0; font-size: 12px; }
+.ppt-controls { display: grid; gap: var(--space-3); min-width: 0; }
+.ppt-controls .field { min-width: 0; margin: 0; }
+.ppt-controls .field > label { display: block; margin-bottom: var(--space-2); line-height: 1.5; }
+.ppt-controls select { width: 100%; min-width: 0; min-height: 40px; padding: var(--space-2); border: 1px solid var(--paper-rule-strong); border-radius: 3px; background: var(--paper-surface); color: var(--paper-ink); font: inherit; font-size: 12px; }
+.ppt-controls select:focus-visible { outline: 2px solid var(--paper-accent); outline-offset: 2px; }
+.ppt-controls small { display: block; margin-top: var(--space-1); color: var(--paper-ink-soft); font-size: 11px; }
+.ppt-control-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
+.ppt-current { margin: var(--space-4) 0 0; padding: var(--space-3) var(--space-4); border-left: 2px solid var(--paper-accent); background: var(--paper-info-bg); color: var(--paper-ink-soft); font-size: 12px; overflow-wrap: anywhere; }
+.ppt-dialog { padding: var(--space-1) 0; }
+.ppt-dialog .ppt-controls { padding: var(--space-4); background: var(--paper-fold); border: 1px solid var(--paper-rule); border-radius: 5px; }
+.t-dialog.ppt-preview-dialog { display: flex; flex-direction: column; max-height: calc(100dvh - 96px); }
+.ppt-preview-dialog .t-dialog__header, .ppt-preview-dialog .t-dialog__footer { flex: none; }
+.ppt-preview-dialog .t-dialog__body { min-height: 0; overflow-y: auto; }
+@media (max-width: 800px) {
+  .ppt-workbench { grid-template-columns: minmax(0, 1fr); gap: var(--space-4); }
+  .ppt-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+  .ppt-control-pair { grid-column: 1 / -1; }
+}
+@media (max-width: 480px) {
+  .ppt-theme-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ppt-controls { grid-template-columns: minmax(0, 1fr); }
+  .ppt-theme-description { font-size: 10px; }
+  .ppt-preview-dialog { padding: var(--space-4); }
+}
+
 /* 小屏放宽版心 */
 @media (max-width: 640px) {
   .sheet { padding: 0 16px 64px; }

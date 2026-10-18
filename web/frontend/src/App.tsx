@@ -25,6 +25,8 @@ import { Help, Section } from './Section';
 import { SourceReview } from './SourceReview';
 import { JobHistory, type HistoryJob } from './JobHistory';
 import { ViewPages, ViewTabs, type ViewId } from './ViewNavigation';
+import { SlideDesignPanel } from './SlideDesignPanel';
+import { composeSlidePrompt, defaultSlideDesign, slideDesignSummary, type SlideDesign } from './slideDesign';
 
 /* ─────────────────────────────────────────────────────────────
    接口层。三个注意点：
@@ -457,6 +459,8 @@ export default function App() {
   const [contentProfile, setContentProfile] = useState<ScriptPromptProfile["value"]>(initialDraft.contentProfile ?? "paper");
   const [scriptPrompt, setScriptPrompt] = useState(initialDraft.scriptPrompt ?? "");
   const [slidePrompt, setSlidePrompt] = useState(initialDraft.slidePrompt ?? "");
+  const [slideDesign, setSlideDesign] = useState<SlideDesign>(initialDraft.slideDesign ?? { ...defaultSlideDesign });
+  const resolvedSlidePrompt = useMemo(() => composeSlidePrompt(slidePrompt, slideDesign), [slidePrompt, slideDesign]);
   const [slideCount, setSlideCount] = useState<number | "">(initialDraft.slideCount ?? 12);
   const [courseEnabled, setCourseEnabled] = useState(initialDraft.courseEnabled ?? initialDraft.contentProfile === "textbook");
   const [courseSettings, setCourseSettings] = useState<CourseSettings>(() => {
@@ -711,7 +715,7 @@ export default function App() {
   }, [slidePromptTemplate]);
 
   useEffect(() => {
-    saveDraft({ schema_version: 2, model_config: modelConfig, preset, slideLang, scriptLang, contentProfile, scriptPrompt, slidePrompt,
+    saveDraft({ schema_version: 2, model_config: modelConfig, preset, slideLang, scriptLang, contentProfile, scriptPrompt, slidePrompt, slideDesign,
       scriptTemplate: promptTemplate || initialDraft.scriptTemplate || "",
       slideTemplate: slidePromptTemplate || initialDraft.slideTemplate || "",
       slideCount: Number(slideCount) || 12, generateTalking, ifTreeSearch, voiceMode,
@@ -720,7 +724,7 @@ export default function App() {
       portraitName: portraitFile?.name || initialDraft.portraitName || "",
       courseEnabled, courseSettings: JSON.stringify(courseSettings), textModel, visionModel, scriptConcurrency, cursorStyle, cursorScale, subtitleStyle });
   }, [preset, slideLang, scriptLang, contentProfile, scriptPrompt, slidePrompt,
-    promptTemplate, slidePromptTemplate, slideCount, generateTalking, ifTreeSearch, voiceMode,
+    promptTemplate, slidePromptTemplate, slideDesign, slideCount, generateTalking, ifTreeSearch, voiceMode,
     presetPick, designPrompt, uploadText, paperFile, portraitFile, initialDraft, courseEnabled, courseSettings, textModel, visionModel, scriptConcurrency, cursorStyle, cursorScale, subtitleStyle, modelConfig]);
 
   const doIngest = useCallback(async () => runExclusive(ingestLock, setIngesting, async () => {
@@ -755,7 +759,7 @@ export default function App() {
     if (avatarProblem) return MessagePlugin.warning(avatarProblem);
     if (modelConfig.stages.tts.mode === "local" && (voiceMode === "design" || (voiceMode === "preset" && (!presetPick?.sample_url || presetPick.spec.kind !== "upload")))) return MessagePlugin.warning("本地配音请选择默认、已保存音色或上传参考录音");
     if (!scriptPrompt.trim()) return MessagePlugin.warning("讲稿提示词不能为空");
-    if (!slidePrompt.trim() || slidePrompt.length > (opts?.slide_prompt_max_chars ?? 30000)) {
+    if (!slidePrompt.trim() || resolvedSlidePrompt.length > (opts?.slide_prompt_max_chars ?? 30000)) {
       return MessagePlugin.warning("请填写有效的幻灯片提示词，并检查字符上限");
     }
     if (!Number.isInteger(slideCount) || Number(slideCount) < (opts?.slide_count?.min ?? 4)
@@ -806,7 +810,7 @@ export default function App() {
         script_lang: scriptLang,
         paper_type: "auto",
         slide_count: slideCount,
-        slide_prompt: slidePrompt,
+        slide_prompt: resolvedSlidePrompt,
         content_profile: contentProfile,
         course: courseEnabled ? courseSettings : undefined,
         script_prompt: scriptPrompt,
@@ -829,7 +833,7 @@ export default function App() {
     }
     if (data.talking_note) MessagePlugin.info(data.talking_note);
   }, reportError), [ingest, portraitFile, preparePortrait, generateTalking, apiKey, apiBase, slideLang, scriptLang,
-      contentProfile, scriptPrompt, slidePrompt, slideCount, opts, ifTreeSearch,
+      contentProfile, scriptPrompt, slidePrompt, resolvedSlidePrompt, slideCount, opts, ifTreeSearch,
       voiceMode, presetPick, designPrompt, uploadSpec, uploadText, voiceSpecNow, selectJob,
       courseEnabled, coursePlan, courseSettings, textModel, visionModel, scriptConcurrency, cursorStyle, cursorScale, subtitleStyle, modelConfig]);
 
@@ -1013,7 +1017,7 @@ export default function App() {
   if (modelConfig.stages.tts.mode === "local" && (voiceMode === "design" || (voiceMode === "preset" && presetPick && (!presetPick.sample_url || presetPick.spec.kind !== "upload")))) missing.push("本地请选择默认、已保存音色或上传录音");
   if (!textModel.trim() || !visionModel.trim()) missing.push("选择文字和视觉模型");
   if (!Number.isInteger(scriptConcurrency) || scriptConcurrency < 1 || scriptConcurrency > 8) missing.push("填写 1～8 的整数并发数");
-  if (!slidePrompt.trim() || slidePrompt.length > (opts?.slide_prompt_max_chars ?? 30000)) missing.push("检查幻灯片提示词");
+  if (!slidePrompt.trim() || resolvedSlidePrompt.length > (opts?.slide_prompt_max_chars ?? 30000)) missing.push("检查幻灯片提示词（含风格设置后的总长度）");
   if (!scriptPrompt.trim() || scriptPrompt.length > (opts?.script_prompt_max_chars ?? 20000)) missing.push("检查讲稿提示词");
   if (!Number.isInteger(slideCount) || Number(slideCount) < (opts?.slide_count?.min ?? 4)
       || Number(slideCount) > (opts?.slide_count?.max ?? 40)) missing.push("填写有效的整数页数");
@@ -1117,8 +1121,9 @@ export default function App() {
         <nav aria-label="新任务分区"><p className="sidebar-label">项目设置</p>
           {[
             ['material', '01', '素材'], ['language', '02', '语言与内容'],
-            ...(courseEnabled ? [['teaching', '03', '教学范围']] : []),
-            ['credentials', '04', '模型配置'], ['voice', '05', '音色'], ['cursor', '06', '光标与字幕'], ['evaluation', '07', '评估配置'], ['prepare', '08', '生成与审核'],
+            ['slides', '03', 'PPT 风格与布局'],
+            ...(courseEnabled ? [['teaching', '04', '教学范围']] : []),
+            ['credentials', '05', '模型配置'], ['voice', '06', '音色'], ['cursor', '07', '光标与字幕'], ['evaluation', '08', '评估配置'], ['prepare', '09', '生成与审核'],
           ].map(([anchor, number, title]) => <a key={anchor} href={'#' + anchor} onClick={(event) => {
             if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
             const section = document.getElementById(anchor);
@@ -1325,7 +1330,7 @@ export default function App() {
           <div className="prompt-head">
             <label>幻灯片生成提示词（可编辑）</label>
             <span className="prompt-count">
-              {slidePrompt.length} / {opts?.slide_prompt_max_chars ?? 30000}
+              含风格设置 {resolvedSlidePrompt.length} / {opts?.slide_prompt_max_chars ?? 30000}
             </span>
           </div>
           <textarea
@@ -1399,16 +1404,17 @@ export default function App() {
       </div>
         {languageNotice && courseEnabled && <p className="notice info" role="status">{languageNotice}</p>}
       </Section>
+      <SlideDesignPanel value={slideDesign} onChange={setSlideDesign} language={slideLang} />
       {courseEnabled && <CoursePanel ingestId={ingest?.ingest_id} settings={courseSettings} onSettings={setCourseSettings}
         slideCount={slideCount} scriptLang={scriptLang} onPlan={setCoursePlan} />}
 
       {/* 模型决定音色路径：本地复用参考音频，API 选择独立云音色。 */}
-      <Section anchor="credentials" number="04" title="模型配置" defaultOpen={false} summary={modelConfig.preset === 'bailian_api' ? '百炼 API 方案' : modelConfig.preset === 'local_existing' ? '保留现有本地推理' : '自定义组合'} important>
+      <Section anchor="credentials" number="05" title="模型配置" defaultOpen={false} summary={modelConfig.preset === 'bailian_api' ? '百炼 API 方案' : modelConfig.preset === 'local_existing' ? '保留现有本地推理' : '自定义组合'} important>
         {!initialDraft.model_config && (initialDraft.textModel || initialDraft.visionModel) && <p className="notice warn">已保留旧草稿的型号与本地路线，未沿用浏览器密钥。请添加兼容连接并重新选择；不会自动改成百炼默认。</p>}
         <ModelSettings value={modelConfig} options={opts?.model_configuration} concurrency={scriptConcurrency} onChange={setModelConfig} onConcurrency={setScriptConcurrency} voice={voiceSpecNow()} preparePortrait={preparePortrait} portraitKey={portraitFile} onConnectionsChange={setModelConnections} />
       </Section>
 
-      <Section anchor="voice" number="05" title="音色" defaultOpen={false} summary={modelConfig.stages.tts.mode === 'api' ? cloudVoice?.label ?? '待选择云音色' : voiceMode === 'default' ? '内置默认音色' : voiceMode === 'preset' ? presetPick?.label ?? '待选择音色' : voiceMode === 'design' ? '描述生成' : '上传参考音频'} important={voiceMode === 'upload'} help={<>
+      <Section anchor="voice" number="06" title="音色" defaultOpen={false} summary={modelConfig.stages.tts.mode === 'api' ? cloudVoice?.label ?? '待选择云音色' : voiceMode === 'default' ? '内置默认音色' : voiceMode === 'preset' ? presetPick?.label ?? '待选择音色' : voiceMode === 'design' ? '描述生成' : '上传参考音频'} important={voiceMode === 'upload'} help={<>
         <p>本地配音支持内置音色、以前保存的预置或设计样本，以及上传参考音频。选择已保存音色与试听都不会重新生成。</p>
         <p>预置及设计样本按讲稿语言筛选；上传音频需自行核对语言，跨语言克隆可能影响发音。API 配音请在云音色面板选择与当前连接、型号兼容的资源。</p>
       </>}>
@@ -1557,14 +1563,14 @@ export default function App() {
         </div>
       </Section>
 
-      <Section anchor="cursor" number="06" title="光标与字幕" defaultOpen={false} summary={opts?.cursors?.find((item) => item.value === cursorStyle)?.label ?? '红色光点'} help="选择视频光标与字幕样式，可在任务详情和审核合片前调整。只改变最终画面，不改变讲稿或音频。">
+      <Section anchor="cursor" number="07" title="光标与字幕" defaultOpen={false} summary={opts?.cursors?.find((item) => item.value === cursorStyle)?.label ?? '红色光点'} help="选择视频光标与字幕样式，可在任务详情和审核合片前调整。只改变最终画面，不改变讲稿或音频。">
         <CursorPicker options={opts?.cursors ?? []} style={cursorStyle} scale={cursorScale} onStyle={setCursorStyle} onScale={setCursorScale} />
         <SubtitleSettings value={subtitleStyle} onChange={setSubtitleStyle} />
       </Section>
 
       </fieldset>
       <EvaluationSettings value={modelConfig} onChange={setModelConfig} />
-      <Section anchor="prepare" number="08" title="生成与审核" defaultOpen={false} label="创建新任务" summary={missing.length ? '待完善设置' : '准备就绪'} important help={<>
+      <Section anchor="prepare" number="09" title="生成与审核" defaultOpen={false} label="创建新任务" summary={missing.length ? '待完善设置' : '准备就绪'} important help={<>
         <p>先生成课件与讲稿。开启讲稿评价时，达到通过线后自动配音合片，否则等待复核或手动继续；仅选成片评价时，讲稿完成后继续生成。关闭质量评估时保持人工审核流程。</p>
         <p>成片达到标准线后完成；低于最低线时按错题反馈自动重生成，最多按设置次数执行；介于两条线之间时由你决定。自动重生成会新增模型费用。</p>
         <p>生成等待时间与成片播放时长分别计算。长课程尚无完整耗时标定；讲稿阶段动态估计剩余等待时间，配音合片以实际进度为准。新任务按队列串行执行。</p>
@@ -1576,6 +1582,7 @@ export default function App() {
           {` · 音色：${voiceMode === "default" ? "内置默认" : voiceMode === "preset" ? presetPick?.label || "未选择" : voiceMode === "design" ? "描述生成" : "上传参考音频"}`}
         </p>
         {generateTalking && !portraitFile && <p className="notice warn">开启数字人时肖像必填；上传肖像或关闭数字人后再创建任务。</p>}
+        <p className="hint">PPT 方案：{slideDesignSummary(slideDesign)} · 可在“PPT 风格与布局”中再次调整。</p>
         {modelConfig.evaluation?.enabled && <p className="notice info"><strong>问答门禁已开启</strong> · 讲稿 {modelConfig.evaluation.script_threshold}% · 成片最低 {modelConfig.evaluation.minimum_threshold}% / 标准 {modelConfig.evaluation.standard_threshold}% · 自动重生成最多 {modelConfig.evaluation.max_auto_retries} 次</p>}
         <p className="hint">
           {!courseEnabled && est ? `本地配音与合片参考 ${est.lo}～${est.hi} 分钟（${est.slides} 页） · ` : ''}

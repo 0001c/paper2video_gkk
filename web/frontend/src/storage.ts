@@ -1,5 +1,6 @@
 import { readModelConfig, type ModelConfig } from "./modelConfig";
 import { readSubtitleStyle, type SubtitleStyle } from "./subtitleStyle";
+import { readSlideDesign, type SlideDesign } from "./slideDesign";
 
 const NS = "p2v";
 
@@ -89,6 +90,7 @@ export type Draft = {
   scriptTemplate: string;
   slideTemplate: string;
   slideCount: number;
+  slideDesign?: SlideDesign;
   generateTalking: boolean;
   ifTreeSearch: boolean;
   voiceMode: "default" | "preset" | "design" | "upload";
@@ -114,6 +116,8 @@ export function loadDraft(): Partial<Draft> {
     const draft: Record<string, unknown> = {};
     const modelConfig = readModelConfig(raw.model_config);
     const subtitleStyle = readSubtitleStyle(raw.subtitleStyle);
+    const slideDesign = readSlideDesign(raw.slideDesign);
+    if (slideDesign) draft.slideDesign = slideDesign;
     if (subtitleStyle) draft.subtitleStyle = subtitleStyle;
     if (modelConfig) { draft.schema_version = 2; draft.model_config = modelConfig; }
     for (const key of ["preset", "scriptPrompt", "slidePrompt", "scriptTemplate", "slideTemplate",
@@ -146,6 +150,7 @@ export function saveDraft(draft: Draft) {
   const clean = Object.fromEntries(allowed.filter((key) => draft[key] !== undefined).map((key) => [key, draft[key]]));
   const modelConfig = readModelConfig(draft.model_config);
   const subtitleStyle = readSubtitleStyle(draft.subtitleStyle);
+  const slideDesign = readSlideDesign(draft.slideDesign);
   safeSet(KEYS.apiKey, null);
-  safeSet(KEYS.draft, JSON.stringify({ ...clean, schema_version: 2, ...(modelConfig ? { model_config: modelConfig } : {}), ...(subtitleStyle ? { subtitleStyle } : {}) }));
+  safeSet(KEYS.draft, JSON.stringify({ ...clean, schema_version: 2, ...(modelConfig ? { model_config: modelConfig } : {}), ...(subtitleStyle ? { subtitleStyle } : {}), ...(slideDesign ? { slideDesign } : {}) }));
 }

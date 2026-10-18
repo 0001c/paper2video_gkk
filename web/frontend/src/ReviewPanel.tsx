@@ -1,3 +1,4 @@
+import { FormSelect } from './FormSelect';
 import { useEffect, useRef, useState } from "react";
 import { Button } from "tdesign-react";
 import { api, errorMessage, runExclusive } from "./flow";
@@ -89,7 +90,7 @@ export function ReviewPanel({ jobId, apiKey, apiBase, modelConfig, modelOrigin, 
       </div>}
       {delta != null && Math.abs(delta) > 0.1 && <p className="notice warn">实际时长超出目标 ±10%。可调整相应页讲稿，再重新配音合片；系统不会强行放慢语音或重复内容。</p>}
       {delta == null && estimatedDelta != null && Math.abs(estimatedDelta) > 0.1 && <p className="notice warn">当前讲稿估算与目标相差 {(estimatedDelta * 100).toFixed(1)}%。请在配音前检查讲稿是否覆盖教学内容，并按需要补充讲解或调整长度；此估算仍需用实际音频校准。</p>}
-      <div className="field"><label htmlFor="review-page">查看页码</label><select id="review-page" value={selected} disabled={busy} onChange={(e) => setSelected(Number(e.target.value))}>{pages.map((_, i) => <option key={i} value={i}>第 {i + 1} 页{timing?.pages[i] ? ` · ${timing.pages[i].section}` : ""}</option>)}</select></div>
+      <div className="field"><label htmlFor="review-page">查看页码</label><FormSelect id="review-page" value={selected} disabled={busy} onChange={choice => setSelected(Number(choice))}>{pages.map((_, i) => <option key={i} value={i}>第 {i + 1} 页{timing?.pages[i] ? ` · ${timing.pages[i].section}` : ""}</option>)}</FormSelect></div>
       <div className="review-grid">
         <figure className="review-slide"><a href={`/api/jobs/${jobId}/files/slide_imgs/${selected + 1}.png?v=${review.version}`} target="_blank" rel="noreferrer"><img alt={`第 ${selected + 1} 页课件`} src={`/api/jobs/${jobId}/files/slide_imgs/${selected + 1}.png?v=${review.version}`} /></a><figcaption>第 {selected + 1} 页课件 · 点击查看大图</figcaption></figure>
         <div className="field"><div className="field-title"><label htmlFor="review-script">第 {selected + 1} 页讲稿与光标目标</label><Help title="讲稿输出格式" important>每行保留“讲稿 | 光标目标”，目标引用本页可见文字；没有目标写 no。页面分隔由系统维护。</Help></div><textarea id="review-script" rows={14} maxLength={20000} disabled={!review.editable || busy} value={pages[selected] ?? ""} onChange={(e) => { setPages(pages.map((p, i) => i === selected ? e.target.value : p)); setAccepted(false); setSuccess(""); }} />

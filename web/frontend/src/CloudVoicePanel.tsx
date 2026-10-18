@@ -1,3 +1,4 @@
+import { FormSelect } from './FormSelect';
 import { useEffect, useId, useRef, useState } from "react";
 import { Button } from "tdesign-react";
 import { api, errorMessage, runExclusive } from "./flow";
@@ -60,11 +61,11 @@ export function CloudVoicePanel({ stage, value, onChange }: {
   return <div className="cloud-voice-panel" aria-busy={busy}>
     <p className="notice info">API配音不读取本地默认录音，也不调用旧MiMo。系统音色和已验证复刻音色支持时间戳；设计音色兼容性未确认，不能用于视频链路。</p>
     <div className="field"><label htmlFor={`${prefix}-select`}>百炼音色 · {stage.model}</label>
-      <select id={`${prefix}-select`} disabled={busy} value={selected?.resource_id ?? ""} onChange={(event) => {
-        const chosen = voices.find((voice) => voice.resource_id === event.target.value); onChange(chosen); setSample(chosen?.sample_url ?? "");
+      <FormSelect id={`${prefix}-select`} disabled={busy} value={selected?.resource_id ?? ""} onChange={choice => {
+        const chosen = voices.find((voice) => voice.resource_id === choice); onChange(chosen); setSample(chosen?.sample_url ?? "");
       }}><option value="">请选择此型号、此连接的音色</option>{voices.map((voice) => <option key={voice.resource_id} value={voice.resource_id}>
         {voice.label} · {voice.kind === "system" ? "系统" : voice.kind === "design" ? "设计 / 仅试听" : "复刻"} · {voice.status === "OK" && voice.timestamp_status === "supported" ? "可用于视频" : "待验证"}
-      </option>)}</select>
+      </option>)}</FormSelect>
       <p className="hint">没有现成音色？可选择 cosyvoice-v3-flash 使用龙安洋，或为当前型号注册/创建专属音色。音色不能跨型号或业务空间复用。</p>
     </div>
     <div className="actions">

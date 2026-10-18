@@ -62,6 +62,7 @@ from web import model_catalog
 from web import video_versions
 from web import notifications
 from web import public_access
+from web import course_assistant
 from web.cloud_voices import VoiceStore, VoiceReference, VoiceRegister, VoiceGenerate, VoicePreview
 
 # 结构化进度的读写约定与流水线共用同一个模块（progress_report），
@@ -141,7 +142,7 @@ async def review_body_limit(request, call_next):
     path = request.url.path
     connection_request = path.startswith(('/api/model-connections', '/api/notifications/'))
     remote_request = path.endswith('/remote-tasks/reconcile')
-    model_request = remote_request or connection_request or path.startswith('/api/cloud-voices') or path == '/api/model-config/validate' or path == '/api/jobs' or path.endswith(('/rerun', '/prepare-retry', '/model-connections/rebind', '/cancel'))
+    model_request = remote_request or connection_request or path.startswith('/api/cloud-voices') or path in ('/api/model-config/validate', '/api/course/assist', '/api/jobs') or path.endswith(('/rerun', '/prepare-retry', '/model-connections/rebind', '/cancel'))
     review_request = path.endswith(('/review', '/review/run')) or path == '/api/course/plan'
     if request.method in ('PUT', 'POST', 'PATCH', 'DELETE') and (model_request or review_request):
         limit = 16384 if remote_request or connection_request or path.startswith('/api/cloud-voices') else 512000 if review_request else 262144
@@ -200,6 +201,17 @@ class CoursePlanRequest(BaseModel):
     settings: dict
     slide_count: int = Field(ge=4, le=40)
     script_lang: str = Field(pattern="^(zh|en)$")
+
+
+class CourseAssistRequest(CoursePlanRequest):
+    text_model: model_settings.TextStage
+
+    def roles(self):
+        # 复用连接快照和模型目录校验，但只要求文字角色配置完整。
+        return {'text': self.text_model}
+
+
+_COURSE_ASSIST_LOCK = asyncio.Lock()
 
 
 class ReviewRequest(BaseModel):
@@ -294,6 +306,31 @@ async def api_course_plan(payload: CoursePlanRequest, request: Request):
     except ValueError as exc:
         raise HTTPException(422, detail=str(exc))
     return course.public_plan(plan)
+
+
+@app.post('/api/course/assist')
+async def api_course_assist(payload: CourseAssistRequest, request: Request):
+    _local_write(request)
+    work = _upload_work(payload.ingest_id)
+    if not work or not os.path.isdir(work):
+        raise HTTPException(404, detail='ingest_id：内容不存在')
+    try:
+        plan, source = course.build_plan(_course_source(work), payload.settings, payload.slide_count, payload.script_lang)
+    except ValueError as exc:
+        raise HTTPException(422, detail=str(exc))
+    if not plan['audience']:
+        raise model_settings.ConfigurationError('settings.audience', '请填写学生基础 / 受众')
+    stage = payload.text_model
+    if not stage.connection_id or (stage.provider == 'bailian' and stage.mode != 'api'):
+        raise model_settings.ConfigurationError('text_model.connection_id', '请选择有效的文字模型运行方式与连接')
+    snapshots, keys = _MODEL_CONNECTIONS.freeze(payload, ['text'])
+    _MODEL_CATALOG.validate(payload, ['text'], snapshots)
+    _MODEL_CATALOG.annotate_limits(snapshots, payload, ['text'])
+    if _COURSE_ASSIST_LOCK.locked():
+        raise HTTPException(429, detail='教学建议正在生成，请等待完成后再试')
+    async with _COURSE_ASSIST_LOCK:
+        return await asyncio.to_thread(course_assistant.generate_suggestion, stage, snapshots[stage.connection_id],
+            keys[stage.connection_id], plan, source, work)
 
 
 def _review_snapshot(job):

@@ -1,3 +1,4 @@
+import { FormSelect } from './FormSelect';
 import { useId, useState } from 'react';
 import { Button, Dialog } from 'tdesign-react';
 import { Section } from './Section';
@@ -74,12 +75,12 @@ function DesignControls({ value, onChange, includeTheme = false }: { value: Slid
   const id = useId();
   const update = (change: Partial<SlideDesign>) => onChange({ ...value, ...change });
   return <div className="ppt-controls">
-    {includeTheme && <div className="field"><label htmlFor={id + '-theme'}>PPT 风格</label><select id={id + '-theme'} value={value.theme} onChange={event => update({ theme: event.target.value as SlideDesign['theme'] })}>{slideThemes.map(theme => <option key={theme.id} value={theme.id}>{theme.label}</option>)}</select></div>}
-    <div className="field"><label htmlFor={id + '-layout'}>内容页布局</label><select id={id + '-layout'} value={value.layout} onChange={event => update({ layout: event.target.value as SlideDesign['layout'] })}>{slideLayouts.map(layout => <option key={layout.id} value={layout.id}>{layout.label}</option>)}</select><small>{slideLayouts.find(layout => layout.id === value.layout)!.description}</small></div>
-    <div className="field"><label htmlFor={id + '-density'}>内容疏密</label><select id={id + '-density'} value={value.density} onChange={event => update({ density: event.target.value as SlideDesign['density'] })}>{slideDensities.map(density => <option key={density.id} value={density.id}>{density.label}</option>)}</select></div>
+    {includeTheme && <div className="field"><label htmlFor={id + '-theme'}>PPT 风格</label><FormSelect id={id + '-theme'} value={value.theme} onChange={choice => update({ theme: choice as SlideDesign['theme'] })}>{slideThemes.map(theme => <option key={theme.id} value={theme.id}>{theme.label}</option>)}</FormSelect></div>}
+    <div className="field"><label htmlFor={id + '-layout'}>内容页布局</label><FormSelect id={id + '-layout'} value={value.layout} onChange={choice => update({ layout: choice as SlideDesign['layout'] })}>{slideLayouts.map(layout => <option key={layout.id} value={layout.id}>{layout.label}</option>)}</FormSelect><small>{slideLayouts.find(layout => layout.id === value.layout)!.description}</small></div>
+    <div className="field"><label htmlFor={id + '-density'}>内容疏密</label><FormSelect id={id + '-density'} value={value.density} onChange={choice => update({ density: choice as SlideDesign['density'] })}>{slideDensities.map(density => <option key={density.id} value={density.id}>{density.label}</option>)}</FormSelect></div>
     <div className="ppt-control-pair">
-      <div className="field"><label htmlFor={id + '-font'}>字体气质</label><select id={id + '-font'} value={value.font} onChange={event => update({ font: event.target.value as SlideDesign['font'] })}><option value="sans">简洁无衬线</option><option value="serif">典雅衬线</option></select></div>
-      <div className="field"><label htmlFor={id + '-ratio'}>画幅</label><select id={id + '-ratio'} value={value.ratio} onChange={event => update({ ratio: event.target.value as SlideDesign['ratio'] })}><option value="wide">16:9 宽屏</option><option value="standard">4:3 标准</option></select></div>
+      <div className="field"><label htmlFor={id + '-font'}>字体气质</label><FormSelect id={id + '-font'} value={value.font} onChange={choice => update({ font: choice as SlideDesign['font'] })}><option value="sans">简洁无衬线</option><option value="serif">典雅衬线</option></FormSelect></div>
+      <div className="field"><label htmlFor={id + '-ratio'}>画幅</label><FormSelect id={id + '-ratio'} value={value.ratio} onChange={choice => update({ ratio: choice as SlideDesign['ratio'] })}><option value="wide">16:9 宽屏</option><option value="standard">4:3 标准</option></FormSelect></div>
     </div>
   </div>;
 }
@@ -89,7 +90,7 @@ export function SlideDesignPanel({ value, onChange, language }: { value: SlideDe
   const [page, setPage] = useState<PreviewPage>('content');
   const [expanded, setExpanded] = useState(false);
   const pageButtons = <div className="ppt-page-switch" role="group" aria-label="预览页面类型">{previewPages.map(item => <button type="button" key={item.id} aria-pressed={page === item.id} onClick={() => setPage(item.id)}>{item.label}</button>)}</div>;
-  return <Section anchor="slides" number="03" title="PPT 风格与布局" summary={slideDesignSummary(value)} help={<>
+  return <Section anchor="slides" number="04" title="PPT 风格与布局" summary={slideDesignSummary(value)} help={<>
     <p>选择配色与内容页布局，再预览封面、内容页和小结。调整即时应用到新任务，并保存在本机草稿中。</p>
     <p>预览采用示例内容，展示视觉方向；实际课件由模型根据素材生成，字体以服务端可用字体为准。生成后可在任务详情逐页审核。</p>
     <p>视觉设置会追加到幻灯片生成提示词，并优先于提示词中的旧视觉描述；保留你编辑的内容要求和讲稿。布局微调（树搜索）仍可在语言与内容的高级设置中选择。</p>

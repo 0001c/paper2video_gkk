@@ -8,7 +8,25 @@
 .model-role-row > div, .model-role-row .t-select { min-width: 0; }
 .model-role-row .hint, .connection-item .hint, .model-snapshot .hint { display: block; margin-top: 8px; overflow-wrap: anywhere; }
 .model-role-row .field { margin: 0; }
-.model-catalog-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-block: 16px; color: var(--paper-ink-soft); font-size: 12px; }
+.model-catalog-toolbar { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 12px; margin-block: 16px; color: var(--paper-ink-soft); font-size: 12px; }
+.model-catalog-toolbar > span, .model-catalog-toolbar > .checkline { display: inline-flex; align-items: center; min-height: 40px; margin: 0; line-height: 1.5; }
+.model-catalog-toolbar > .t-button { align-self: center; }
+.model-presets { padding-bottom: var(--space-4); border-bottom: 1px solid var(--paper-rule); }
+.model-preset-heading { display: flex; align-items: center; justify-content: center; gap: var(--space-2); margin-bottom: var(--space-3); color: var(--paper-ink-soft); font-size: 12px; }
+.model-preset-switcher { display: grid; grid-template-columns: 40px minmax(0, 240px) 40px; justify-content: center; gap: var(--space-3); align-items: center; }
+.model-preset-switcher > .t-button { width: 40px; height: 40px; padding: 0; }
+.model-preset-switcher svg, .model-check-split svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.model-preset-window { display: grid; min-height: 64px; overflow: hidden; text-align: center; }
+.model-preset-name { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-1); font-size: 18px; font-weight: 600; animation: model-preset-next 220ms ease-out both; }
+.model-preset-name[data-direction='-1'] { animation-name: model-preset-previous; }
+.model-preset-name small { font: 11px var(--font-mono); color: var(--paper-ink-faint); }
+@keyframes model-preset-next { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes model-preset-previous { from { opacity: 0; transform: translateX(-16px); } to { opacity: 1; transform: translateX(0); } }
+.model-check-split { display: inline-flex; max-width: 100%; align-items: stretch; }
+.model-check-split > .t-button { border-start-end-radius: 0; border-end-end-radius: 0; }
+.model-check-split > .t-dropdown > .t-button { width: 40px; height: 100%; padding-inline: 0; margin-inline-start: -1px; border-start-start-radius: 0; border-end-start-radius: 0; }
+.course-assist-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); margin-block: var(--space-4); }
+.course-assist-toolbar .hint { margin: 0; }
 .model-price-anchor { display: block; min-width: 0; }
 .model-option-name { display: block; width: 100%; }
 .model-price-link { border: 0; padding: 4px 0; background: transparent; color: var(--paper-accent); font: inherit; font-size: 12px; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
@@ -720,6 +738,10 @@ video { width: 100%; border-radius: var(--td-radius-default); background: #000; 
 .t-select-input:hover .t-input {
   border-color: var(--paper-accent-soft);
 }
+.form-select, .t-select { width: 100%; min-width: 0; }
+.t-select-input .t-input { min-height: 40px; height: 40px; padding: 0 0 0 12px; background: var(--paper-surface); border-radius: 3px; }
+.field .t-select-input .t-input__inner, .t-select-input .t-input__inner { min-width: 0; padding: 0; border: 0; background: transparent; font-size: 13px; }
+.t-select-input .t-input__suffix { display: flex; align-items: center; justify-content: center; align-self: stretch; width: 40px; min-width: 40px; height: 100%; margin: 0; border-left: 1px solid var(--paper-rule-strong); }
 
 /* ── 硬件栏：置于页眉下方，用来解释「为什么是这个时长」 ── */
 .hwbar {

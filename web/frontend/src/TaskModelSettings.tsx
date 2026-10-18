@@ -1,3 +1,4 @@
+import { FormSelect } from './FormSelect';
 import { useEffect, useRef, useState } from "react";
 import { Button } from "tdesign-react";
 import { api, errorMessage, runExclusive } from "./flow";
@@ -45,10 +46,10 @@ export function TaskModelSettings({ jobId, portraitPath, snapshot, value, connec
       <details><summary>重新绑定失效连接（同范围、同端点）</summary><p className="hint">先在管理连接中重建，填写原资源范围标识，再刷新可用连接。不会借用其他账号密钥或自动继续执行。</p>
         <Button variant="text" disabled={busy} onClick={reload}>刷新可用连接</Button>
         {Object.entries(snapshots).map(([identity, entry]) => <div className="field" key={identity}><label htmlFor={`rebind-${identity}`}>{entry.label ?? identity} · {entry.scope_id}</label>
-          <select id={`rebind-${identity}`} value={bindings[identity] ?? ""} onChange={(event) => setBindings((previous) => ({ ...previous, [identity]: event.target.value }))}>
+          <FormSelect id={`rebind-${identity}`} value={bindings[identity] ?? ""} onChange={choice => setBindings((previous) => ({ ...previous, [identity]: choice }))}>
             <option value="">不变</option>{connections.filter((connection) => connection.provider === entry.provider && connection.scope_id === entry.scope_id && connection.compatible_base_url === entry.compatible_base_url)
               .map((connection) => <option value={connection.id} key={connection.id}>{connection.label}</option>)}
-          </select></div>)}
+          </FormSelect></div>)}
         <Button variant="outline" loading={busy} disabled={busy} onClick={rebind}>重新绑定（不执行）</Button>
       </details>
       <details><summary>修改此任务下一次执行的模型组合</summary>

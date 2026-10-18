@@ -1,13 +1,15 @@
+import { FormSelect } from './FormSelect';
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { Button, Select } from "tdesign-react";
+import { Button, Dropdown, Select } from "tdesign-react";
 import { api, errorMessage, runExclusive } from "./flow";
 import { ModelConnections } from "./ModelConnections";
-import { Section } from "./Section";
+import { Help, Section } from "./Section";
 import { AvatarCostDialog } from './AvatarToggle';
 import { ModelPrice, ModelPriceProvider, type CatalogModel } from './ModelPrice';
 import { evaluationChecks, evaluationModelProblem, presetConfig, replaceStage, setTextParameter, roleLabels, roles, roleStage, bailianSpeechModels, type Connection, type ModelConfig, type ModelOptions, type Role, type Stage } from "./modelConfig";
 
 type Catalog = { items: CatalogModel[]; next_cursor: string | null; source: string; catalog_time: string | null; total: number; warnings: string[] };
+const presets = [["bailian_api", "百炼API"], ["local_existing", "本地模型"], ["custom", "自定义组合"]] as const;
 export function ModelSettings({ value, options, concurrency, onChange: publishChange, onConcurrency, voice = { kind: "default" }, portraitPath, preparePortrait, portraitKey, concurrencyEditable = true, onConnectionsChange }: {
   value: ModelConfig; options?: ModelOptions; concurrency: number; onChange: (value: ModelConfig) => void; onConcurrency: (value: number) => void;
   voice?: unknown; portraitPath?: string;
@@ -17,6 +19,7 @@ export function ModelSettings({ value, options, concurrency, onChange: publishCh
 }) {
   const prefix = useId();
   const [pendingAvatar, setPendingAvatar] = useState<ModelConfig>();
+  const [presetDirection, setPresetDirection] = useState(1);
   const onChange = (next: ModelConfig) => {
     if (next.avatar.enabled && next.avatar.mode === 'api' && (value.avatar.mode !== 'api' || !value.avatar.enabled)) setPendingAvatar(next);
     else publishChange(next);
@@ -104,20 +107,31 @@ export function ModelSettings({ value, options, concurrency, onChange: publishCh
     }, (error) => { if (current === checkVersion.current) { setCheckFailed(true); setCheckMessage(errorMessage(error)); } });
   };
   const connectedRoles = activeRoles.filter((item) => roleStage(value, item).connection_id);
+  const presetIndex = presets.findIndex(([preset]) => preset === value.preset);
+  const switchPreset = (direction: number) => {
+    setPresetDirection(direction);
+    applyPreset(presets[(presetIndex + direction + presets.length) % presets.length][0]);
+  };
+  const checkDisabled = !options?.recommended_models || busy || checking;
   return <ModelPriceProvider><div className="model-settings">
-    <div className="actions model-presets" aria-label="模型预设">
-      {([["bailian_api", "百炼 API 方案"], ["local_existing", "保留现有本地推理"], ["custom", "自定义组合"]] as const).map(([preset, label]) =>
-        <Button key={preset} variant={value.preset === preset ? "base" : "outline"} theme={value.preset === preset ? "primary" : "default"}
-          aria-pressed={value.preset === preset} onClick={() => applyPreset(preset)}>{label}</Button>)}
+    <div className="model-presets" role="group" aria-label="模型预设">
+      <div className="model-preset-heading"><span>模型预设</span><Help title="模型预设">选择整体方案，再展开需要调整的环节。切换方案保留素材、语言与课程设置。</Help></div>
+      <div className="model-preset-switcher">
+        <Button variant="outline" aria-label="上一个模型方案" onClick={() => switchPreset(-1)}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m12 5-5 5 5 5" /></svg></Button>
+        <div className="model-preset-window" aria-live="polite" aria-atomic="true"><span key={value.preset} className="model-preset-name" data-direction={presetDirection}>{presets[presetIndex][1]}<small>{presetIndex + 1} / {presets.length}</small></span></div>
+        <Button variant="outline" aria-label="下一个模型方案" onClick={() => switchPreset(1)}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m8 5 5 5-5 5" /></svg></Button>
+      </div>
     </div>
-    <p className="hint">选择整体方案，再展开需要调整的环节。切换方案保留素材、语言与课程设置。</p>
     <div className="model-catalog-toolbar"><span role="status" aria-live="polite">{busy ? '正在同步模型及费用…' : connections.length ? `已加载 ${Object.values(catalogs).reduce((total, catalog) => total + catalog.items.length, 0)} 个模型记录 · 按环节筛选` : '添加连接后自动获取模型及费用'}</span>
       <Button variant="text" loading={busy} disabled={!connections.length || busy} onClick={() => setCatalogReload((count) => count + 1)}>刷新模型与费用</Button>
       <label className="checkline"><input type="checkbox" checked={includeRetiring} onChange={(event) => setIncludeRetiring(event.target.checked)} />显示将下线 / 已下线</label></div>
     {options && !options.recommended_models && <p className="notice warn">后端尚未加载P2版本，请自行重载服务。页面不会改用旧目录接口或推理自检绕过。</p>}
     <div className="actions"><Button variant="outline" onClick={() => setDrawer(true)}>管理连接</Button>
-      <Button variant="outline" loading={checking && !checkingFull} disabled={!options?.recommended_models || busy || checking} onClick={() => check()}>检查准备阶段配置</Button>
-      <Button variant="text" loading={checking && checkingFull} disabled={!options?.recommended_models || busy || checking} onClick={() => check(true)}>检查全链路配置</Button></div>
+      <div className="model-check-split"><Button variant="outline" loading={checking} disabled={checkDisabled} onClick={() => check()}>{checking && checkingFull ? '检查全局配置' : '检查准备阶段配置'}</Button>
+        <Dropdown trigger="click" disabled={checkDisabled} placement="bottom-right" options={[{ content: '检查全局配置', value: 'full' }]} onClick={() => check(true)}>
+          <Button variant="outline" disabled={checkDisabled} aria-label="展开其他配置检查"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 8 5 5 5-5" /></svg></Button>
+        </Dropdown>
+      </div></div>
     {checkMessage && <p className={`notice ${checkFailed ? "warn" : "info"}`} role="status" aria-live="polite">{checkMessage}</p>}
     {value.evaluation?.enabled && options && !options.implemented.independent_quiz_answer_models && <p className="notice warn" role="alert"><strong>后端尚未加载独立出题与答题配置，请更新服务后再评价。</strong></p>}
     {connectedRoles.some((item) => !connections.some((entry) => entry.id === roleStage(value, item).connection_id)) && <p className="notice warn">部分连接尚未配置或已失效。请在下表重新选择；历史任务请使用独立的重新绑定入口，不会借用草稿密钥。</p>}
@@ -149,12 +163,12 @@ export function ModelSettings({ value, options, concurrency, onChange: publishCh
           summary={`${selected.mode === "api" ? "API" : "本地"} · ${selected.model} · ${needsConnection ? connectionLabel : "无需连接"}`}>
           <div className="model-role-row">
           <div><strong>{roleLabels[item]}</strong><span className="hint">{item === 'quiz' ? '仅从原文生成固定题库' : item === 'qa' ? '仅根据讲稿或成片答题' : item === "asr" ? "成片音轨与参考录音" : item === "text" || item === "vision" ? "准备阶段使用" : "审核后使用"}</span></div>
-          <div className="field"><label htmlFor={`${prefix}-mode-${item}`}>运行方式</label><select id={`${prefix}-mode-${item}`} value={selected.mode} onChange={(event) => changeMode(item, event.target.value as Stage["mode"])}><option value="api">调用 API</option><option value="local">本地{item === "text" || item === "vision" || (item === 'qa' || item === 'quiz') ? "兼容服务" : "推理"}</option></select></div>
-          <div className="field"><label htmlFor={`${prefix}-connection-${item}`}>连接</label>{needsConnection ? <select id={`${prefix}-connection-${item}`} value={selected.connection_id ?? ""} onChange={(event) => {
-            const connection = connections.find((entry) => entry.id === event.target.value);
-            onChange(replaceStage(value, item, { ...selected, connection_id: event.target.value, provider: connection?.provider ?? selected.provider }));
+          <div className="field"><label htmlFor={`${prefix}-mode-${item}`}>运行方式</label><FormSelect id={`${prefix}-mode-${item}`} value={selected.mode} onChange={choice => changeMode(item, choice as Stage["mode"])}><option value="api">调用 API</option><option value="local">本地{item === "text" || item === "vision" || (item === 'qa' || item === 'quiz') ? "兼容服务" : "推理"}</option></FormSelect></div>
+          <div className="field"><label htmlFor={`${prefix}-connection-${item}`}>连接</label>{needsConnection ? <FormSelect id={`${prefix}-connection-${item}`} value={selected.connection_id ?? ""} onChange={choice => {
+            const connection = connections.find((entry) => entry.id === choice);
+            onChange(replaceStage(value, item, { ...selected, connection_id: choice, provider: connection?.provider ?? selected.provider }));
           }}><option value="">请选择连接</option>{connections.filter((entry) => selected.mode === "local" ? entry.provider === "openai_compatible" : item === "text" || item === "vision" || (item === 'qa' || item === 'quiz') || entry.provider === "bailian")
-            .map((entry) => <option value={entry.id} key={entry.id}>{entry.label}</option>)}</select> : <span className="hint">无需云连接</span>}</div>
+            .map((entry) => <option value={entry.id} key={entry.id}>{entry.label}</option>)}</FormSelect> : <span className="hint">无需云连接</span>}</div>
           <div className="field" ref={(element) => element?.querySelector('input')?.setAttribute('id', `${prefix}-model-${item}`)}><label htmlFor={`${prefix}-model-${item}`}>型号 · {candidates.filter((candidate) => candidate.selectable).length} 个可选</label>
             <Select value={selected.model} filterable creatable={item === "text" || item === "vision" || (item === 'qa' || item === 'quiz')} options={choices}
             onPopupVisibleChange={(visible) => setOpenPicker(visible ? item : undefined)}
@@ -166,7 +180,7 @@ export function ModelSettings({ value, options, concurrency, onChange: publishCh
             <span className="hint">{!implemented ? "适配器待接入，不会回退本地" : currentCandidate?.status === "retired" ? "已下线，禁止新执行" : needsConnection ? item === 'tts' ? "原生HTTP流式配音，需云音色及原生端点" : item === 'avatar' ? "Wan检测与异步生成已接入，权限和效果未验证" : "兼容协议已接入，服务/权限未验证" : "已有本地路线"}</span></div>
           {needsConnection && !currentCandidate && <p className="hint model-role-parameters">{busy ? '正在查询当前连接的目录。' : '此型号未在当前连接的对应环节目录中匹配；可刷新目录核对。'}配置检查通过也不代表已获得调用权限。</p>}
           {item === 'tts' && selected.mode === 'api' && <div className="field"><label htmlFor={`${prefix}-rate`}>配音语速（0.5～2）</label><input id={`${prefix}-rate`} type="number" min={0.5} max={2} step={0.1} value={selected.parameters.speech_rate ?? 1} onChange={(event) => onChange(replaceStage(value, item, { ...selected, parameters: { speech_rate: event.target.valueAsNumber } }))} /></div>}
-          {item === 'avatar' && selected.mode === 'api' && <div className="field"><label htmlFor={`${prefix}-resolution`}>数字人输出分辨率</label><select id={`${prefix}-resolution`} value={selected.parameters.resolution ?? '480P'} onChange={(event) => onChange(replaceStage(value, item, { ...selected, parameters: { resolution: event.target.value as '480P' | '720P' } }))}><option value="480P">480P</option><option value="720P">720P</option></select><span className="hint">按生成视频时长与此分辨率估算费用；云端片段串行提交。</span></div>}
+          {item === 'avatar' && selected.mode === 'api' && <div className="field"><label htmlFor={`${prefix}-resolution`}>数字人输出分辨率</label><FormSelect id={`${prefix}-resolution`} value={selected.parameters.resolution ?? '480P'} onChange={choice => onChange(replaceStage(value, item, { ...selected, parameters: { resolution: choice as '480P' | '720P' } }))}><option value="480P">480P</option><option value="720P">720P</option></FormSelect><span className="hint">按生成视频时长与此分辨率估算费用；云端片段串行提交。</span></div>}
           {(item === "text" || item === "vision" || (item === 'qa' || item === 'quiz')) && <details className="model-role-parameters"><summary>请求参数 · {selected.parameters.max_output_tokens == null && selected.parameters.temperature == null ? "未覆盖" : "已自定义"}</summary>
             <div className="model-parameter-fields">
               <div className="field"><label htmlFor={`${prefix}-tokens-${item}`}>最大输出 tokens</label><input id={`${prefix}-tokens-${item}`} type="number" min={1} max={Math.min(131072, currentCandidate?.model_info?.max_output_tokens ?? 131072)} step={1} placeholder="不覆盖服务默认值" disabled={!options?.implemented.role_model_parameters} value={selected.parameters.max_output_tokens ?? ""}

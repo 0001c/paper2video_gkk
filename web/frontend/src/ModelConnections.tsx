@@ -1,3 +1,4 @@
+import { FormSelect } from './FormSelect';
 import { useId, useRef, useState } from "react";
 import { Button, Drawer } from "tdesign-react";
 import { api, errorMessage, runExclusive } from "./flow";
@@ -72,8 +73,8 @@ export function ModelConnections({ visible, connections, localKeyStorageAvailabl
     <form className="model-connection-form" onSubmit={(event) => { event.preventDefault(); void save(); }}>
       <fieldset disabled={busy}>
         <div className="field"><label htmlFor={`${prefix}-label`}>连接名称</label><input id={`${prefix}-label`} value={label} maxLength={80} onChange={(event) => setLabel(event.target.value)} /></div>
-        <div className="field"><label htmlFor={`${prefix}-provider`}>服务类型</label><select id={`${prefix}-provider`} disabled={!!editing} value={provider} onChange={(event) => { setProvider(event.target.value as Connection["provider"]); setKey(""); setBase(event.target.value === "bailian" ? defaultBase : "http://127.0.0.1:8000/v1"); }}>
-          <option value="bailian">阿里云百炼</option><option value="openai_compatible">OpenAI 兼容 / 本地服务</option></select></div>
+        <div className="field"><label htmlFor={`${prefix}-provider`}>服务类型</label><FormSelect id={`${prefix}-provider`} disabled={!!editing} value={provider} onChange={choice => { setProvider(choice as Connection["provider"]); setKey(""); setBase(choice === "bailian" ? defaultBase : "http://127.0.0.1:8000/v1"); }}>
+          <option value="bailian">阿里云百炼</option><option value="openai_compatible">OpenAI 兼容 / 本地服务</option></FormSelect></div>
         <div className="field"><div className="field-title"><label htmlFor={`${prefix}-base`}>兼容 Base URL</label>{provider === 'openai_compatible' && <Help title="兼容服务地址">DeepSeek 官方请选择“OpenAI 兼容 / 本地服务”，填写 <code>https://api.deepseek.com</code> 或 <code>https://api.deepseek.com/v1</code>，使用官方 API Key。本地服务填写本机或已允许的私网地址。其他云端域名需由服务端配置白名单 PAPER2VIDEO_MODEL_HOSTS，多个主机以英文逗号分隔，仅填写主机名。</Help>}</div><input id={`${prefix}-base`} readOnly={!!editing} value={base} onChange={(event) => setBase(event.target.value)} /></div>
         {provider === "bailian" && <>
           <div className="actions"><Button variant="outline" disabled={!!editing} onClick={fillSpeechEndpoints}>按兼容地址填入配音端点</Button></div>

@@ -1,3 +1,4 @@
+import { FormSelect } from './FormSelect';
 import { useId } from 'react';
 import { Help } from './Section';
 
@@ -20,8 +21,8 @@ export function CursorPicker({ options, style, scale, onStyle, onScale, disabled
         <span className="cursor-description">{item.description}</span>
       </label>)}
     </div>
-    <div className="field cursor-size"><div className="field-title"><label htmlFor={id + '-size'}>光标大小</label><Help title="光标大小">随成片画幅等比例缩放；关闭光标时无需设置大小。</Help></div><select id={id + '-size'} value={scale} disabled={style === 'none'} onChange={(event) => onScale(Number(event.target.value))}>
+    <div className="field cursor-size"><div className="field-title"><label htmlFor={id + '-size'}>光标大小</label><Help title="光标大小">随成片画幅等比例缩放；关闭光标时无需设置大小。</Help></div><FormSelect id={id + '-size'} value={scale} disabled={style === 'none'} onChange={choice => onScale(Number(choice))}>
       <option value={0.75}>小 · 75%</option><option value={1}>标准 · 100%</option><option value={1.5}>大 · 150%</option>
-    </select></div>
+    </FormSelect></div>
   </fieldset>;
 }

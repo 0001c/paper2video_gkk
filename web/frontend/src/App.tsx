@@ -1120,10 +1120,9 @@ export default function App() {
       <aside className="studio-sidebar">
         <nav aria-label="新任务分区"><p className="sidebar-label">项目设置</p>
           {[
-            ['material', '01', '素材'], ['language', '02', '语言与内容'],
-            ['slides', '03', 'PPT 风格与布局'],
-            ...(courseEnabled ? [['teaching', '04', '教学范围']] : []),
-            ['credentials', '05', '模型配置'], ['voice', '06', '音色'], ['cursor', '07', '光标与字幕'], ['evaluation', '08', '评估配置'], ['prepare', '09', '生成与审核'],
+            ['material', '01', '素材'], ['credentials', '02', '模型配置'],
+            ['language', '03', '语言与内容'], ['slides', '04', 'PPT 风格与布局'],
+            ['teaching', '05', '教学范围'], ['voice', '06', '音色'], ['cursor', '07', '光标与字幕'], ['evaluation', '08', '评估配置'], ['prepare', '09', '生成与审核'],
           ].map(([anchor, number, title]) => <a key={anchor} href={'#' + anchor} onClick={(event) => {
             if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
             const section = document.getElementById(anchor);
@@ -1255,9 +1254,15 @@ export default function App() {
         )}
       </Section>
 
-      {/* ② 语言与类型 */}
-      <Section anchor="language" number="02" title="语言与内容类型" defaultOpen={false} summary={`${slideLang === 'zh' ? '中文' : '英文'}课件 / ${scriptLang === 'zh' ? '中文' : '英文'}讲解 · ${slideCount || '待填'} 页`} help={<>
-        <p>语言预设同时设置课件和讲稿语言，也可分别覆盖。页数包含封面和结束页，可设置 4～40 页。</p>
+      {/* 模型决定音色路径：本地复用参考音频，API 选择独立云音色。 */}
+      <Section anchor="credentials" number="02" title="模型配置" defaultOpen={false} summary={modelConfig.preset === 'bailian_api' ? '百炼API' : modelConfig.preset === 'local_existing' ? '本地模型' : '自定义组合'} important>
+        {!initialDraft.model_config && (initialDraft.textModel || initialDraft.visionModel) && <p className="notice warn">已保留旧草稿的型号与本地路线，未沿用浏览器密钥。请添加兼容连接并重新选择；不会自动改成百炼默认。</p>}
+        <ModelSettings value={modelConfig} options={opts?.model_configuration} concurrency={scriptConcurrency} onChange={setModelConfig} onConcurrency={setScriptConcurrency} voice={voiceSpecNow()} preparePortrait={preparePortrait} portraitKey={portraitFile} onConnectionsChange={setModelConnections} />
+      </Section>
+
+      {/* ③ 语言与类型 */}
+      <Section anchor="language" number="03" title="语言与内容类型" defaultOpen={false} summary={`${slideLang === 'zh' ? '中文' : '英文'}课件 / ${scriptLang === 'zh' ? '中文' : '英文'}讲解 · ${slideCount || '待填'} 页`} help={<>
+        <p>语言预设同时设置课件和讲稿语言，也可分别覆盖。幻灯片页数请在教学范围中设置。</p>
         <p>{(opts?.script_prompt_profiles ?? []).find((x) => x.value === contentProfile)?.desc}</p>
       </>}>
         <div className="grid grid-3">
@@ -1302,22 +1307,7 @@ export default function App() {
               style={{ width: "100%" }}
             />
           </div>
-          <div className="field">
-            <label>幻灯片页数</label>
-            <input
-              className="number-input"
-              type="number"
-              min={opts?.slide_count?.min ?? 4}
-              max={opts?.slide_count?.max ?? 40}
-              value={slideCount}
-              step={1}
-              onChange={(e) => setSlideCount(e.target.value === "" ? "" : Number(e.target.value))}
-              onBlur={() => setSlideCount(Math.min(
-                opts?.slide_count?.max ?? 40,
-                Math.max(opts?.slide_count?.min ?? 4, Math.round(Number(slideCount) || 12)),
-              ))}
-            />
-          </div>
+
         </div>
         <Section title="高级设置：提示词与布局" compact defaultOpen={false} important help={<>
           <p>可编辑角色、受众、讲解详略及课件风格。自定义内容在切换语言或类型后保留，使用“应用当前模板”可以替换。</p>
@@ -1393,26 +1383,21 @@ export default function App() {
         )}
         </Section>
 
-      <div className="course-switch">
-        <label className="checkrow"><input type="checkbox" checked={courseEnabled} onChange={(e) => { setCourseEnabled(e.target.checked); setCoursePlan(null); }} />设置教学范围与目标时长（适用于课程授课）</label>
-        {courseEnabled && <button type="button" className="linkbtn" onClick={() => {
+
+      </Section>
+      <SlideDesignPanel value={slideDesign} onChange={setSlideDesign} language={slideLang} />
+      <CoursePanel ingestId={ingest?.ingest_id} settings={courseSettings} onSettings={setCourseSettings}
+        slideCount={slideCount} onSlideCount={setSlideCount} scriptLang={scriptLang} onPlan={setCoursePlan}
+        enabled={courseEnabled} onEnabled={value => { setCourseEnabled(value); setCoursePlan(null); }}
+        textStage={modelConfig.stages.text} textReady={!!modelConfig.stages.text.model && (modelConnections ?? []).some(connection => connection.id === modelConfig.stages.text.connection_id && connection.provider === modelConfig.stages.text.provider && (modelConfig.stages.text.mode === 'local' || connection.key_present))}
+        languageAction={<><button type="button" className="linkbtn" onClick={() => {
           const already = slideLang === "zh" && scriptLang === "zh";
           setPreset(opts?.presets.find((v) => v.slide_lang === "zh" && v.script_lang === "zh")?.value ?? "custom");
           setSlideLang("zh"); setScriptLang("zh");
           setLanguageNotice(already ? "当前已是中文课件 + 中文讲解，无需更改。" : "已应用：中文课件 + 中文讲解，语言设置和默认模板已同步。自定义提示词保留，请重新确认教案。");
-        }}>使用中文授课语言推荐</button>}
-      </div>
-        {languageNotice && courseEnabled && <p className="notice info" role="status">{languageNotice}</p>}
-      </Section>
-      <SlideDesignPanel value={slideDesign} onChange={setSlideDesign} language={slideLang} />
-      {courseEnabled && <CoursePanel ingestId={ingest?.ingest_id} settings={courseSettings} onSettings={setCourseSettings}
-        slideCount={slideCount} scriptLang={scriptLang} onPlan={setCoursePlan} />}
+        }}>使用中文授课语言推荐</button>{languageNotice && <p className="notice info" role="status">{languageNotice}</p>}</>} />
 
-      {/* 模型决定音色路径：本地复用参考音频，API 选择独立云音色。 */}
-      <Section anchor="credentials" number="05" title="模型配置" defaultOpen={false} summary={modelConfig.preset === 'bailian_api' ? '百炼 API 方案' : modelConfig.preset === 'local_existing' ? '保留现有本地推理' : '自定义组合'} important>
-        {!initialDraft.model_config && (initialDraft.textModel || initialDraft.visionModel) && <p className="notice warn">已保留旧草稿的型号与本地路线，未沿用浏览器密钥。请添加兼容连接并重新选择；不会自动改成百炼默认。</p>}
-        <ModelSettings value={modelConfig} options={opts?.model_configuration} concurrency={scriptConcurrency} onChange={setModelConfig} onConcurrency={setScriptConcurrency} voice={voiceSpecNow()} preparePortrait={preparePortrait} portraitKey={portraitFile} onConnectionsChange={setModelConnections} />
-      </Section>
+
 
       <Section anchor="voice" number="06" title="音色" defaultOpen={false} summary={modelConfig.stages.tts.mode === 'api' ? cloudVoice?.label ?? '待选择云音色' : voiceMode === 'default' ? '内置默认音色' : voiceMode === 'preset' ? presetPick?.label ?? '待选择音色' : voiceMode === 'design' ? '描述生成' : '上传参考音频'} important={voiceMode === 'upload'} help={<>
         <p>本地配音支持内置音色、以前保存的预置或设计样本，以及上传参考音频。选择已保存音色与试听都不会重新生成。</p>

@@ -1,3 +1,4 @@
+import { FormSelect } from './FormSelect';
 import { useEffect, useRef, useState } from 'react';
 import { Button } from 'tdesign-react';
 import { api, errorMessage, runExclusive } from './flow';
@@ -28,9 +29,9 @@ export function SourceReview({ ingestId, onSaved, preservedGlyphs = 0 }: { inges
           <textarea id={`source-text-${ingestId}`} value={text} disabled={busy} onChange={(event) => setText(event.target.value)} />
         </div>
         <div className="field"><label htmlFor={`source-page-${ingestId}`}>源页证据</label>
-          {source.pages.length ? <><select id={`source-page-${ingestId}`} value={page} onChange={(event) => setPage(Number(event.target.value))}>
+          {source.pages.length ? <><FormSelect id={`source-page-${ingestId}`} value={page} onChange={choice => setPage(Number(choice))}>
             {source.pages.map((item) => <option key={item.page} value={item.page}>源文第 {item.page} 页</option>)}
-          </select><a href={source.pages.find((item) => item.page === page)?.url} target="_blank" rel="noreferrer">
+          </FormSelect><a href={source.pages.find((item) => item.page === page)?.url} target="_blank" rel="noreferrer">
             <img src={source.pages.find((item) => item.page === page)?.url} alt={`源文第 ${page} 页，点击查看原尺寸`} />
           </a></> : <p className="hint">没有归档的源页图片，请对照原文件。</p>}
         </div>

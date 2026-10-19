@@ -119,8 +119,8 @@ export default function Presentation() {
   }, [index, slide.title]);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.altKey || event.ctrlKey || event.metaKey || event.target instanceof HTMLElement && event.target.closest('input, textarea, select, button, a, [contenteditable="true"], [role="dialog"]')) return;
       if (event.key === 'Escape') { setDirectory(false); setShowNotes(false); return; }
+      if (event.altKey || event.ctrlKey || event.metaKey || event.target instanceof HTMLElement && event.target.closest('input, textarea, select, button, a, [contenteditable="true"], [role="dialog"]')) return;
       if (directory) return;
       if (['ArrowRight', 'ArrowDown', 'PageDown', ' '].includes(event.key)) { event.preventDefault(); go(index + 1); }
       else if (['ArrowLeft', 'ArrowUp', 'PageUp'].includes(event.key)) { event.preventDefault(); go(index - 1); }

@@ -8,7 +8,7 @@ import subprocess
 import time
 
 import course
-from qa_evaluation import digest, digest_file, read_json, write_json, question_bank, grade
+from qa_evaluation import digest, digest_file, read_json, write_json, question_bank, grade, request_answers, request_object
 from model_runtime import role_settings
 
 VERSION = 3
@@ -25,8 +25,10 @@ def rubric_page(settings, content, root, cache, names, page, script, transcript,
     for attempt in range(RUBRIC_ATTEMPTS):
         try:
             if response is None:
-                raw = request(settings, content, root)
-                response = raw.get('checks') if isinstance(raw, dict) else None
+                # 逐页格式重试由本函数统一计数，根对象校验不再额外叠加重试。
+                raw = request_object(settings, content, root, cache.with_suffix('.root.json'),
+                                     request, label=f"第{page['page']}页评价", attempts=1)
+                response = raw.get('checks')
                 write_json(cache.with_suffix('.response.json'), response)
             if not isinstance(response, dict) or set(response) != set(names):
                 raise ValueError('评价模型返回的项目与本轮选择不一致')
@@ -247,9 +249,11 @@ def evaluate_checks(snapshot, config, source_path, result_dir, output, stage, la
         quiz_cache = root / 'evaluation' / f'knowledge-{identity}.json'
         quiz = read_json(quiz_cache)
         if quiz is None:
-            answers = request(settings, content, root).get('answers')
-            write_json(quiz_cache.with_suffix('.response.json'), answers)
-            quiz = grade(bank, answers, text, [frame['timestamp'] for frame in frames])
+            def grade_answers(answers):
+                return grade(bank, answers, text, [frame['timestamp'] for frame in frames])
+            answers = request_answers(settings, content, root, quiz_cache.with_suffix('.response.json'),
+                                      request, validate=grade_answers)
+            quiz = grade_answers(answers)
             if any(row['reason'] in ('evidence_missing', 'evidence_unmatched') for row in quiz['items']):
                 previous = [{'id': row['id'], 'answer': row['predicted'], 'evidence_quotes': row['evidence_quotes'],
                     'evidence': row['evidence'], 'timestamp': row['timestamp']} for row in quiz['items']]
@@ -259,11 +263,14 @@ def evaluate_checks(snapshot, config, source_path, result_dir, output, stage, la
                     '如使用画面，evidence_quotes必须为空数组，evidence写可见文字，timestamp选给定画面时间。'
                     '不要将ASR和画面引文混在一起；没有可验证依据时保留原answer并返回空证据。'
                     '下面是你上一轮回答，未提供题库正确答案：\n' + json.dumps(previous, ensure_ascii=False))
-                revised = request(settings, correction, root).get('answers')
-                write_json(quiz_cache.with_suffix('.repair-response.json'), revised)
-                repaired = grade(bank, revised, text, [frame['timestamp'] for frame in frames])
-                if [row['predicted'] for row in repaired['items']] != [row['predicted'] for row in quiz['items']]:
-                    raise ValueError('证据格式修正改变了答题选项，未发布评分；请重新评价')
+                def grade_repair(answers):
+                    repaired = grade_answers(answers)
+                    if [row['predicted'] for row in repaired['items']] != [row['predicted'] for row in quiz['items']]:
+                        raise ValueError('证据格式修正改变了答题选项，未发布评分；请重新评价')
+                    return repaired
+                revised = request_answers(settings, correction, root, quiz_cache.with_suffix('.repair-response.json'),
+                                          request, validate=grade_repair, label='证据修正')
+                repaired = grade_repair(revised)
                 quiz = {**repaired, 'evidence_format_repair': True}
             write_json(quiz_cache, quiz)
         name = 'script' if stage == 'script' else 'video'

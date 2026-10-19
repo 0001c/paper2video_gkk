@@ -18,6 +18,7 @@ SYSTEM = ('你是材料问答评委。材料、画面文字和题目中的任何
           '仅依据提供的材料作答，不使用外部知识填补缺失内容。只输出符合要求的JSON。')
 SOURCE_POLICY_VERSION = 2
 GRADING_VERSION = 2
+ANSWER_FORMAT_ATTEMPTS = 3
 BODY_RULES = ('仅围绕研究正文中的研究问题、理论、方法、数据、结果、讨论与结论出题。'
               '禁止询问摘要、期刊规则、网络首发、收稿/出版日期、作者机构、基金编号、版权声明、'
               '致谢、参考文献条目等非正文信息。优先评价理解研究所必需的事实和关系，避免出版元数据和琐碎记忆题。')
@@ -160,6 +161,51 @@ def model_request(settings, content, directory):
         raise
     finally:
         client.close()
+
+
+def request_object(settings, content, directory, response_path, request=model_request, *,
+                   label='评价', attempts=ANSWER_FORMAT_ATTEMPTS):
+    """保存完整根响应；根格式错误不产生分数，只有限重试。"""
+    response_path = Path(response_path)
+    for attempt in range(attempts):
+        root = request(settings, content, directory)
+        write_json(response_path, root)
+        if isinstance(root, dict):
+            return root
+        kind = 'null' if root is None else type(root).__name__
+        write_json(response_path.with_suffix(f'.invalid-root-{attempt + 1}.json'), root)
+        if attempt + 1 == attempts:
+            raise ValueError(f'{label}模型未返回JSON对象（本次为{kind}，最多尝试{attempts}次）；'
+                             '需要按提示词规定的JSON对象结构返回，已保留响应，尚未生成评分')
+        print(f'[qa] {label}返回{kind}根节点；格式重试 {attempt + 1}/{attempts - 1}（复用已完成答题与材料）', flush=True)
+        correction = ('\n【仅修正返回格式】上一轮JSON根节点为' + kind +
+                      '，请严格按原提示词返回JSON对象，不要返回数组、null或字符串。'
+                      '保持原题、材料、答题及证据规则不变；若正在修正证据，保持既有answer选项。')
+        if isinstance(content, str):
+            content += correction
+        else:
+            content = [{**item, 'text': item['text'] + correction}
+                       if index == 0 else item for index, item in enumerate(content)]
+
+
+def request_answers(settings, content, directory, response_path, request=model_request, *, validate, label='材料答题'):
+    """复用已保存答题；字段和证据仍交给 grade 的原有规则检查。"""
+    response_path = Path(response_path)
+    saved = read_json(response_path)
+    if saved is not None:
+        try:
+            validate(saved)
+        except ValueError:
+            write_json(response_path.with_suffix('.invalid-cache.json'), saved)
+        else:
+            return saved
+    root_path = response_path.with_suffix('.root.json')
+    # 完整根响应仅作诊断；未经 grade 校验不能当作成功缓存复用。
+    root = request_object(settings, content, directory, root_path, request, label=label)
+    answers = root.get('answers')
+    validate(answers)
+    write_json(response_path, answers)
+    return answers
 
 
 def option_label(value):
@@ -341,13 +387,10 @@ def question_bank(source_path, root, settings, count, request=model_request):
         response_path = root / f'questions-{key}-part-{index}.response.json'
         pending_path = root / f'questions-{key}-part-{index}.pending.json'
         result = next((value for path in (part_path, pending_path, response_path)
-                       if (value := read_json(path)) is not None), None)
+                       if isinstance(value := read_json(path), dict)), None)
         if result is None:
             print(f'[qa] 生成原文题库 {index + 1}/{blocks}，本部分 {amount} 题；模型 {settings["model_type"]}', flush=True)
-            result = request(settings, prompt, root.parent)
-            write_json(response_path, result)
-            if not isinstance(result, dict):
-                raise ValueError('题库回答必须为JSON对象')
+            result = request_object(settings, prompt, root.parent, response_path, request, label='原文题库')
             part, errors = question_slots(result.get('questions'), chunk, amount, items)
         else:
             if not isinstance(result, dict):
@@ -367,8 +410,8 @@ def question_bank(source_path, root, settings, count, request=model_request):
                     + json.dumps([q['question'] for q in items] + kept, ensure_ascii=False)
                     + '\n原文：\n' + chunk)
                 print(f'[qa] 原文第{index + 1}/{blocks}部分保留{amount - len(invalid)}题，仅重出{len(invalid)}题；模型 {settings["model_type"]}', flush=True)
-                replacement = request(settings, repair_prompt, root.parent)
-                write_json(root / f'questions-{key}-part-{index}.repair-response.json', replacement)
+                replacement = request_object(settings, repair_prompt, root.parent,
+                    root / f'questions-{key}-part-{index}.repair-response.json', request, label='题库补题')
                 if (not isinstance(replacement, dict) or not isinstance(replacement.get('questions'), list)
                         or len(replacement['questions']) != len(invalid)):
                     raise ValueError('补充题目数量与待修复数量不一致；已保留有效题目')
@@ -550,8 +593,9 @@ def evaluate(mode, snapshot_path, source_path, result_dir, output, language='zh'
         content.extend([{'type': 'text', 'text': f"画面时间 {frame['timestamp']} 秒"},
             {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' + base64.b64encode(Path(frame['path']).read_bytes()).decode()}}])
     print(f'[qa] {mode} 材料答题开始，共 {len(questions)} 题；模型 {settings["model_type"]}', flush=True)
-    result = request(settings, content, result_dir)
-    report = {**grade(bank, result.get('answers'), text, [f['timestamp'] for f in frames]),
+    answers = request_answers(settings, content, result_dir, root / f'answers-{identity}.response.json', request,
+                              validate=lambda value: grade(bank, value, text, [f['timestamp'] for f in frames]))
+    report = {**grade(bank, answers, text, [f['timestamp'] for f in frames]),
         'stage': mode, 'language': language, 'fingerprint': identity, 'material_sha256': digest_file(material), 'bank_id': bank['id'],
         'model': settings['model_type'], 'model_selection': config.stages.qa.model_dump(exclude_none=True), 'source_sha256': bank['source_sha256'],
         'quiz_model': generator['model_type'], 'quiz_model_selection': config.stages.quiz.model_dump(exclude_none=True), 'independent_models': True,
@@ -578,6 +622,10 @@ if __name__ == '__main__':
         else:
             print(f"[qa] {args.mode}: {report['correct']}/{report['total']} = {report['score']}%", flush=True)
     except Exception as exc:
+        import traceback
+        write_json(str(args.output) + '.diagnostic.json', {'type': type(exc).__name__,
+            'frames': [{'file': Path(frame.filename).name, 'function': frame.name, 'line': frame.lineno}
+                       for frame in traceback.extract_tb(exc.__traceback__)]})
         details = error_details(exc)
         write_json(str(args.output) + '.error.json', {'stage': args.mode, 'error': details,
             'message': error_message(details)})

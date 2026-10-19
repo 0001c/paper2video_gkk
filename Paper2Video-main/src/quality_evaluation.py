@@ -8,7 +8,7 @@ import subprocess
 import time
 
 import course
-from qa_evaluation import digest, digest_file, read_json, write_json, question_bank, grade, request_answers, request_object
+from qa_evaluation import digest, digest_file, read_json, write_json, question_bank, grade, request_answers, request_object, verified_quote
 from model_runtime import role_settings
 
 VERSION = 3
@@ -180,10 +180,14 @@ def rubric_result(name, result, page, script, transcript):
                 or (not evidence.strip() and not (name == 'audio' and evidence == ''))):
             raise ValueError('逐页问题需要具体说明与证据')
         timestamp = issue.get('timestamp')
+        expected, actual = issue.get('script_quote', ''), issue.get('asr_quote', '')
         if name == 'audio':
-            expected, actual = issue.get('script_quote', ''), issue.get('asr_quote', '')
-            if (not isinstance(expected, str) or not isinstance(actual, str) or not (expected or actual)
-                    or (expected and expected not in script) or (actual and actual not in transcript)):
+            if not isinstance(expected, str) or not isinstance(actual, str) or not (expected or actual):
+                raise ValueError('配音差异引文未匹配讲稿或实际音轨识别')
+            # 先保留严格子串（包括短词），仅用既有规则恢复长引文的排版空白。
+            expected = expected if not expected or expected in script else verified_quote(expected, script)
+            actual = actual if not actual or actual in transcript else verified_quote(actual, transcript)
+            if expected is None or actual is None:
                 raise ValueError('配音差异引文未匹配讲稿或实际音轨识别')
             if evidence == '':
                 # 对照文字仅来自刚刚逐字验证的两段引文，不改分数或 ASR 待复核标记。
@@ -197,7 +201,7 @@ def rubric_result(name, result, page, script, transcript):
                     or not any(abs(timestamp - frame['timestamp']) < 0.01 for frame in page['frames'])):
                 raise ValueError('视觉问题未引用本页实际抽帧时间')
         verified.append({'criterion': issue['criterion'], 'description': description, 'evidence': evidence,
-                         'timestamp': timestamp, 'script_quote': issue.get('script_quote', ''), 'asr_quote': issue.get('asr_quote', ''),
+                         'timestamp': timestamp, 'script_quote': expected, 'asr_quote': actual,
                          'page': page['page'], 'requires_review': name == 'audio'})
     # 低分必须有可追溯解释，不能返回一个孤立分数。
     if min(values) < 100 and not verified:

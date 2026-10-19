@@ -230,6 +230,31 @@ class ResponseRecoveryChecks(unittest.TestCase):
         self.assertEqual(rows['audio']['score'], 95)
         self.assertEqual(qa.read_json(target), response)
 
+    def test_audio_quote_restores_chinese_layout_newlines_to_actual_source_span(self):
+        audio = self.audio_response()['checks']['audio']
+        issue = audio['issues'][0]
+        issue['script_quote'] = '第一句原文。第二句原文。第三句原文。'
+        script = '前文。第一句原文。\n\n第二句原文。\n第三句原文。后文。'
+        row = quality.rubric_result('audio', audio, {'page': 13, 'start': 10, 'end': 20, 'frames': []},
+                                    script, issue['asr_quote'])
+        restored = row['issues'][0]['script_quote']
+        self.assertEqual(restored, '第一句原文。\n\n第二句原文。\n第三句原文。')
+        self.assertIn(restored, script)
+        self.assertIn(restored, row['issues'][0]['evidence'])
+        self.assertEqual(row['score'], 95)
+
+    def test_audio_quote_keeps_short_substrings_strict_and_ascii_separators_meaningful(self):
+        audio = self.audio_response()['checks']['audio']
+        issue = audio['issues'][0]
+        page = {'page': 1, 'start': 0, 'end': 1, 'frames': []}
+        issue.update(script_quote='喂给', asr_quote='未给')
+        self.assertEqual(quality.rubric_result('audio', audio, page, '我们喂给模型数据', '我们未给模型数据')['score'], 95)
+        for quote, script in (('喂 给', '我们喂给模型数据'), ('参数值为12', '参数值为1 2'),
+                              ('responsibleinnovation', 'responsible innovation')):
+            issue['script_quote'] = quote
+            with self.subTest(quote=quote), self.assertRaisesRegex(ValueError, '引文未匹配'):
+                quality.rubric_result('audio', audio, page, script, '我们未给模型数据')
+
     def test_invalid_paid_response_returns_to_existing_page_retry_budget(self):
         target = self.root / 'rubric-page.json'
         qa.write_json(target.with_suffix('.response.json'), {'slides': {'criteria': {}, 'issues': []}})

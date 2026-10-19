@@ -13,6 +13,8 @@ LAYOUT_PROMPT = ('\n[Slide quality requirements] One idea per slide; at most fiv
                  'Images must use width<=0.9\\linewidth, height<=0.5\\textheight,keepaspectratio. '
                  'Every \\caption must be inside a figure or table environment; '
                  'never place a bare caption in a frame or column. '
+                 'In tabularray rowspec, concatenate row types without separating commas, '
+                 'for example rowspec={Q[m]Q[m]}; commas inside Q[...] options are allowed. '
                  'Preserve source figure IDs and captions. No unfulfilled promises of live demos.')
 
 
@@ -59,6 +61,22 @@ def normalize_source_bindings(code):
         r'(?m)^([ \t]*)(%[ \t]*source-(?:figure|page):[^\r\n]*)\r?\n'
         r'[ \t]*(\\begin\{figure\}(?:\[[^\]\r\n]*\])?)',
         lambda match: match[1] + match[3] + '\n' + match[1] + match[2], code)
+
+
+def normalize_rowspec(code):
+    """只删除简单 Q[...] 行类型之间的非法逗号，不改选项、宏或表格内容。"""
+    def repair(match):
+        prefix = code[code.rfind('\n', 0, match.start()) + 1:match.start()]
+        if re.search(r'(?<!\\)(?:\\\\)*%', prefix):
+            return match[0]  # 注释中的示例保持原样。
+        spec = re.sub(r'(\]\s*),(?=\s*Q\[)', r'\1', match['spec'])
+        return match['head'] + spec + '}'
+
+    # 不处理嵌套花括号、宏或自定义行类型，以免改变未知语义。
+    return re.sub(
+        r'(?<![\\\w])(?P<head>rowspec\s*=\s*\{)'
+        r'(?P<spec>\s*Q\[[^\[\]{}%]*\](?:\s*,?\s*Q\[[^\[\]{}%]*\])*\s*)\}',
+        repair, code)
 
 
 def _caption_numbers(text):

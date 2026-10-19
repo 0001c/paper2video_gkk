@@ -38,6 +38,43 @@ class LayoutChecks(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn('要求1页，实际2帧', errors[0])
 
+    def test_rowspec_repair_preserves_options_and_table_content(self):
+        code = ('\\begin{tblr}{colspec={Q[l]Q[r]},\n'
+                ' rowspec = { Q[m,bg=red] ,\n Q[t,fg=blue], Q[b] },\n'
+                ' row{1}={font=\\bfseries,fg=red}}\n'
+                'A, B & 1,234 \\\\\n\\end{tblr}')
+        expected = code.replace('] ,\n Q', '] \n Q').replace('], Q', '] Q')
+        repaired = slide_quality.normalize_rowspec(code)
+        self.assertEqual(repaired, expected)
+        self.assertEqual(slide_quality.normalize_rowspec(repaired), repaired)
+
+    def test_rowspec_repair_leaves_valid_and_unknown_syntax_unchanged(self):
+        for code in (
+            'rowspec={Q[m]Q[m]},',
+            'rowspec={Q[m,bg=red] Q[t,fg=blue]},',
+            'colspec={Q[m], Q[m]}, rows={m},',
+            '% rowspec={Q[m], Q[m]},\n',
+            '\\\\% rowspec={Q[m], Q[m]},\n',
+            r'rowspec={Q[m,font={\bfseries}], Q[t]},',
+            r'rowspec={Q[m], \customrow},',
+        ):
+            with self.subTest(code=code):
+                self.assertEqual(slide_quality.normalize_rowspec(code), code)
+        self.assertEqual(slide_quality.normalize_rowspec(r'\% rowspec={Q[m], Q[m]},'),
+                         r'\% rowspec={Q[m] Q[m]},')
+
+    def test_compile_repairs_rowspec_before_running_compiler(self):
+        target = self.root / 'slides.tex'
+        code = '\\documentclass{article}\nrowspec={Q[m], Q[m]},'
+        target.write_text(code, encoding='utf-8')
+
+        def compile_process(*args, **kwargs):
+            self.assertEqual(target.read_text(encoding='utf-8'), code.replace('], Q', '] Q'))
+            return SimpleNamespace(returncode=0, stdout='', stderr='')
+
+        with patch.object(slides.subprocess, 'run', side_effect=compile_process):
+            self.assertTrue(slides.compile_tex(target)[0])
+
     def source_frame(self, caption='图1 概念模型', fid='F1'):
         return ('\\begin{frame}{研究方法}\n% source-figure: ' + fid + '\n'
                 '\\begin{figure}\n\\includegraphics{figures/research.png}\n'
@@ -133,7 +170,7 @@ class LayoutChecks(unittest.TestCase):
         self.assertEqual(target.read_text(encoding='utf-8'), code)
 
     def test_first_generation_applies_local_image_bounds(self):
-        code = r'\documentclass{beamer}\begin{document}\begin{frame}\includegraphics{a.png}\end{frame}\end{document}'
+        code = r'\documentclass{beamer}\begin{document}\begin{frame}\includegraphics{a.png}\begin{tblr}{rowspec={Q[m], Q[m]}}A&B\\C&D\end{tblr}\end{frame}\end{document}'
         prompt = self.root / 'prompt.txt'
         prompt.write_text('生成课件', encoding='utf-8')
         target = self.root / 'slides.tex'
@@ -143,6 +180,7 @@ class LayoutChecks(unittest.TestCase):
             slides.latex_code_gen_upgrade(prompt, self.root, str(target), {}, {}, if_tree_search=False)
         self.assertEqual(agent.step.call_count, 1)
         self.assertIn(r'height=0.45\textheight', target.read_text(encoding='utf-8'))
+        self.assertIn('rowspec={Q[m] Q[m]}', target.read_text(encoding='utf-8'))
 
     def image(self, name, color):
         path = self.root / name

@@ -19,6 +19,9 @@ export default defineConfig({
     outDir: "../static",       // 直接产出到 web/static，后端启动即可服务
     emptyOutDir: true,
     chunkSizeWarningLimit: 1200,
+    rollupOptions: {
+      input: { main: 'index.html', demo: 'demo/index.html' },
+    },
   },
   server: {
     host: "127.0.0.1",

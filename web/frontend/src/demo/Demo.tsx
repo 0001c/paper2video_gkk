@@ -10,12 +10,17 @@ const stages = [
 ];
 const file = (path: string) => `/api/jobs/${sample.job_id}/files/${path.split('/').map(encodeURIComponent).join('/')}`;
 const clock = (seconds: number) => `${Math.floor(seconds / 60).toString().padStart(2, '0')}:${Math.floor(seconds % 60).toString().padStart(2, '0')}`;
+const pageAt = (seconds: number) => {
+  const next = sample.pages.findIndex(p => p.start_seconds > seconds);
+  return next === -1 ? sample.pages.length - 1 : Math.max(0, next - 1);
+};
 
 export default function Demo() {
   const [step, setStep] = useState(0);
   const [loaded, setLoaded] = useState(false);
   const [source, setSource] = useState(0);
   const [page, setPage] = useState(0);
+  const [videoPage, setVideoPage] = useState(0);
   const [drafts, setDrafts] = useState(() => sample.pages.map(p => p.script.join('\n')));
   const [accepted, setAccepted] = useState(false);
   const [assembled, setAssembled] = useState(false);
@@ -31,6 +36,7 @@ export default function Demo() {
   function go(next: number) {
     setStep(next); setNotice(''); setMediaError('');
     pendingSeek.current = null;
+    if (next === 4) setVideoPage(0);
     requestAnimationFrame(() => {
       panel.current?.focus({ preventScroll: true });
       panel.current?.scrollIntoView({ block: 'start' });
@@ -42,6 +48,7 @@ export default function Demo() {
   }
   function seek(seconds: number) {
     if (!video.current) return;
+    setVideoPage(pageAt(seconds));
     if (video.current.readyState < 1) pendingSeek.current = seconds;
     else video.current.currentTime = seconds;
     setNotice(`已定位到 ${clock(seconds)}，点击播放器播放即可观看。`);
@@ -112,11 +119,13 @@ export default function Demo() {
             <button className="demo-primary" onClick={() => { setAssembled(true); setNotice('配音、光标、字幕已在原任务中完成。现在可继续查看真实成片。'); }}>体验合片完成 <span aria-hidden="true">✓</span></button>
             <p className="demo-caption">此按钮演示完成确认，不触发生成任务。</p></div></div>}
 
-        {step === 4 && <><div className="demo-result-grid"><div><video ref={video} controls playsInline preload="metadata" poster={file(sample.pages[0].slide)} src={file('3_merage.mp4')} onLoadedMetadata={() => {
+        {step === 4 && <><div className="demo-result-grid"><div><video ref={video} controls playsInline preload="metadata" poster={file(sample.pages[0].slide)} src={file('3_merage.mp4')} onTimeUpdate={e => {
+            setVideoPage(pageAt(e.currentTarget.currentTime));
+          }} onLoadedMetadata={() => {
             if (pendingSeek.current !== null && video.current) { video.current.currentTime = pendingSeek.current; pendingSeek.current = null; }
           }} onError={() => setMediaError('成片暂时无法播放，请检查原任务产物，或使用下方下载链接。')}>浏览器不支持视频播放。</video>
           <div className="demo-chapters" aria-label="视频章节">{sample.chapters.map(c => <button key={c.title} onClick={() => seek(c.start_seconds)}><span>{clock(c.start_seconds)}</span>{c.title}</button>)}</div>
-          <label className="demo-label" htmlFor="demo-video-page">按课件页定位视频</label><select id="demo-video-page" value={page} onChange={e => { const i = Number(e.target.value); setPage(i); seek(sample.pages[i].start_seconds); }}>{sample.pages.map((p, i) => <option key={p.page} value={i}>{clock(p.start_seconds)} · {p.page}. {p.title}</option>)}</select>
+          <label className="demo-label" htmlFor="demo-video-page">按课件页定位视频</label><select id="demo-video-page" value={videoPage} onChange={e => { const i = Number(e.target.value); seek(sample.pages[i].start_seconds); }}>{sample.pages.map((p, i) => <option key={p.page} value={i}>{clock(p.start_seconds)} · {p.page}. {p.title}</option>)}</select>
           <div className="demo-downloads"><a href={file('3_merage.mp4')} download>下载成片 MP4 ↓</a><a href={file('slides_rendered.pdf')} download>下载课件 PDF ↓</a><a href={file('subtitle_w_cursor.txt')} download>下载原始讲稿 ↓</a></div></div>
           <div><div className="demo-report-heading"><h3>成片评价</h3><span className="demo-tag">{sample.passed ? '所选项目已通过' : '仍有项目待处理'}</span></div><p className="demo-caption">来自本次任务已完成的评价报告。知识项为答题正确率，其余为最低页得分。</p>
             <div className="demo-scores">{sample.checks.map(check => <div key={check.key}><div><strong>{check.label}</strong><small>通过线 {check.threshold}%</small></div><span>{check.score}<small>%</small></span><div className="demo-score-track" role="meter" aria-label={check.label} aria-valuenow={check.score} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${check.score}%` }} /></div></div>)}</div>

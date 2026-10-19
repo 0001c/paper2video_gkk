@@ -44,7 +44,7 @@ import time
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE_ROOT = os.path.join(REPO_ROOT, "jobs", "_cache")
 
-CACHE_VERSION = "6"
+CACHE_VERSION = "7"
 
 # ── 指纹字段表（规矩 1：显式、写死）──
 # struct：结构化只看「正文 + 论文类型 + 用哪个模型」。刻意**不含**人像/音色/语言

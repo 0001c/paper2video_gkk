@@ -75,6 +75,29 @@ class LayoutChecks(unittest.TestCase):
         with patch.object(slides.subprocess, 'run', side_effect=compile_process):
             self.assertTrue(slides.compile_tex(target)[0])
 
+    def test_tblr_bare_cell_alignment_is_repaired_only_in_option_header(self):
+        code = (r'\begin{tblr}{colspec={X[c] X[l]}, cell = {c}, row{1}={font={cell={c}}}, '
+                r'hlines={2-Z}{-}{accentColor}, vlines={1-2}{-}{accentColor}}'
+                '\n' + r'cell={c} & 原文 \\ \end{tblr}')
+        repaired = slide_quality.normalize_tblr_cells(code)
+        self.assertEqual(repaired, code.replace('cell = {c}', 'cells = {c}'))
+        self.assertEqual(slide_quality.normalize_tblr_cells(repaired), repaired)
+        for code in (r'\begin{tblr}{cell{1}{2}={c}, cells={c}}x\end{tblr}',
+                     r'\begin{tblr}{cell={font=\bfseries}}x\end{tblr}',
+                     '% \\begin{tblr}{cell={c}}\n', r'\begin{tblr}{cell={c}',
+                     'cell={c}', '\\begin{tblr}{\n% cell={c}\ncells={c}}x\\end{tblr}'):
+            self.assertEqual(slide_quality.normalize_tblr_cells(code), code)
+
+    def test_compile_repairs_bare_cell_alignment_before_compiler(self):
+        target = self.root / 'slides.tex'
+        code = r'\documentclass{article}\begin{tblr}{cell={c}}文字\end{tblr}'
+        target.write_text(code, encoding='utf-8')
+        def compile_process(*args, **kwargs):
+            self.assertEqual(target.read_text(encoding='utf-8'), code.replace('cell={c}', 'cells={c}'))
+            return SimpleNamespace(returncode=0, stdout='', stderr='')
+        with patch.object(slides.subprocess, 'run', side_effect=compile_process):
+            self.assertTrue(slides.compile_tex(target)[0])
+
     def source_frame(self, caption='图1 概念模型', fid='F1'):
         return ('\\begin{frame}{研究方法}\n% source-figure: ' + fid + '\n'
                 '\\begin{figure}\n\\includegraphics{figures/research.png}\n'
@@ -170,7 +193,7 @@ class LayoutChecks(unittest.TestCase):
         self.assertEqual(target.read_text(encoding='utf-8'), code)
 
     def test_first_generation_applies_local_image_bounds(self):
-        code = r'\documentclass{beamer}\begin{document}\begin{frame}\includegraphics{a.png}\begin{tblr}{rowspec={Q[m], Q[m]}}A&B\\C&D\end{tblr}\end{frame}\end{document}'
+        code = r'\documentclass{beamer}\begin{document}\begin{frame}\includegraphics{a.png}\begin{tblr}{rowspec={Q[m], Q[m]},cell={c}}A&B\\C&D\end{tblr}\end{frame}\end{document}'
         prompt = self.root / 'prompt.txt'
         prompt.write_text('生成课件', encoding='utf-8')
         target = self.root / 'slides.tex'
@@ -181,6 +204,7 @@ class LayoutChecks(unittest.TestCase):
         self.assertEqual(agent.step.call_count, 1)
         self.assertIn(r'height=0.45\textheight', target.read_text(encoding='utf-8'))
         self.assertIn('rowspec={Q[m] Q[m]}', target.read_text(encoding='utf-8'))
+        self.assertIn('cells={c}', target.read_text(encoding='utf-8'))
 
     def image(self, name, color):
         path = self.root / name

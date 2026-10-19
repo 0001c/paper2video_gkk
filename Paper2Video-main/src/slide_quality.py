@@ -6,7 +6,7 @@ from pathlib import Path
 from spoken_text import plain_text
 from classroom_language import CLASSROOM_PROMPT, classroom_issues
 
-QUALITY_VERSION = 6
+QUALITY_VERSION = 7
 
 LAYOUT_PROMPT = ('\n[Slide quality requirements] One idea per slide; at most five short bullet points. '
                  'Split dense content into separate frames before reducing image size. '
@@ -16,6 +16,8 @@ LAYOUT_PROMPT = ('\n[Slide quality requirements] One idea per slide; at most fiv
                  'never place a bare caption in a frame or column. '
                  'In tabularray rowspec, concatenate row types without separating commas, '
                  'for example rowspec={Q[m]Q[m]}; commas inside Q[...] options are allowed. '
+                 'For all table cells use cells={c}; cell requires row and column selectors, '
+                 'for example cell{1}{2}={c}. Never emit bare cell={c}. '
                  'Preserve source figure IDs and captions. No unfulfilled promises of live demos.') + CLASSROOM_PROMPT
 
 
@@ -78,6 +80,32 @@ def normalize_rowspec(code):
         r'(?<![\\\w])(?P<head>rowspec\s*=\s*\{)'
         r'(?P<spec>\s*Q\[[^\[\]{}%]*\](?:\s*,?\s*Q\[[^\[\]{}%]*\])*\s*)\}',
         repair, code)
+
+
+def normalize_tblr_cells(code):
+    """仅修正 tblr 配置头中缺少选择器的简单 cell={c} 一类全表对齐写法。"""
+    edits = []
+    for begin in re.finditer(r'\\begin\{(?:long|tall)?tblr\}(?:\s*\[[^\]]*\])?\s*\{', code):
+        prefix = code[code.rfind('\n', 0, begin.start()) + 1:begin.start()]
+        if re.search(r'(?<!\\)(?:\\\\)*%', prefix):
+            continue
+        depth, pending = 0, []
+        # 一次扫描配置头的嵌套花括号，跳过注释和转义；表格正文与嵌套选项保持原样。
+        for token in re.finditer(r'%[^\n]*|\\.|[{}]|(?<![\w\\])cell(?=\s*=\s*\{[lcrmtb]\})',
+                                 code[begin.end()-1:]):
+            value = token[0]
+            if value == '{':
+                depth += 1
+            elif value == '}':
+                depth -= 1
+                if depth == 0:
+                    edits.extend(pending)
+                    break
+            elif value == 'cell' and depth == 1:
+                pending.append(begin.end()-1 + token.end())
+    for position in reversed(edits):
+        code = code[:position] + 's' + code[position:]
+    return code
 
 
 def _caption_numbers(text):

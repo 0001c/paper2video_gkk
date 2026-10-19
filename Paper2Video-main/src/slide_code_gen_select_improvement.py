@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Sequence, Tuple, Optional
 from PIL import Image, ImageDraw, ImageFont
 from wei_utils import create_agent
-from slide_quality import LAYOUT_PROMPT, bound_image_sizes, normalize_source_bindings, normalize_rowspec, record_quality
+from slide_quality import LAYOUT_PROMPT, bound_image_sizes, normalize_source_bindings, normalize_rowspec, normalize_tblr_cells, record_quality
 
 
 def extract_json_block(text: str, first_only: bool = True):
@@ -126,7 +126,7 @@ def latex_code_gen_upgrade(prompt_path, tex_dir, beamer_save_path,
                 "\\documentclass" in _raw,
                 "\\end{document}" in _raw,
                 _raw[:500], _raw[-500:]))
-    code = normalize_rowspec(normalize_source_bindings(bound_image_sizes(code)))
+    code = normalize_tblr_cells(normalize_rowspec(normalize_source_bindings(bound_image_sizes(code))))
     with open(beamer_save_path, "w", encoding="utf-8") as f: f.write(code)
     ok, feedback = compile_tex(beamer_save_path, expected_count=expected_slide_count)
 
@@ -147,7 +147,7 @@ def latex_code_gen_upgrade(prompt_path, tex_dir, beamer_save_path,
             # 同上：宁可停在上一版，也绝不把代码写成 None 后再截断文件。
             print("[slide_gen] 修复未返回可用代码，保留上一版并停止修复")
             break
-        fixed_code = normalize_rowspec(normalize_source_bindings(bound_image_sizes(fixed_code)))
+        fixed_code = normalize_tblr_cells(normalize_rowspec(normalize_source_bindings(bound_image_sizes(fixed_code))))
         if fixed_code.strip() == code.strip():
             print('[slide_gen] 修复代码没有变化，停止重复调用；保留失败证据')
             break
@@ -717,7 +717,7 @@ def compile_tex(tex_path, expected_count=None):
     tex_path = Path(tex_path).resolve()
     if not tex_path.exists(): raise FileNotFoundError(f"Tex file {tex_path} does not exist")
     original = tex_path.read_text(encoding='utf-8')
-    normalized = normalize_rowspec(normalize_source_bindings(original))
+    normalized = normalize_tblr_cells(normalize_rowspec(normalize_source_bindings(original)))
     if normalized != original:
         tex_path.write_text(normalized, encoding='utf-8')
     result = subprocess.run(
@@ -731,12 +731,22 @@ def compile_tex(tex_path, expected_count=None):
         text=True, encoding="utf-8", errors="replace"
     )
     ok = result.returncode == 0
+    raw_log = tex_path.with_suffix('.compile.raw.log')
+    raw_log.write_text(
+        'command: tectonic {}\nreturncode: {} (0x{:08X})\n[stdout]\n{}\n[stderr]\n{}'.format(
+            tex_path, result.returncode, result.returncode & 0xffffffff,
+            result.stdout or '', result.stderr or ''), encoding='utf-8')
     feedback = _clean_feedback("\n".join([result.stdout or "", result.stderr or ""]))
-    tex_path.with_suffix('.compile.log').write_text(feedback, encoding='utf-8')
+    if not ok:
+        # 原生编译器可能静默崩溃；退出码始终保留，但不伪造 error: 行让模型盲修。
+        feedback += ('\n' if feedback else '') + (
+            '编译器异常退出，退出码 {} (0x{:08X})；原始输出：{}'.format(
+                result.returncode, result.returncode & 0xffffffff, raw_log))
     errors = record_quality(tex_path,feedback,ok,expected_count)
     if errors:
         ok = False
         feedback += '\n' + '\n'.join('error: '+error+('' if error.startswith('页数不符') else '；先拆页/减正文，保留原图绑定与可读字号。') for error in errors)
+    tex_path.with_suffix('.compile.log').write_text(feedback, encoding='utf-8')
     print("Tex File Compilation succeeded." if ok else "Compilation failed:")
     print(feedback)
     return ok, feedback

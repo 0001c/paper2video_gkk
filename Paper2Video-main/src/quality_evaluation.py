@@ -22,6 +22,8 @@ RUBRIC_ATTEMPTS = 3
 def rubric_page(settings, content, root, cache, names, page, script, transcript, request):
     """格式/证据校验失败只重试本页；成功页缓存与评分规则保持不变。"""
     response = read_json(cache)
+    if response is None:
+        response = read_json(cache.with_suffix('.response.json'))
     for attempt in range(RUBRIC_ATTEMPTS):
         try:
             if response is None:
@@ -173,7 +175,9 @@ def rubric_result(name, result, page, script, transcript):
         if not isinstance(issue, dict) or issue.get('criterion') not in CRITERIA[name]:
             raise ValueError('逐页问题维度无效')
         description, evidence = issue.get('description'), issue.get('evidence')
-        if any(not isinstance(item, str) or not item.strip() or len(item) > 1600 for item in (description, evidence)):
+        if (not isinstance(description, str) or not description.strip() or len(description) > 1600
+                or not isinstance(evidence, str) or len(evidence) > 1600
+                or (not evidence.strip() and not (name == 'audio' and evidence == ''))):
             raise ValueError('逐页问题需要具体说明与证据')
         timestamp = issue.get('timestamp')
         if name == 'audio':
@@ -181,6 +185,9 @@ def rubric_result(name, result, page, script, transcript):
             if (not isinstance(expected, str) or not isinstance(actual, str) or not (expected or actual)
                     or (expected and expected not in script) or (actual and actual not in transcript)):
                 raise ValueError('配音差异引文未匹配讲稿或实际音轨识别')
+            if evidence == '':
+                # 对照文字仅来自刚刚逐字验证的两段引文，不改分数或 ASR 待复核标记。
+                evidence = '讲稿引文：' + (expected or '（无）') + '\n实际音轨识别引文：' + (actual or '（无）')
             timestamp = page['start']
         else:
             # 部分兼容模型将秒数序列化为字符串；只转换纯十进制表示，不补时间、不吸附到邻近帧。

@@ -176,6 +176,70 @@ class ResponseRecoveryChecks(unittest.TestCase):
         self.assertEqual(result['slides']['score'], 100)
         self.assertEqual(qa.read_json(target.with_suffix('.root.json')), good)
 
+    def audio_response(self):
+        return {'checks': {
+            'slides': {'criteria': {name: 100 for name in quality.CRITERIA['slides']}, 'issues': []},
+            'presentation': {'criteria': {name: 100 for name in quality.CRITERIA['presentation']}, 'issues': []},
+            'audio': {'criteria': {'coverage': 100, 'accuracy': 95, 'order': 100}, 'issues': [{
+                'criterion': 'accuracy',
+                'description': 'ASR识别结果与讲稿存在差异，将“喂给”识别为“未给”，属于同音字错误，需人工复核确认实际发音。',
+                'evidence': '', 'timestamp': None,
+                'script_quote': '代表了我们喂给模型多少文本让它去阅读和学习',
+                'asr_quote': '代表了我们未给模型多少文本，让它去阅读和学习'}]}}}
+
+    def test_empty_audio_evidence_uses_verified_quotes_and_preserves_score_and_review(self):
+        response = self.audio_response()
+        audio = response['checks']['audio']
+        issue = audio['issues'][0]
+        page = {'page': 9, 'start': 600, 'end': 675, 'frames': []}
+        row = quality.rubric_result('audio', audio, page, issue['script_quote'], issue['asr_quote'])
+        self.assertEqual(row['score'], 95)
+        self.assertEqual(row['criteria'], audio['criteria'])
+        self.assertTrue(row['issues'][0]['requires_review'])
+        self.assertEqual(row['issues'][0]['description'], issue['description'])
+        for name in ('script_quote', 'asr_quote'):
+            self.assertIn(issue[name], row['issues'][0]['evidence'])
+        self.assertEqual(issue['evidence'], '', '原模型响应保持原样，展示文本只在验证后产生')
+
+    def test_empty_evidence_does_not_allow_unmatched_quotes_missing_description_or_visual_evidence(self):
+        page = {'page': 9, 'start': 600, 'end': 675, 'frames': [{'timestamp': 640}]}
+        audio = self.audio_response()['checks']['audio']
+        issue = audio['issues'][0]
+        with self.assertRaisesRegex(ValueError, '引文未匹配'):
+            quality.rubric_result('audio', audio, page, '捏造的讲稿内容', issue['asr_quote'])
+        for field, invalid in (('description', ''), ('evidence', None), ('evidence', ' ')):
+            bad = copy.deepcopy(audio)
+            bad['issues'][0][field] = invalid
+            with self.subTest(field=field, invalid=invalid), self.assertRaisesRegex(ValueError, '具体说明与证据'):
+                quality.rubric_result('audio', bad, page, issue['script_quote'], issue['asr_quote'])
+        visual = {'criteria': {name: 95 for name in quality.CRITERIA['slides']}, 'issues': [{
+            'criterion': 'layout', 'description': '版面拥挤', 'evidence': '', 'timestamp': 640}]}
+        with self.assertRaisesRegex(ValueError, '具体说明与证据'):
+            quality.rubric_result('slides', visual, page, '', '')
+
+    def test_paid_audio_response_is_revalidated_without_requesting_the_page_again(self):
+        response = self.audio_response()['checks']
+        audio = response['audio']['issues'][0]
+        page = {'page': 9, 'start': 600, 'end': 675, 'frames': []}
+        target = self.root / 'rubric-page-9.json'
+        qa.write_json(target.with_suffix('.response.json'), response)
+        request = MagicMock(side_effect=AssertionError('已有完整引文，不应重复付费评价'))
+        rows = quality.rubric_page({}, [{'type': 'text', 'text': '材料'}], self.root, target,
+            ['slides', 'presentation', 'audio'], page, audio['script_quote'], audio['asr_quote'], request)
+        request.assert_not_called()
+        self.assertEqual(rows['audio']['score'], 95)
+        self.assertEqual(qa.read_json(target), response)
+
+    def test_invalid_paid_response_returns_to_existing_page_retry_budget(self):
+        target = self.root / 'rubric-page.json'
+        qa.write_json(target.with_suffix('.response.json'), {'slides': {'criteria': {}, 'issues': []}})
+        good = {'checks': {'slides': {'criteria': {name: 100 for name in quality.CRITERIA['slides']}, 'issues': []}}}
+        request = MagicMock(return_value=good)
+        rows = quality.rubric_page({}, [{'type': 'text', 'text': '材料'}], self.root, target, ['slides'],
+            {'page': 1, 'start': 0, 'end': 1, 'frames': []}, '', '', request)
+        self.assertEqual(request.call_count, 1)
+        self.assertEqual(rows['slides']['score'], 100)
+
     def test_cli_diagnostics_store_safe_call_locations_without_exception_text(self):
         output = self.root / 'qa.json'
         source_file = ROOT / 'Paper2Video-main/src/qa_evaluation.py'

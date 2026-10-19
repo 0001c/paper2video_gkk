@@ -141,8 +141,8 @@ def _read_json_quietly(file_path):
 
 def _read_meta_quietly(app, content_id):
     """读内容库某份内容的 meta.json（按 id，不拼路径）。"""
-    digest = (content_id or "").replace("content_", "")
-    return _read_json_quietly(os.path.join(app.CONTENT_ROOT, digest, "meta.json"))
+    work = app._upload_work(content_id)
+    return _read_json_quietly(os.path.join(work, "meta.json")) if work else None
 
 
 # ──────────────────────────────────────────────────────────────
@@ -2011,9 +2011,9 @@ def test_content_store_and_fingerprint(app):
                         "新增 %d 份：%s" % (len(new_content), sorted(new_content)))
             ok &= check("落库名是指纹而不是原文件名（内容寻址的要求）",
                         os.path.basename(d2.get("source_path") or "").startswith(
-                            (d2.get("ingest_id") or "").replace("content_", "")),
+                            (d2.get("source_content_id") or "").replace("content_", "")),
                         "落库名=%s" % os.path.basename(d2.get("source_path") or ""))
-            meta_now = _read_meta_quietly(app, d2.get("ingest_id")) or {}
+            meta_now = _read_meta_quietly(app, d2.get("source_content_id")) or {}
             ok &= check("原名记在 meta 里（可追溯，界面要显示人话）",
                         "换了个名字.pdf" in (meta_now.get("original_names") or []),
                         "original_names=%s" % (meta_now.get("original_names"),))

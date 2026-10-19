@@ -46,6 +46,8 @@ import unicodedata
 import zipfile
 from pathlib import Path
 
+from pdf_layout import analyze_pdf_layout, in_regions
+
 # ── 格式嗅探：扩展名不可信，一律看 magic bytes ──
 _MAGIC = (
     (b"\xd0\xcf\x11\xe0", "doc"),      # OLE2（老 .doc / .xls / .ppt）
@@ -191,11 +193,12 @@ def _merge_pdf_lines(raw_lines):
     return merged
 
 
-def _geometric_lines(page, chars=None):
+def _geometric_lines(page, chars=None, excluded=(), headings=()):
     """按基线/横坐标重组碎片字符；只去掉同位置的重复绘制。"""
     if chars is None:
         chars = [char for block in page.get_text('rawdict')['blocks'] if block['type'] == 0
                  for line in block['lines'] for span in line['spans'] for char in span['chars']]
+    chars = [char for char in chars if not in_regions(char['origin'], excluded)]
     rows = []
     for char in sorted(chars, key=lambda item: (item['origin'][1], item['origin'][0])):
         if not rows or abs(char['origin'][1] - rows[-1][0]) > 0.75:
@@ -210,8 +213,32 @@ def _geometric_lines(page, chars=None):
                 duplicates += 1
                 continue
             kept.append(char)
-        lines.append(''.join(char['c'] for char in kept))
+        text = ''.join(char['c'] for char in kept)
+        heading = next((h for h in headings if any(in_regions(c['origin'], [h]) for c in kept)), None)
+        if heading:
+            lines.extend(['', '#' * heading['level'] + ' ' + text, ''])
+        else:
+            lines.append(text)
     return lines, duplicates
+
+
+def _pdf_ordered_lines(page, excluded, headings):
+    """Preserve normal PDF reading order while filtering classified physical lines."""
+    result = []
+    for block in page.get_text('dict')['blocks']:
+        if block['type'] != 0:
+            continue
+        for line in block['lines']:
+            spans = line['spans']
+            if any(in_regions(span['origin'], excluded) for span in spans):
+                continue
+            text = ''.join(span['text'] for span in spans)
+            heading = next((h for h in headings if any(in_regions(s['origin'], [h]) for s in spans)), None)
+            if heading:
+                result.extend(['', '#' * heading['level'] + ' ' + text, ''])
+            else:
+                result.append(text)
+    return result
 
 
 def has_unmapped_glyphs(text):
@@ -222,7 +249,7 @@ def has_unmapped_glyphs(text):
 GLYPH_IMAGE_RE = re.compile(r'\[原文字形图：(source_p\d{4}_\d{2}\.png)\]')
 
 
-def _preserve_pdf_glyphs(page):
+def _preserve_pdf_glyphs(page, excluded=()):
     """Keep lines without a Unicode mapping as source images, never guess symbols.
 
     CID fallback can look like ordinary printable text. Disable it so all missing
@@ -232,6 +259,7 @@ def _preserve_pdf_glyphs(page):
     flags = (pymupdf.TEXTFLAGS_RAWDICT & ~pymupdf.TEXT_USE_CID_FOR_UNKNOWN_UNICODE) | pymupdf.TEXT_ACCURATE_BBOXES
     chars = [char for block in page.get_text('rawdict', flags=flags)['blocks'] if block['type'] == 0
              for line in block['lines'] for span in line['spans'] for char in span['chars']]
+    chars = [char for char in chars if not in_regions(char['origin'], excluded)]
     # Mapped math glyphs also lose super/subscript placement in plain text, and
     # common text fonts lack Greek/math coverage. Preserve the whole source line.
     def needs_image(char):
@@ -289,19 +317,21 @@ def extract_pdf(path):
 
     doc = pymupdf.open(path)
     pages, empty_pages, quality, glyph_images = [], [], [], []
+    layout = analyze_pdf_layout(doc)
     for idx in range(doc.page_count):
         page = doc[idx]
+        excluded, headings = layout[idx]['removed'], layout[idx]['headings']
         raw = page.get_text()
         blocks = [block for block in page.get_text('blocks') if block[6] == 0]
         fragmented = len(blocks) > 80 and sum(len(block[4].strip()) <= 5 for block in blocks) > len(blocks) * 0.5
         duplicates = 0
         if fragmented:
-            raw_lines, duplicates = _geometric_lines(page)
+            raw_lines, duplicates = _geometric_lines(page, excluded=excluded, headings=headings)
         else:
-            raw_lines = raw.splitlines()
-        kept, images, controls = _preserve_pdf_glyphs(page)
+            raw_lines = _pdf_ordered_lines(page, excluded, headings)
+        kept, images, controls = _preserve_pdf_glyphs(page, excluded=excluded)
         if images:
-            raw_lines, duplicates = _geometric_lines(page, kept)
+            raw_lines, duplicates = _geometric_lines(page, kept, headings=headings)
             glyph_images.extend(images)
         reasons = []
         if len(raw.strip()) < 20:
@@ -316,6 +346,7 @@ def extract_pdf(path):
         quality.append({'page': idx + 1, 'fragmented': fragmented, 'reading_order_repaired': fragmented,
                         'duplicate_glyphs_removed': duplicates, 'unmapped_glyphs': controls,
                         'preserved_glyph_images': len(images),
+                        'filtered_margins': excluded,
                         'needs_review': bool(reasons), 'reasons': reasons})
     total_chars = sum(len(p) for p in pages)
     doc.close()
@@ -328,6 +359,8 @@ def extract_pdf(path):
         "likely_scanned": bool(empty_pages) and len(empty_pages) >= max(1, len(pages) // 3),
         "page_quality": quality,
         "glyph_images": glyph_images,
+        "layout_headings": [{'page': idx + 1, 'text': h['text'], 'bbox': h['bbox'], 'level': h['level']}
+                            for idx, item in enumerate(layout) for h in item['headings']],
         "review_pages": [item['page'] for item in quality if item['needs_review']],
         "source_sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest(),
     }
@@ -520,7 +553,7 @@ def extract_latex(path, out_dir):
 # 调用方（web/app.py 的内容库）用它做缓存键的一部分：
 # 同一个文件 + 同一个版本号才允许直接复用已提取的正文。
 # 不 +1 的后果是"改了预处理却仍命中旧缓存"——内容对不上，且没有任何报错。
-EXTRACTOR_VERSION = "3"
+EXTRACTOR_VERSION = "4"
 
 _EXTRACTORS = {
     "pdf": extract_pdf,
@@ -555,6 +588,7 @@ def ingest(src, out_dir):
             "支持：.tex / .zip / .docx / .doc / .pdf / UTF-8 .txt")
 
     meta.setdefault("needs_llm", True)
+    meta['extractor_version'] = EXTRACTOR_VERSION
     meta["source"] = os.path.abspath(src)
     meta["detected_format"] = fmt
     if meta.get('glyph_images'):

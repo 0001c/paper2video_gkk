@@ -195,6 +195,15 @@ def _course_source(work):
     raise HTTPException(422, detail="section_ids：没有可读取的正文，请重新提取或上传选定小节")
 
 
+def _course_layout_options(work):
+    """Use PDF layout evidence only for new, unedited extraction snapshots."""
+    meta = course.read_json(Path(work, 'ingest', 'ingest_meta.json'), {})
+    if not isinstance(meta, dict):
+        return {'layout_headings': False}
+    return {'layout_headings': bool(meta.get('format') == 'pdf' and meta.get('layout_headings')
+                                    and not meta.get('reviewed_source'))}
+
+
 class CoursePlanRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     ingest_id: str = Field(max_length=100)
@@ -292,7 +301,7 @@ async def api_course_source(ingest_id: str):
     if not work or not os.path.isdir(work):
         raise HTTPException(404, detail="内容不存在")
     text = _course_source(work)
-    return {"sections": course.source_sections(text), "chars": len(text)}
+    return {"sections": course.source_sections(text, **_course_layout_options(work)), "chars": len(text)}
 
 
 @app.post("/api/course/plan")
@@ -302,7 +311,8 @@ async def api_course_plan(payload: CoursePlanRequest, request: Request):
     if not work or not os.path.isdir(work):
         raise HTTPException(404, detail="ingest_id：内容不存在")
     try:
-        plan, _ = course.build_plan(_course_source(work), payload.settings, payload.slide_count, payload.script_lang)
+        plan, _ = course.build_plan(_course_source(work), payload.settings, payload.slide_count, payload.script_lang,
+                                    **_course_layout_options(work))
     except ValueError as exc:
         raise HTTPException(422, detail=str(exc))
     return course.public_plan(plan)
@@ -315,7 +325,8 @@ async def api_course_assist(payload: CourseAssistRequest, request: Request):
     if not work or not os.path.isdir(work):
         raise HTTPException(404, detail='ingest_id：内容不存在')
     try:
-        plan, source = course.build_plan(_course_source(work), payload.settings, payload.slide_count, payload.script_lang)
+        plan, source = course.build_plan(_course_source(work), payload.settings, payload.slide_count, payload.script_lang,
+                                         **_course_layout_options(work))
     except ValueError as exc:
         raise HTTPException(422, detail=str(exc))
     if not plan['audience']:
@@ -818,6 +829,7 @@ def _load_job(job_id):
 #   3. **删除要有引用意识**：一个内容目录可能被多个任务引用，不做"随任务删"。
 CONTENT_ROOT = os.path.join(JOBS_ROOT, "_content")
 _CONTENT_DIGEST_RE = re.compile(r"^[0-9a-f]{8,40}$")
+_INGEST_LOCK = asyncio.Lock()
 
 
 def _content_dir(digest):
@@ -950,6 +962,64 @@ def _store_content(kind, tmp_path, filename):
     meta.setdefault("created_at", now)
     _write_content_meta(work, meta)
     return "content_" + short, work, hit, stored, meta
+
+
+def _relocate_ingest_paths(value, staging, target):
+    """发布暂存结果时，只改写暂存目录内的绝对路径，保留原始文件引用。"""
+    if isinstance(value, dict):
+        return {key: _relocate_ingest_paths(item, staging, target) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_relocate_ingest_paths(item, staging, target) for item in value]
+    if isinstance(value, str) and Path(value).is_absolute():
+        try:
+            return str(target / Path(value).relative_to(staging))
+        except ValueError:
+            pass
+    return value
+
+
+def _versioned_ingest(source_id, source, source_meta, extractor):
+    """原文件去重；每个提取版本另存不可变快照，不覆盖历史正文或修正素材。"""
+    import tempfile
+    identity = {'source_sha1': source_meta['sha1'], 'extractor_version': extractor.EXTRACTOR_VERSION}
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode('utf-8')).hexdigest()
+    ingest_id = 'ingest_extract_' + digest[:24]
+    target = Path(JOBS_ROOT, ingest_id)
+    text_file = target / 'ingest' / 'paper_text.md'
+    if target.exists():
+        meta = _content_meta(target)
+        if (not isinstance(meta, dict) or meta.get('extraction_digest') != digest
+                or not (target / 'ingest' / 'ingest_meta.json').is_file()):
+            raise RuntimeError('提取缓存记录不完整或冲突；已有素材保持原样，请联系维护者检查')
+        if meta.get('needs_llm', True):
+            if not text_file.is_file():
+                raise RuntimeError('提取缓存正文缺失；已有素材保持原样，请联系维护者检查')
+            text = text_file.read_text(encoding='utf-8')
+        else:
+            if not Path(meta.get('latex_root') or '', 'main.tex').is_file():
+                raise RuntimeError('提取缓存的 LaTeX 入口缺失；已有素材保持原样，请联系维护者检查')
+            text = ''
+        return ingest_id, text, meta, True
+
+    # 先写完整新版本，再一次发布。失败仅清理本次暂存，不删除共享原文件或旧提取。
+    with tempfile.TemporaryDirectory(prefix='.ingest-extract-', dir=JOBS_ROOT) as staging:
+        stage = Path(staging)
+        text, extracted = extractor.ingest(source, str(stage / 'ingest'))
+        extracted = _relocate_ingest_paths(dict(extracted or {}), stage, target)
+        if extracted.get('needs_llm', True):
+            # 空正文同样是一次完整提取；后续源文门禁仍负责判断是否可用于生成。
+            (stage / 'ingest' / 'paper_text.md').write_text(text or '', encoding='utf-8')
+            extracted['text_path'] = str(text_file)
+            extracted['chars'] = len(text or '')
+        raw_fields = ('sha1', 'sha1_12', 'kind', 'stored_name', 'original_names', 'size', 'created_at')
+        meta = {key: source_meta[key] for key in raw_fields if key in source_meta}
+        meta.update(extracted)
+        meta.update(identity, source_content_id=source_id, extraction_digest=digest)
+        (stage / 'ingest' / 'ingest_meta.json').write_text(
+            json.dumps(extracted, ensure_ascii=False, indent=2), encoding='utf-8')
+        _write_content_meta(stage, meta)
+        stage.rename(target)
+    return ingest_id, text, meta, False
 
 
 def _result_dir(job):
@@ -3064,57 +3134,33 @@ async def api_ingest(paper: UploadFile = File(...)):
     这是「转换预览」这一步的后端：把 main.tex 的章节结构 + 正文开头
     给使用者确认，确认无误再开跑 —— 因为转换错了下游无法补救。
 
-    **内容寻址（2026-09-19）**：同一份文件上传两次会落到**同一个内容目录**，
-    第二次直接复用已提取的正文，不再落第二份盘、也不再重复解析。
-    可复用的前提是「文件内容 + 提取器版本」都一致 —— 缺了版本号这一项，
-    改了预处理逻辑却仍命中旧缓存（内容对不上且不报错）。
+    原文件按内容去重；提取结果按「文件内容 + 提取器版本」另存不可变素材。
+    同版本复传复用，新版本生成新素材，旧正文、人工修正和教案仍可追溯。
     """
     import paper_ingest as pi
 
     safe_name = os.path.basename(paper.filename or "upload.bin")
     tmp = await _receive_upload(paper, safe_name)
     try:
-        content_id, work, existed, src, meta = _store_content("paper", tmp, safe_name)
-    except Exception:
-        try:
-            os.remove(tmp)                       # 入库失败别留临时文件
-        except OSError:
-            pass
-        raise
-
-    text_file = os.path.join(work, "ingest", "paper_text.md")
-    cached = bool(existed
-                  and meta.get("extractor_version") == pi.EXTRACTOR_VERSION
-                  and os.path.isfile(text_file))
-
+        # 单服务进程内串行发布同一版本，避免重复提取或半成品被另一请求复用。
+        async with _INGEST_LOCK:
+            source_id, _, _, src, source_meta = _store_content("paper", tmp, safe_name)
+            content_id, text, meta, cached = _versioned_ingest(source_id, src, source_meta, pi)
+    except Exception as exc:
+        _remove_quietly(tmp)
+        return JSONResponse(status_code=400, content={
+            "ok": False,
+            "error": "{}: {}".format(type(exc).__name__, exc),
+            "hint": "支持 .tex / .zip / .docx / .doc / .pdf",
+        })
     if cached:
-        with io.open(text_file, encoding="utf-8", errors="replace") as handle:
-            text = handle.read()
         print("[ingest] 内容命中（{}），复用已提取的正文：{}".format(
             content_id, os.path.basename(src)))
-    else:
-        try:
-            text, extracted = pi.ingest(src, os.path.join(work, "ingest"))
-        except Exception as exc:
-            shutil.rmtree(os.path.join(work, "ingest"), ignore_errors=True)
-            if not existed:
-                # 内容目录是这次刚建的，而且这个 id **还没被返给任何人** ⇒
-                # 不可能有任务引用它，可以安全删掉（不留空壳，原代码的意图）。
-                # `existed` 为真时绝不能删：老任务的 source_path 指在里面。
-                shutil.rmtree(work, ignore_errors=True)
-            return JSONResponse(status_code=400, content={
-                "ok": False,
-                "error": "{}: {}".format(type(exc).__name__, exc),
-                "hint": "支持 .tex / .zip / .docx / .doc / .pdf",
-            })
-        # 提取结论与版本号一起记进 meta：下次命中就靠它判断"能不能复用"
-        meta.update(dict(extracted or {}))
-        meta["extractor_version"] = pi.EXTRACTOR_VERSION
-        _write_content_meta(work, meta)
 
     return {
         "ok": True,
         "ingest_id": content_id,
+        "source_content_id": source_id,
         "source_path": src,
         # 让界面能告诉使用者"这份论文之前传过，直接复用了提取结果"
         "cached": cached,
@@ -3405,7 +3451,8 @@ async def api_create_job(payload: dict):
     plan = selected_text = None
     if config.get("course") is not None:
         try:
-            plan, selected_text = course.build_plan(_course_source(work), config["course"], slide_count, config.get("script_lang", "zh"))
+            plan, selected_text = course.build_plan(_course_source(work), config["course"], slide_count, config.get("script_lang", "zh"),
+                                                    **_course_layout_options(work))
         except ValueError as exc:
             raise HTTPException(422, detail=str(exc))
         if payload.get("course_plan_token") != plan["token"]:

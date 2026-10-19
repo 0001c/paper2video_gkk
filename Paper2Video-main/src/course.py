@@ -72,9 +72,16 @@ def latex_source(root):
     return read(root / 'main.tex', [])
 
 
-def source_sections(text):
+def source_sections(text, *, layout_headings=False):
     """仅识别有明确标记的标题；无标题时提供完整材料，不猜测分页范围。"""
-    matches = list(re.finditer(r"(?m)^(?:#{1,6}\s+(.+)|\\(?:chapter|(?:sub)*section)\*?\{([^}]+)\}|((?:第[一二三四五六七八九十百\d]+[章节]|\d+\.\d+(?:\.\d+)?)\s+[^\n]{1,100}))\s*$", text))
+    pattern = r"(?m)^(?:#{1,6}[ \t]+(.+)|\\(?:chapter|(?:sub)*section)\*?\{([^}]+)\})[ \t]*$"
+    # New PDF extraction marks headings from font/layout evidence. Chart dates and
+    # wrapped model names remain verbatim content, but must not become sections.
+    # Only the caller's extraction metadata enables this mode; legacy sources and
+    # manually edited text retain their existing section IDs and selection rules.
+    if not layout_headings:
+        pattern = r"(?m)^(?:#{1,6}\s+(.+)|\\(?:chapter|(?:sub)*section)\*?\{([^}]+)\}|((?:第[一二三四五六七八九十百\d]+[章节]|\d+\.\d+(?:\.\d+)?)\s+[^\n]{1,100}))\s*$"
+    matches = list(re.finditer(pattern, text))
     result = [{"id": "all", "title": "全部材料", "start": 0, "end": len(text), "chars": len(text)}]
     def level(match):
         raw = match.group(0)
@@ -90,8 +97,8 @@ def source_sections(text):
     return result
 
 
-def selected_source(text, ids):
-    choices = {s["id"]: s for s in source_sections(text)}
+def selected_source(text, ids, *, layout_headings=False):
+    choices = {s["id"]: s for s in source_sections(text, layout_headings=layout_headings)}
     if not isinstance(ids, list) or not ids or len(ids) > 40 or any(not isinstance(i, str) or i not in choices for i in ids):
         raise ValueError("section_ids：请选择有效的章节，最多 40 项")
     if len(set(ids)) != len(ids) or ("all" in ids and len(ids) > 1):
@@ -114,11 +121,11 @@ def number(value, name, low, high):
     return value
 
 
-def build_plan(text, settings, page_count, script_lang):
+def build_plan(text, settings, page_count, script_lang, *, layout_headings=False):
     allowed = {"section_ids", "duration_mode", "target_minutes", "speech_rate", "audience", "objectives", "focus", "depth", "sections"}
     if not isinstance(settings, dict) or settings.keys() - allowed:
         raise ValueError("course：包含未知字段或格式错误")
-    selected, source = selected_source(text, settings.get("section_ids", ["all"]))
+    selected, source = selected_source(text, settings.get("section_ids", ["all"]), layout_headings=layout_headings)
     if not source.strip() or len(source) > 150000:
         raise ValueError("section_ids：材料为空或超过 150000 字符，请选择更小的教学范围")
     rate = number(settings.get("speech_rate", 220 if script_lang == "zh" else 140), "speech_rate", 80, 400)

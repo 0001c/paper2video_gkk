@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { AccessControls } from '../AccessGate';
 import { ThemeToggle } from '../ThemeToggle';
 import sample from './sample.json';
+import { demoWorkbenchHref, presentationContext, presentationHref } from '../presentationNavigation';
 
 const stages = [
   ['素材准备', '载入教材，预览正文'], ['教学编排', '明确目标与章节安排'],
@@ -16,6 +17,8 @@ const pageAt = (seconds: number) => {
 };
 
 export default function Demo() {
+  const fromPresentation = presentationContext(window.location.search);
+  const workbenchHref = demoWorkbenchHref(window.location.search);
   const [step, setStep] = useState(0);
   const [loaded, setLoaded] = useState(false);
   const [source, setSource] = useState(0);
@@ -56,8 +59,8 @@ export default function Demo() {
 
   return <div className="demo-shell">
     <header className="demo-header">
-      <a className="brand" href="/">讲解工坊<span className="brand-caption">PAPER2VIDEO</span></a>
-      <div className="demo-header-actions"><a href="/">进入工作台 ↗</a><AccessControls /><ThemeToggle /></div>
+      <a className="brand" href={workbenchHref}>讲解工坊<span className="brand-caption">PAPER2VIDEO</span></a>
+      <div className="demo-header-actions">{fromPresentation && <a href={presentationHref(fromPresentation)}>返回汇报 ↖</a>}<a href={workbenchHref}>进入工作台 ↗</a><AccessControls /><ThemeToggle /></div>
     </header>
     <main>
       <section className="demo-hero" aria-labelledby="demo-title">
@@ -133,7 +136,7 @@ export default function Demo() {
           <details className="demo-quiz"><summary>体验知识问答，看看这堂课讲清楚了什么</summary><p className="demo-caption">以下 3 题来自真实评价题库，作答仅用于体验，不改变原任务得分。</p>{sample.quiz.map((q, i) => <fieldset key={q.question}><legend>{i + 1}. {q.question}</legend><div>{Object.entries(q.options).map(([key, value]) => <label key={key}><input type="radio" name={`demo-question-${i}`} checked={answers[i] === key} onChange={() => setAnswers({ ...answers, [i]: key })} />{key}. {value}</label>)}</div>{answers[i] && <div className="demo-answer" role="status"><strong>{answers[i] === q.answer ? '回答正确' : `正确答案是 ${q.answer}`}</strong><p>原文依据：{q.source_quote}</p><p>成片证据：{q.evidence}</p></div>}</fieldset>)}</details>
         </>}
 
-        <footer className="demo-panel-footer"><span>{step === 4 ? '体验结束，欢迎带着自己的素材开始。' : `下一步 · ${stages[step + 1][0]}`}</span><div>{step > 0 && <button className="demo-secondary" onClick={() => go(step - 1)}>上一步</button>}{step < 4 ? <button className="demo-primary" disabled={step === 2 && !accepted} onClick={() => { setLoaded(true); go(step + 1); }}>{step === 0 && !loaded ? '载入示例并继续' : step === 2 ? '确认并体验配音' : '继续体验'} →</button> : <a className="demo-primary" href="/">用自己的素材创建任务 ↗</a>}</div></footer>
+        <footer className="demo-panel-footer"><span>{step === 4 ? '体验结束，欢迎带着自己的素材开始。' : `下一步 · ${stages[step + 1][0]}`}</span><div>{step > 0 && <button className="demo-secondary" onClick={() => go(step - 1)}>上一步</button>}{step < 4 ? <button className="demo-primary" disabled={step === 2 && !accepted} onClick={() => { setLoaded(true); go(step + 1); }}>{step === 0 && !loaded ? '载入示例并继续' : step === 2 ? '确认并体验配音' : '继续体验'} →</button> : <>{fromPresentation && <a className="demo-secondary" href={presentationHref('teaching')}>继续进阶介绍 →</a>}<a className="demo-primary" href={workbenchHref}>用自己的素材创建任务 ↗</a></>}</div></footer>
       </section>
     </main>
     <footer className="demo-footer"><span>讲解工坊 · 从内容到讲解</span><span>示例来源 <code>{sample.job_id}</code> · {sample.created_at.slice(0, 10)}</span></footer>

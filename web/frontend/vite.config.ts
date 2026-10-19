@@ -20,7 +20,7 @@ export default defineConfig({
     emptyOutDir: true,
     chunkSizeWarningLimit: 1200,
     rollupOptions: {
-      input: { main: 'index.html', demo: 'demo/index.html' },
+      input: { main: 'index.html', demo: 'demo/index.html', presentation: 'presentation/index.html' },
     },
   },
   server: {

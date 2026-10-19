@@ -1,0 +1,6 @@
+.presentation-return-space { height: calc(58px + env(safe-area-inset-top, 0px)); }
+.presentation-return { position: fixed; z-index: 450; top: max(12px, env(safe-area-inset-top, 0px)); right: max(24px, env(safe-area-inset-right, 0px)); display: inline-flex; align-items: center; gap: 10px; min-height: 42px; padding: 9px 18px; border: 1px solid var(--paper-accent); border-radius: 4px; background: var(--paper-accent); color: var(--paper-on-accent); box-shadow: 0 4px 18px rgb(0 0 0 / .15); font: 600 14px/1.5 var(--font-sans); text-decoration: none; }
+.presentation-return:hover { filter: brightness(1.1); }
+.presentation-return:focus-visible { outline: 3px solid var(--paper-accent); outline-offset: 4px; }
+@media (max-width: 600px) { .presentation-return { right: 16px; } }
+@media print { .presentation-return-space { display: none; } }

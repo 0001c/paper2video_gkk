@@ -179,11 +179,12 @@ class Checks(unittest.TestCase):
             with self.assertRaises((ValueError,SyntaxError)):
                 teaching_quality._calculate(code,{})
 
-    def test_promises_and_custom_budget_fail_before_paid_work(self):
+    def test_promises_block_but_custom_budget_only_warns(self):
         plan = {'speech_rate':220,'script_lang':'zh','target_minutes':10,'examples':[]}
         report = teaching_quality.script_report(['稍后实时计算演示。 | no'],plan)
         self.assertFalse(report['passed'])
-        self.assertEqual(len(report['issues']),2)
+        self.assertEqual(len(report['issues']),1)
+        self.assertTrue(any('时长仅供参考' in warning for warning in report['warnings']))
 
     def test_unsupported_formula_still_opens_review_and_blocks_paid_work(self):
         import course

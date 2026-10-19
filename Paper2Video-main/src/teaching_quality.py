@@ -165,7 +165,7 @@ def script_report(pages, plan=None, topics=None):
             estimate = sum(len(re.findall(r'[\u3400-\u9fff]',text))+len(re.findall(r'[A-Za-z0-9]+',text)) for text in oral)/rate
         target = plan.get('target_minutes')
         if target and estimate is not None and abs(estimate-target) > target*0.1:
-            issues.append('讲稿预计{:.2f}分钟，目标{}分钟，超过10%预算偏差；请调整后再配音'.format(estimate,target))
+            warnings.append('讲稿预计{:.2f}分钟，目标{}分钟，偏差超过10%；时长仅供参考，可直接继续生成'.format(estimate,target))
         if target and plan.get('sections') and spoken:
             import course
             budgets = course.page_sections(plan,len(spoken),topics)
@@ -174,7 +174,7 @@ def script_report(pages, plan=None, topics=None):
                 passed = minutes is not None and abs(minutes-section['page_minutes']) <= section['page_minutes']*.1 + 1e-9
                 page_timing.append({'page':i,'planned_minutes':section['page_minutes'],'estimated_minutes':minutes,'passed':passed})
                 if not passed:
-                    issues.append('第{}页口播时长未达本页预算±10%，请保留推导和结果并调整重复内容'.format(i))
-    return {'version':4,'passed':not issues,'issues':list(dict.fromkeys(issues)),'warnings':list(dict.fromkeys(warnings)),'estimated_minutes':estimate,
+                    warnings.append('第{}页口播时长与参考预算相差超过10%，不影响继续生成'.format(i))
+    return {'version':5,'passed':not issues,'issues':list(dict.fromkeys(issues)),'warnings':list(dict.fromkeys(warnings)),'estimated_minutes':estimate,
             'page_timing':page_timing,'calculations':calculations,'example_coverage':coverage,
             'lesson_ledger':lesson,'tensor_contracts':contracts,'tensor_checks':tensors}

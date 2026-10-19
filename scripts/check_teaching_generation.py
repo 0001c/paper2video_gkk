@@ -150,12 +150,14 @@ class TeachingChecks(unittest.TestCase):
         allocations=course.page_sections(plan,4,topics)
         self.assertAlmostEqual(sum(s['page_minutes'] for s in allocations),4)
         self.assertGreater(allocations[2]['page_minutes'],allocations[1]['page_minutes'])
-        pages=['字'*round(s['page_minutes']*220)+'。 | no' for s in allocations]
+        pages=['甲乙丙丁'[i]*round(s['page_minutes']*220)+'。 | no' for i,s in enumerate(allocations)]
         # 保持总长度不变，但将两页预算互换，应检出单页失配。
         pages[0],pages[2]=pages[2],pages[0]
         plan['examples']=[]
         report=teaching_quality.script_report(pages,plan,topics)
-        self.assertTrue(any('第1页' in s and '预算' in s for s in report['issues']))
+        self.assertTrue(any('第1页' in s and '预算' in s for s in report['warnings']))
+        self.assertTrue(report['passed'],report['issues'])
+        self.assertFalse(report['page_timing'][0]['passed'])
 
     def audio(self, seconds, cache_seconds=None):
         audio=self.root/'audio'; audio.mkdir(exist_ok=True)
@@ -169,14 +171,17 @@ class TeachingChecks(unittest.TestCase):
             'seconds':cache_seconds if cache_seconds is not None else seconds}})
         return {'sections':[{'id':'all','title':'教材','minutes':1}],'script_lang':'zh','speech_rate':220,'target_minutes':1}
 
-    def test_measured_audio_blocks_overrun_and_ignores_incorrect_manifest_duration(self):
-        plan=self.audio(80,cache_seconds=60)
-        report=course.audio_report(plan,self.root)
-        self.assertAlmostEqual(report['actual_minutes'],1.33,places=2)
-        self.assertFalse(report['actual_passed'])
-        with self.assertRaisesRegex(ValueError,'合片前验收'): course.require_audio_timing(plan,self.root)
-        self.assertTrue((self.root/'audio/0.wav').exists(),'超时不能删除已付费音频')
-        self.assertFalse(course.read_json(self.root/'course_timing.json')['actual_passed'])
+    def test_measured_audio_deviation_warns_and_ignores_incorrect_manifest_duration(self):
+        for seconds in (80,30):
+            with self.subTest(seconds=seconds):
+                plan=self.audio(seconds,cache_seconds=60)
+                report=course.require_audio_timing(plan,self.root)
+                self.assertAlmostEqual(report['actual_minutes'],round(seconds/60,2),places=2)
+                self.assertFalse(report['actual_passed'])
+                self.assertEqual(report['issues'],[])
+                self.assertTrue(report['warnings'])
+                self.assertTrue((self.root/'audio/0.wav').exists(),'偏差不能删除已付费音频')
+                self.assertFalse(course.read_json(self.root/'course_timing.json')['actual_passed'])
 
     def test_matching_audio_passes_but_edit_missing_or_corruption_invalidates_timing(self):
         plan=self.audio(60)
@@ -193,7 +198,7 @@ class TeachingChecks(unittest.TestCase):
 
     def test_actual_speech_rate_calibrates_next_revision_and_voice_changes_reset_it(self):
         plan=self.audio(80)
-        with self.assertRaises(ValueError): course.require_audio_timing(plan,self.root)
+        self.assertFalse(course.require_audio_timing(plan,self.root)['actual_passed'])
         calibrated=course.timing_policy(plan,self.root)
         self.assertEqual(calibrated['speech_rate'],165)
         self.assertEqual(plan['speech_rate'],220,'不得改写用户原教案')

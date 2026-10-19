@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 VERSION = 2
-SCRIPT_GENERATION_VERSION = 10
+SCRIPT_GENERATION_VERSION = 11
 
 
 def digest(value):
@@ -324,21 +324,21 @@ def audio_report(plan, result_dir):
     complete = bool(items) and all(p["actual_seconds"] is not None for p in items)
     target = plan.get('target_minutes')
     passed = abs(actual/60-target)<=target*.1+1e-9 if complete and target else None
-    issues = []
+    issues, warnings = [], []
     if target and not complete:
         issues.append('音频尚未完整生成或与当前讲稿不匹配，请先完成配音')
     elif target and not passed:
-        issues.append('实际音频{:.2f}分钟，目标{}分钟，超出±10%；请调整讲稿后仅重做变化页的配音'.format(actual/60,target))
-    return {'version':2,"pages": items, "actual_minutes": round(actual / 60, 2) if complete else None,
+        warnings.append('实际音频{:.2f}分钟，目标{}分钟，偏差超过10%；时长仅供参考，继续合片'.format(actual/60,target))
+    return {'version':3,"pages": items, "actual_minutes": round(actual / 60, 2) if complete else None,
             "estimated_minutes": round(sum(p["estimated_minutes"] for p in items), 2),
-            "target_minutes": target, "tolerance": 0.1,'actual_passed':passed,'issues':issues,
+            "target_minutes": target, "tolerance": 0.1,'actual_passed':passed,'issues':issues,'warnings':warnings,
             'configured_speech_rate':plan.get('_configured_speech_rate',plan['speech_rate']),
             'estimate_speech_rate':plan['speech_rate'],
             'measured_speech_rate':round(sum(estimate_minutes(page,plan['script_lang'],1) for page in pages)/(actual/60),1) if complete else None}
 
 
 def require_audio_timing(plan, result_dir):
-    """自定义时长在配音后、光标/数字人与合片前验收；保留已有音频供局部修订复用。"""
+    """验收音频完整性并记录时长偏差；预算偏差仅提示，不中止合片。"""
     report = audio_report(plan,result_dir)
     voice = _audio_voice(read_json(Path(result_dir)/'audio/manifest.json',{}))
     rate = report['measured_speech_rate']
@@ -349,8 +349,8 @@ def require_audio_timing(plan, result_dir):
             'configured_speech_rate':report['configured_speech_rate'],'target_minutes':plan.get('target_minutes'),
             'measured_speech_rate':rate,'measured_minutes':report['actual_minutes']})
     write_json(Path(result_dir)/'course_timing.json',report)
-    if plan.get('target_minutes') and report['actual_passed'] is not True:
-        raise ValueError('音频时长未通过合片前验收：'+'；'.join(report['issues']))
+    if plan.get('target_minutes') and report['issues']:
+        raise ValueError('音频未通过完整性验收：'+'；'.join(report['issues']))
     return report
 
 

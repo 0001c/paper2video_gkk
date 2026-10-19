@@ -39,13 +39,30 @@ class ScriptBudgetChecks(unittest.TestCase):
         course.generate_script(*self.args, workers=1)
         self.assertEqual(len(self.calls), 2)
 
-    def test_failed_duration_still_reaches_teaching_gate_without_infinite_retries(self):
+    def test_budget_deviation_is_warning_and_resumes_without_infinite_retries(self):
         text, _ = self.generate(['长' * 400 + '。 | no'])
         self.assertEqual(len(self.calls), 2,'口播修订无变化时提前停止')
         from teaching_quality import script_report
-        self.assertFalse(script_report(course.split_pages(text), self.args[0])['passed'])
+        report = script_report(course.split_pages(text), self.args[0])
+        self.assertTrue(report['passed'], report['issues'])
+        self.assertEqual(report['issues'], [])
+        self.assertTrue(any('时长仅供参考' in warning for warning in report['warnings']))
+        self.assertFalse(course.read_json(self.args[4] / 'course_script/0.json')['needs_review'])
         course.generate_script(*self.args,workers=1)
         self.assertEqual(len(self.calls),2,'未达预算的已完成候选也不能在恢复时自动继续付费')
+
+    def test_short_script_warns_without_content_gate(self):
+        from teaching_quality import script_report
+        report = script_report(['简短讲解。 | no'], {'speech_rate':200, 'script_lang':'zh', 'target_minutes':20})
+        self.assertTrue(report['passed'])
+        self.assertTrue(report['warnings'])
+
+    def test_content_errors_still_block_when_duration_is_only_a_warning(self):
+        from teaching_quality import script_report
+        report = script_report(['2+2=5。 | no'], {'speech_rate':200, 'script_lang':'zh', 'target_minutes':20})
+        self.assertFalse(report['passed'])
+        self.assertTrue(report['issues'])
+        self.assertTrue(report['warnings'])
 
     def test_auto_duration_and_valid_custom_duration_do_not_pay_for_repair(self):
         self.generate(['简' * 200 + '。 | no'])

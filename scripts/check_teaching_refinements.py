@@ -49,12 +49,13 @@ class RefinementChecks(unittest.TestCase):
                 text,_=course.generate_script(*args,workers=1)
                 saved=course.read_json(root/'course_script/0.json')
                 self.assertEqual(len(calls),expected); self.assertEqual(saved['stop_reason'],reason)
-                self.assertTrue(saved['needs_review']); self.assertTrue(saved['history'][0]['paragraph_targets'])
+                self.assertFalse(saved['needs_review']); self.assertTrue(saved['history'][0]['paragraph_targets'])
                 self.assertIn('逐段删减目标',calls[1])
                 course.generate_script(*args,workers=1)
                 self.assertEqual(len(calls),expected)
                 report=course.teaching_review([text],root,plan)
-                self.assertFalse(report['passed']); self.assertEqual(report['revision_stops'][0]['reason'],reason)
+                self.assertTrue(report['passed']); self.assertEqual(report['revision_stops'],[])
+                self.assertTrue(any('时长仅供参考' in warning for warning in report['warnings']))
 
     def test_ledger_keeps_evidence_and_explicit_question_responsibility(self):
         tasks=page_tasks(['引入\n问题：为什么尚无结果？\n本课路线：计算图到会话','会话\n按依赖执行','总结\n检查：是否已经运行？'])

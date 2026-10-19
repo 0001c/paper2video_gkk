@@ -125,8 +125,9 @@ def main():
         check(len(list((result / 'script_versions').glob('*.txt'))) == 1, '讲稿旧版本被保留')
         check(client.put(route, json=edit).status_code == 409, '过期编辑不能覆盖新版本')
         current = saved.json()
+        check(current['teaching']['passed'] and any('时长仅供参考' in warning for warning in current['teaching']['warnings']), '短讲稿与目标时长偏差仅提示，不要求手动改稿')
         render = client.post(route + '/run', json={'version': current['version'], 'pages': current['pages'], 'action': 'render', 'api_base': 'https://provider-two.invalid/v1', 'cursor_style': 'arrow-white', 'cursor_scale': 1.5})
-        check(render.status_code == 200, '明确审核确认后创建配音合片任务')
+        check(render.status_code == 200, '预算偏差不影响审核确认后创建配音合片任务')
         render_job = web._load_job(render.json()['job_id'])
         check(render_job['config']['cursor_style'] == 'arrow-white' and render_job['config']['cursor_scale'] == 1.5 and job['config']['cursor_style'] == 'classic-red', '审核可为成片选择光标，原任务配置保持不变')
         check(render_job['config']['script_concurrency'] == 5, '审核调用未指定并发时保留任务原设置')
@@ -263,13 +264,34 @@ def main():
                 check(exc.code == 0 and (result / 'course_review.json').is_file(), '真实流水线在配音和合片前暂停审核')
             timing_plan=Path(work,'timing_plan.json')
             course.write_json(timing_plan,plan)
+            def reached_tts(*args, **kwargs):
+                raise RuntimeError('reached_tts_with_budget_warning')
+            sys.modules['speech_gen'].tts_per_slide = reached_tts
+            sys.argv=['pipeline.py','--stage','["2"]','--paper_latex_root',str(latex),
+                      '--result_dir',str(result),'--course_plan',str(timing_plan),
+                      '--script_lang','zh','--script_prompt_file',job['config']['script_prompt_path'],
+                      '--reuse_script','True','--require_reuse_script','True']
+            try:
+                runpy.run_path(str(ROOT/'Paper2Video-main/src/pipeline.py'),run_name='__main__')
+                raise AssertionError('替身配音应该结束本次验证')
+            except RuntimeError as exc:
+                check(str(exc)=='reached_tts_with_budget_warning','讲稿预算偏差不阻止真实流水线进入配音')
+            def reached_merge(*args, **kwargs):
+                raise RuntimeError('reached_merge_with_budget_warning')
+            sys.modules['merge_video'].merge_slides_and_audio = reached_merge
             sys.argv=['pipeline.py','--stage','["3"]','--paper_latex_root',str(latex),
                       '--result_dir',str(result),'--course_plan',str(timing_plan),'--generate_talking','False']
             try:
                 runpy.run_path(str(ROOT/'Paper2Video-main/src/pipeline.py'),run_name='__main__')
-                raise AssertionError('不完整或超时音频不应进入合片')
+                raise AssertionError('替身合片应该结束本次验证')
+            except RuntimeError as exc:
+                check(str(exc)=='reached_merge_with_budget_warning','实际音频与预算偏差不阻止真实流水线进入合片')
+            (audio/'0.wav').unlink()
+            try:
+                runpy.run_path(str(ROOT/'Paper2Video-main/src/pipeline.py'),run_name='__main__')
+                raise AssertionError('缺页音频不应进入合片')
             except ValueError as exc:
-                check('音频时长未通过合片前验收' in str(exc),'直接续跑合片也不能绕过真实音频时长验收')
+                check('音频未通过完整性验收' in str(exc),'缺失或不匹配的音频仍在合片前明确报错')
         finally:
             sys.argv = original_argv
             for name, module in original_modules.items():

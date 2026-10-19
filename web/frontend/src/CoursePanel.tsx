@@ -73,7 +73,7 @@ export function CoursePanel({ ingestId, settings, onSettings, slideCount, onSlid
   return <Section anchor="teaching" number="05" title="教学范围与目标时长" defaultOpen={false} label="课程计划" summary={!enabled ? `${slideCount || '待填'} 页 · 未启用教学计划` : confirmed ? `已确认 · ${draftPlan?.planned_minutes} 分钟` : '待确认教案'} important help={<>
     <p>先提取素材，再选择章节或小节。选整章会包含其小节，请避免重复选择；没有可靠标题时可以上传单独的小节文件。</p>
     <p>预览教案在本机分配教学时间，不调用生成接口。核对后再生成课件与讲稿；修改范围或时间后需重新更新并确认。</p>
-    <p>目标时长用于讲稿预算，合成后显示实际时长及偏差。不保证精确到秒，建议验收范围 ±10%。</p>
+    <p>目标时长用于引导讲解深度和节奏，系统会尽量贴近；估算与实际时长仅供参考，偏差不会阻止配音或合片。</p>
   </>}>
     <div className="grid grid-2 course-fields"><div className="field"><label htmlFor="course-slides">幻灯片页数</label><input id="course-slides" type="number" min={4} max={40} step={1} value={slideCount}
       onChange={event => onSlideCount(event.target.value === '' ? '' : Number(event.target.value))}

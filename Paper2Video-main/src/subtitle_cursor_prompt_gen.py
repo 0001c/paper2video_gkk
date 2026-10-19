@@ -11,6 +11,7 @@ from camel.messages import BaseMessage
 from camel.types import ModelPlatformType
 from wei_utils import create_agent
 from script_validation import validate_script_output, normalize_script
+from classroom_language import CLASSROOM_PROMPT
 
 
 def _save_rejected_response(directory, image_paths, attempt, content, why, response):
@@ -113,6 +114,7 @@ def subtitle_cursor_gen(slide_imgs_dir, prompt_path, model_config, retries=None,
                     'speech_text 只放口播内容，不混入旧的“讲稿 | 光标目标”行或 ### 页分隔符；每句分别放在 sentences 中。'
                     'cursor_prompt 只放原文短语，多个目标不要用 | 拼接；无需光标时写字符串 "no"，不能写裸 no。'
                     '保留年份、小数、百分比，不要凭常识补写课件未提供的事实、公式或演示承诺。')
+    task_prompt += CLASSROOM_PROMPT
     messages = BaseMessage.make_user_message(role_name="user", content=task_prompt, image_list=images, meta_dict={})
 
     attempts = retries if retries is not None else int(

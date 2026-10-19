@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 VERSION = 2
-SCRIPT_GENERATION_VERSION = 9
+SCRIPT_GENERATION_VERSION = 10
 
 
 def digest(value):
@@ -257,9 +257,9 @@ def estimate_minutes(page, language, rate):
 def slide_directive(plan):
     outline = "\n".join("- {}：约 {:.1f} 分钟，第 {}～{} 页".format(s["title"], s["minutes"], s["first_page"], s["last_page"]) for s in plan["sections"])
     from teaching_quality import directive
-    return ("\n【已审核的课程教案】\n受众：{audience}\n学习目标：{objectives}\n重点难点：{focus}\n讲解深度：{depth}\n"
+    return ("\n【已审核的课程教案；内部教学控制，不是页面文案】\n受众背景（仅调节知识起点）：{audience}\n学习目标：{objectives}\n重点难点：{focus}\n讲解深度：{depth}\n"
             "按下列顺序覆盖所选材料，包含学习目标、概念解释、源材料例题/分步推导、易错点与小结。每页服务于教学，封面和小结计入上述页数。"
-            "不得虚构源材料的例题答案或研究事实，源材料不足时明确说明，不要重复填充。\n{outline}").format(outline=outline, **plan) + directive(plan.get('examples',[]))
+            "不得虚构源材料的例题答案或研究事实，源材料不足时明确说明，不要重复填充。\n内部覆盖顺序与节奏（不要显示分钟预算）：\n{outline}").format(outline=outline, **plan) + directive(plan.get('examples',[]))
 
 
 def generate_script(plan, slide_dir, prompt_file, model_config, output_dir, generator, selected=None, workers=3, generation_id=None, teaching=None):

@@ -4,8 +4,9 @@ import re
 import hashlib
 from pathlib import Path
 from spoken_text import plain_text
+from classroom_language import CLASSROOM_PROMPT, classroom_issues
 
-QUALITY_VERSION = 5
+QUALITY_VERSION = 6
 
 LAYOUT_PROMPT = ('\n[Slide quality requirements] One idea per slide; at most five short bullet points. '
                  'Split dense content into separate frames before reducing image size. '
@@ -15,7 +16,7 @@ LAYOUT_PROMPT = ('\n[Slide quality requirements] One idea per slide; at most fiv
                  'never place a bare caption in a frame or column. '
                  'In tabularray rowspec, concatenate row types without separating commas, '
                  'for example rowspec={Q[m]Q[m]}; commas inside Q[...] options are allowed. '
-                 'Preserve source figure IDs and captions. No unfulfilled promises of live demos.')
+                 'Preserve source figure IDs and captions. No unfulfilled promises of live demos.') + CLASSROOM_PROMPT
 
 
 def bound_image_sizes(code):
@@ -87,6 +88,7 @@ def _caption_numbers(text):
 def quality_errors(code, feedback='', figures=None, expected_count=None):
     code = normalize_source_bindings(code)
     errors = ['版面裁切：'+line.strip() for line in feedback.splitlines() if re.search(r'Overfull \\[hv]box',line,re.I)]
+    errors += classroom_issues(code, latex=True)
     errors += ['字体缺字：'+line.strip() for line in feedback.splitlines()
                if 'could not represent character' in line and '"nullfont"' not in line]
     if expected_count is not None:
